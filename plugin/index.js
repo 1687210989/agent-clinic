@@ -17,6 +17,7 @@
  *      - DSH 内正常注册工具
  */
 
+import fs from 'node:fs';
 import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
@@ -35,7 +36,7 @@ export const name = 'agent-clinic';
  * 用户只会看到面板内容没变，无法判断该做什么。
  * 改动 /api/agent-clinic/report 的响应结构时，两边一起 +1。
  */
-export const API_VERSION = '2';
+export const API_VERSION = '3';
 
 // ---------------------------------------------------------------------------
 // Config：优先用 schemastery；本地无 peer 时退化为朴素描述，保证可导入
@@ -142,6 +143,139 @@ function runAnalyze(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 实时监测：文件监听 + 轻量状态端点
+//
+// 现状：面板只有点「刷新」才重新扫描，用户在对话过程中看不到新出现的问题。
+//
+// 这里补上「准实时」：
+//   1. fs.watch 盯 ~/.dsh/sessions（根目录 + 各会话目录）
+//      —— DSH 每次工具调用都会追加写入会话文件，所以文件变化 ≈ 有新事件
+//   2. 命中后把缓存标记为脏；/watch 端点只在脏时才真正重扫
+//      （一次全量扫描约 130ms，不能每次轮询都跑）
+//   3. 客户端每 6 秒轮询一次 /watch，签名变化才拉全量报告
+//
+// 不用 DSH 内部的 session/event 流，是因为那套 API 属于内部契约、
+// 且 desktop profile 装不进去、本地无法验证；Node 的 fs API 足够且可测。
+// ---------------------------------------------------------------------------
+
+const WATCH_DEBOUNCE_MS = 400;
+
+const watchState = {
+  dshHome: null,
+  watchers: [],
+  dirty: true,
+  timer: null,
+  // 缓存最近一次体检结论的「签名」——用于判断是否真的发生了变化
+  signature: '',
+  count: 0,
+  ids: [],
+  generatedAt: null,
+};
+
+function signatureOf(data) {
+  return `${data.findings.length}|${data.findings
+    .map((f) => `${f.id}:${f.scope || ''}`)
+    .join(',')}|${data.header.sessions}|${data.header.toolCalls}`;
+}
+
+function refreshState(dshHome) {
+  const data = runAnalyze({ dshHome });
+  watchState.signature = signatureOf(data);
+  watchState.count = data.findings.length;
+  watchState.ids = data.findings.map((f) => f.id);
+  watchState.generatedAt = new Date().toISOString();
+  return data;
+}
+
+/** 轻量状态：签名变了客户端才去拉全量报告，所以要保证它足够便宜 */
+function currentState(dshHome) {
+  if (watchState.dirty || watchState.signature === '') {
+    refreshState(dshHome);
+    watchState.dirty = false;
+  }
+  return {
+    ok: true,
+    version: API_VERSION,
+    count: watchState.count,
+    ids: watchState.ids,
+    signature: watchState.signature,
+    generatedAt: watchState.generatedAt,
+  };
+}
+
+function markDirty() {
+  watchState.dirty = true;
+  if (watchState.timer) return;
+  // 防抖：一次工具调用可能触发多个文件事件，短时间内的重复通知无意义
+  watchState.timer = setTimeout(() => {
+    watchState.timer = null;
+  }, WATCH_DEBOUNCE_MS);
+}
+
+function stopWatching() {
+  for (const w of watchState.watchers) {
+    try {
+      w.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  watchState.watchers = [];
+  if (watchState.timer) {
+    clearTimeout(watchState.timer);
+    watchState.timer = null;
+  }
+}
+
+/** 监听会话目录。fs.watch 在 Windows 上对递归不可靠，因此逐目录监听。 */
+function startWatching(dshHome) {
+  stopWatching();
+  const root = resolveSessionsRoot({ dshHome });
+  if (!root) return;
+
+  const watchDir = (dir) => {
+    let w;
+    try {
+      w = fs.watch(dir, { persistent: false }, markDirty);
+    } catch {
+      return; // 目录不存在或无权限：跳过，不影响其他功能
+    }
+    w.on('error', () => {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+    });
+    watchState.watchers.push(w);
+  };
+
+  watchDir(root);
+  // 会话子目录（DSH 按 workspace-slug/<session-id>/ 组织）
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        watchDir(joinPath(root, entry.name));
+        // 再下一层才是 session.v4.jsonl.zstd 所在
+        try {
+          for (const sub of fs.readdirSync(joinPath(root, entry.name), { withFileTypes: true })) {
+            if (sub.isDirectory()) watchDir(joinPath(root, entry.name, sub.name));
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function joinPath(...parts) {
+  return parts.join('\\');
+}
+
+// ---------------------------------------------------------------------------
 // 插件主体
 // ---------------------------------------------------------------------------
 
@@ -158,6 +292,16 @@ export function apply(ctx, config = {}) {
       /* 日志失败不影响功能 */
     }
   };
+
+  // 应用户要求补上「准实时」：监听会话文件变化，面板轮询 /watch 即可发现新问题
+  watchState.dshHome = config.dshHome ?? null;
+  watchState.dirty = true;
+  try {
+    startWatching(config.dshHome);
+    log(`已开始监听会话目录：${resolveSessionsRoot({ dshHome: config.dshHome }) ?? '(未找到)'}`);
+  } catch (e) {
+    log(`监听启动失败（不影响其他功能）：${e?.message ?? e}`);
+  }
 
   log('已加载');
 
@@ -278,6 +422,26 @@ export function apply(ctx, config = {}) {
         },
       });
       log('已注册只读路由 /api/agent-clinic/report');
+      ws.register({
+        kind: 'exact',
+        path: '/api/agent-clinic/watch',
+        handler: async (_req, res) => {
+          const send = (code, payload) => {
+            const body = JSON.stringify(payload);
+            res.writeHead(code, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            });
+            res.end(body);
+          };
+          try {
+            send(200, currentState(config.dshHome));
+          } catch (e) {
+            send(500, { ok: false, error: String(e?.message ?? e) });
+          }
+        },
+      });
+      log('已注册只读路由 /api/agent-clinic/watch（轻量状态，供客户端轮询）');
     });
   } catch (e) {
     log(`路由注册失败（不影响其他功能）：${e?.message ?? e}`);

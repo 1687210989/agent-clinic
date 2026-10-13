@@ -39,6 +39,8 @@ window.__ModuleLoader__.load({
     const errors = [];
 
     const REPORT_API = '/api/agent-clinic/report';
+    const WATCH_API = '/api/agent-clinic/watch';
+    const POLL_MS = 6000;
 
     /**
      * 客户端版本号。宿主在响应里带回同一个值，用于识别
@@ -48,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '2';
+    const CLIENT_VERSION = '3';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -76,6 +78,79 @@ window.__ModuleLoader__.load({
     }
     function useOpen() {
       return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+    }
+
+    // -----------------------------------------------------------------------
+    // 准实时：轮询宿主轻量状态，签名变化才拉全量报告
+    //
+    // 宿主用 fs.watch 盯 ~/.dsh/sessions，把「有没有变化」压成一个签名；
+    // 这里每 6 秒问一次，签名没变就什么都不做（不重复解析 4~5 个会话文件）。
+    // 签名变了就：① 给侧边栏按钮加未读角标 ② 面板开着就自动刷新内容。
+    // -----------------------------------------------------------------------
+    let watchSnap = { signature: '', count: 0, unseen: 0 };
+    const watchListeners = new Set();
+    const panelRefreshListeners = new Set();
+
+    function setWatchSnap(next) {
+      watchSnap = next;
+      watchListeners.forEach((l) => {
+        try {
+          l();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+    function subscribeWatch(l) {
+      watchListeners.add(l);
+      return () => watchListeners.delete(l);
+    }
+    function useWatchSnap() {
+      return React.useSyncExternalStore(subscribeWatch, () => watchSnap, () => watchSnap);
+    }
+    /** 通知面板重新拉取报告（面板内部用 nonce 触发） */
+    function requestPanelRefresh() {
+      panelRefreshListeners.forEach((l) => {
+        try {
+          l();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+
+    /** 在常驻的侧边栏按钮里启动唯一轮询器 */
+    function useClinicWatcher() {
+      React.useEffect(() => {
+        let cancelled = false;
+        const tick = async () => {
+          if (cancelled || typeof fetch !== 'function') return;
+          try {
+            const r = await fetch(WATCH_API, { headers: { accept: 'application/json' } });
+            const d = await r.json();
+            if (cancelled || !d || !d.ok) return;
+            if (d.signature === watchSnap.signature) return;
+
+            const firstTime = watchSnap.signature === '';
+            const grew = (d.count || 0) > watchSnap.count;
+            setWatchSnap({
+              signature: d.signature,
+              count: d.count || 0,
+              // 首次拉取不算未读；之后问题变多才算「新发现」
+              unseen: firstTime ? 0 : grew ? (d.count || 0) - watchSnap.count + watchSnap.unseen : 0,
+            });
+            if (!firstTime) requestPanelRefresh();
+          } catch {
+            /* 网络抖动、宿主未就绪：忽略，下次轮询再试 */
+          }
+        };
+        tick();
+        const id = setInterval(tick, POLL_MS);
+        return () => {
+          cancelled = true;
+          clearInterval(id);
+        };
+      }, []);
     }
 
     // -----------------------------------------------------------------------
@@ -410,16 +485,46 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     function ClinicNavButton() {
       const isOpen = useOpen();
+      const w = useWatchSnap();
+      useClinicWatcher();
+
+      // 打开面板即视为已读
+      React.useEffect(() => {
+        if (isOpen && watchSnap.unseen > 0) setWatchSnap({ ...watchSnap, unseen: 0 });
+      }, [isOpen]);
+
       return h(
         'button',
         {
           type: 'button',
-          style: S.navBtn,
+          style: Object.assign({}, S.navBtn, { position: 'relative' }),
           title: 'Agent 体检诊所 —— 用可复核证据诊断 Agent 使用体验',
           onClick: () => setOpen(!isOpen),
         },
         h('span', { 'aria-hidden': 'true' }, '🩺'),
-        h('span', null, isOpen ? '收起体检' : '体检'),
+        h('span', { style: { flex: '1 1 auto' } }, isOpen ? '收起体检' : '体检'),
+        w.unseen > 0
+          ? h(
+              'span',
+              {
+                title: `发现 ${w.unseen} 个新问题`,
+                style: {
+                  flex: '0 0 auto',
+                  minWidth: '17px',
+                  height: '17px',
+                  padding: '0 5px',
+                  borderRadius: '999px',
+                  background: '#E24B4A',
+                  color: '#fff',
+                  fontSize: '10px',
+                  lineHeight: '17px',
+                  textAlign: 'center',
+                  fontWeight: 500,
+                },
+              },
+              String(w.unseen),
+            )
+          : null,
       );
     }
 
@@ -435,6 +540,12 @@ window.__ModuleLoader__.load({
         if (!isOpen) return undefined;
         let cancelled = false;
         setState((s) => ({ status: 'loading', data: s.data, text: s.text, error: '' }));
+
+        // 轮询器发现签名变化时，顺手把面板内容也刷新掉
+        const onWatch = () => {
+          if (!cancelled) setNonce((n) => n + 1);
+        };
+        panelRefreshListeners.add(onWatch);
 
         const req =
           typeof fetch === 'function'
@@ -464,6 +575,7 @@ window.__ModuleLoader__.load({
 
         return () => {
           cancelled = true;
+          panelRefreshListeners.delete(onWatch);
         };
       }, [isOpen, nonce]);
 

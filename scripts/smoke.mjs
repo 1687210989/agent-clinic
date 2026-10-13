@@ -439,6 +439,46 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
     '路由响应携带 version',
     /version:\s*API_VERSION/.test(fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8')),
   );
+
+  // 实时监测：/watch 轻量端点 + 签名机制
+  const hostSrc = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
+  check('注册了 /api/agent-clinic/watch 路由', hostSrc.includes("'/api/agent-clinic/watch'") || hostSrc.includes('"/api/agent-clinic/watch"'));
+  check('宿主实现了 fs.watch 监听', /fs\.watch\(/.test(hostSrc));
+  check('宿主有防抖（避免一次写入触发多次重扫）', /WATCH_DEBOUNCE_MS/.test(hostSrc));
+
+  const clientSrc = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
+  check('客户端有轮询间隔定义', /POLL_MS\s*=\s*\d+/.test(clientSrc));
+  check('客户端轮询 /watch', clientSrc.includes('/api/agent-clinic/watch'));
+  check('客户端有未读角标逻辑', /unseen/.test(clientSrc));
+  check('面板订阅轮询刷新', /panelRefreshListeners/.test(clientSrc));
+
+  // 签名必须随数据变化，否则客户端永远感知不到新问题
+  const { API_VERSION: _v } = await import('../plugin/index.js');
+  let sigReal = '';
+  let sigEmpty = '';
+  try {
+    const pmod = await import('../plugin/index.js');
+    const probe = async (dshHome) => {
+      const rs = [];
+      const tc = { tools: { defineTool: (d) => d, register: () => {} } };
+      const wc = { get: (n) => (n === 'webServer' ? { register: (r) => { rs.push(r); return () => {}; } } : undefined) };
+      pmod.apply({ logger: { info() {} }, inject: (deps, cb) => cb(deps.includes('tools') ? tc : wc) }, { dshHome });
+      const r = rs.find((x) => x.path === '/api/agent-clinic/watch');
+      const out = [];
+      await r.handler({}, { writeHead() {}, end: (b) => out.push(b) });
+      return JSON.parse(out[0]);
+    };
+    const a = await probe(undefined);
+    const b = await probe('/nonexistent-agent-clinic-dsh-home');
+    sigReal = a.signature;
+    sigEmpty = b.signature;
+    check('/watch 返回完整字段', typeof a.count === 'number' && Array.isArray(a.ids) && typeof a.signature === 'string' && a.version === _v,
+      `count=${a.count} ids=${a.ids.join(',') || '(无)'}`);
+    check('签名随数据变化（否则客户端感知不到新问题）', sigReal !== sigEmpty,
+      `真实=${sigReal.slice(0, 24)} / 空=${sigEmpty.slice(0, 24)}`);
+  } catch (e) {
+    check('签名随数据变化（否则客户端感知不到新问题）', false, e.message);
+  }
 }
 
 // --- 汇总 ---

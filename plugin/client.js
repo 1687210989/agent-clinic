@@ -17,6 +17,9 @@
  * 本文件挂两个位置：
  *   - sidebar.footer.action —— 侧边栏底部按钮（点击开合面板）
  *   - shell.overlay         —— 覆盖层面板（展示体检报告）
+ *
+ * 数据不是「解析 markdown 文本」，而是宿主返回结构化 JSON，
+ * 由这里渲染成卡片式 UI。单一事实来源在 src/report.mjs 的 analyze()。
  */
 
 window.__ModuleLoader__.load({
@@ -66,8 +69,27 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
-    // 样式（内联，避免依赖宿主 styles 对象）
+    // 设计变量（内联，避免依赖宿主 styles 对象）
     // -----------------------------------------------------------------------
+    const V = {
+      bg: 'var(--color-background-primary, #fff)',
+      bg2: 'var(--color-background-secondary, rgba(0,0,0,0.04))',
+      text: 'var(--color-text-primary, #1f1f1f)',
+      text2: 'var(--color-text-secondary, #666)',
+      text3: 'var(--color-text-tertiary, #888)',
+      border: 'var(--color-border-tertiary, rgba(0,0,0,0.12))',
+      border2: 'var(--color-border-secondary, rgba(0,0,0,0.28))',
+      mono: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)',
+      sans: 'var(--font-sans, system-ui, sans-serif)',
+    };
+
+    const SEV = {
+      高: { color: '#A32D2D', bg: 'rgba(226,75,74,0.10)', accent: '#E24B4A' },
+      中: { color: '#854F0B', bg: 'rgba(239,159,39,0.12)', accent: '#EF9F27' },
+      低: { color: '#3B6D11', bg: 'rgba(99,153,34,0.12)', accent: '#639922' },
+    };
+    const sevOf = (s) => SEV[s] || SEV['低'];
+
     const S = {
       navBtn: {
         display: 'flex',
@@ -91,16 +113,17 @@ window.__ModuleLoader__.load({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(0,0,0,0.35)',
+        padding: '24px',
+        background: 'rgba(0,0,0,0.32)',
       },
       panel: {
-        width: 'min(860px, 92vw)',
-        maxHeight: '86vh',
+        width: 'min(920px, 94vw)',
+        maxHeight: '88vh',
         display: 'flex',
         flexDirection: 'column',
-        background: 'var(--color-background-primary, #fff)',
-        color: 'var(--color-text-primary, #111)',
-        border: '0.5px solid var(--color-border-tertiary, rgba(0,0,0,0.15))',
+        background: V.bg,
+        color: V.text,
+        border: `0.5px solid ${V.border2}`,
         borderRadius: '12px',
         overflow: 'hidden',
       },
@@ -108,53 +131,246 @@ window.__ModuleLoader__.load({
         display: 'flex',
         alignItems: 'center',
         gap: '10px',
-        padding: '12px 16px',
-        borderBottom: '0.5px solid var(--color-border-tertiary, rgba(0,0,0,0.15))',
+        padding: '14px 18px',
+        borderBottom: `0.5px solid ${V.border}`,
+        flex: '0 0 auto',
       },
-      title: { fontSize: '14px', fontWeight: 500, flex: '1 1 auto' },
-      sub: { fontSize: '12px', opacity: 0.6 },
-      close: {
-        border: 'none',
-        background: 'transparent',
-        color: 'inherit',
-        fontSize: '18px',
-        lineHeight: '1',
-        cursor: 'pointer',
-        padding: '2px 8px',
-        borderRadius: '6px',
-      },
-      body: {
-        padding: '12px 16px',
-        overflow: 'auto',
-        flex: '1 1 auto',
-      },
-      pre: {
-        margin: 0,
-        fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-        fontSize: '12px',
-        lineHeight: '1.6',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      },
-      hint: { fontSize: '12px', opacity: 0.7, lineHeight: '1.7' },
-      code: {
-        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-        fontSize: '12px',
-        background: 'var(--color-background-secondary, rgba(0,0,0,0.05))',
-        padding: '1px 5px',
-        borderRadius: '4px',
-      },
-      refresh: {
-        border: '0.5px solid var(--color-border-secondary, rgba(0,0,0,0.3))',
+      title: { fontSize: '15px', fontWeight: 500, flex: '1 1 auto', fontFamily: V.sans },
+      tag: { fontSize: '11px', color: V.text3, fontFamily: V.sans },
+      iconBtn: {
+        border: `0.5px solid ${V.border2}`,
         background: 'transparent',
         color: 'inherit',
         font: 'inherit',
         fontSize: '12px',
-        padding: '3px 10px',
+        padding: '4px 10px',
         borderRadius: '6px',
         cursor: 'pointer',
+        fontFamily: V.sans,
+      },
+      closeBtn: {
+        border: 'none',
+        background: 'transparent',
+        color: V.text2,
+        fontSize: '20px',
+        lineHeight: '1',
+        cursor: 'pointer',
+        padding: '0 6px',
+        borderRadius: '6px',
+      },
+      body: {
+        padding: '18px',
+        overflow: 'auto',
+        flex: '1 1 auto',
+        fontFamily: V.sans,
+      },
+
+      statsWrap: {
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '10px',
+        marginBottom: '20px',
+      },
+      stat: {
+        flex: '1 1 128px',
+        minWidth: '118px',
+        padding: '10px 12px',
+        background: V.bg2,
+        borderRadius: '8px',
+      },
+      statLabel: { fontSize: '11px', color: V.text3, marginBottom: '4px' },
+      statValue: { fontSize: '16px', fontWeight: 500, color: V.text, fontVariantNumeric: 'tabular-nums' },
+
+      sectionTitle: {
+        fontSize: '13px',
+        fontWeight: 500,
+        color: V.text2,
+        margin: '0 0 10px',
+      },
+
+      card: {
+        border: `0.5px solid ${V.border}`,
+        borderRadius: '10px',
+        marginBottom: '10px',
+        overflow: 'hidden',
+      },
+      cardHead: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 14px',
+        flexWrap: 'wrap',
+      },
+      badge: {
+        fontSize: '11px',
+        fontWeight: 500,
+        padding: '2px 8px',
+        borderRadius: '999px',
+      },
+      cardTitle: { fontSize: '13px', fontWeight: 500 },
+      cardScope: { fontSize: '11px', color: V.text3, fontFamily: V.mono },
+      cardBody: {
+        padding: '0 14px 12px',
+        fontSize: '13px',
+        lineHeight: '1.65',
+        color: V.text,
+      },
+      row: { marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'baseline' },
+      rowLabel: { fontSize: '11px', color: V.text3, flex: '0 0 64px' },
+      rowText: { flex: '1 1 auto', wordBreak: 'break-word' },
+
+      codeBox: {
+        marginTop: '10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 10px',
+        background: V.bg2,
+        borderRadius: '6px',
+        fontFamily: V.mono,
+        fontSize: '11px',
+        lineHeight: '1.6',
+        color: V.text2,
+      },
+      codeText: { flex: '1 1 auto', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },
+      copyBtn: {
+        flex: '0 0 auto',
+        border: `0.5px solid ${V.border2}`,
+        background: V.bg,
+        color: V.text2,
+        font: 'inherit',
+        fontSize: '11px',
+        padding: '2px 8px',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontFamily: V.sans,
+      },
+
+      chips: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
+      chip: {
+        fontSize: '11px',
+        padding: '3px 9px',
+        borderRadius: '999px',
+        background: V.bg2,
+        color: V.text2,
+        border: `0.5px solid ${V.border}`,
+      },
+
+      note: { fontSize: '12px', color: V.text2, lineHeight: '1.75' },
+      empty: { fontSize: '13px', color: V.text2, padding: '8px 0' },
+      footer: {
+        marginTop: '22px',
+        paddingTop: '14px',
+        borderTop: `0.5px solid ${V.border}`,
+        fontSize: '11px',
+        color: V.text3,
+        display: 'flex',
+        justifyContent: 'space-between',
+        gap: '10px',
+        flexWrap: 'wrap',
       },
     };
+
+    // -----------------------------------------------------------------------
+    // 小组件
+    // -----------------------------------------------------------------------
+    function CopyButton({ text, label }) {
+      const [done, setDone] = React.useState(false);
+      const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+      const can = Boolean(nav && nav.clipboard && nav.clipboard.writeText);
+      const copy = () => {
+        if (!can) return;
+        nav.clipboard
+          .writeText(text)
+          .then(() => {
+            setDone(true);
+            setTimeout(() => setDone(false), 1400);
+          })
+          .catch(() => setDone(false));
+      };
+      return h(
+        'button',
+        {
+          type: 'button',
+          style: S.copyBtn,
+          onClick: copy,
+          disabled: !can,
+          title: can ? '复制' : '当前环境不支持剪贴板',
+        },
+        done ? '已复制' : `复制${label || ''}`,
+      );
+    }
+
+    function Stat({ label, value }) {
+      return h(
+        'div',
+        { style: S.stat },
+        h('div', { style: S.statLabel }, label),
+        h('div', { style: S.statValue }, value),
+      );
+    }
+
+    function shortLocator(loc) {
+      const s = String(loc || '');
+      const i = s.lastIndexOf('\\');
+      return i >= 0 ? s.slice(i + 1) : s;
+    }
+
+    function FindingCard({ f }) {
+      const sev = sevOf(f.severity);
+      const first = (f.evidence || [])[0];
+      const sess = f.scope ? String(f.scope).replace(/^session-/, '').slice(0, 12) : '';
+      return h(
+        'div',
+        { style: Object.assign({}, S.card, { borderLeft: `3px solid ${sev.accent}` }) },
+        h(
+          'div',
+          { style: S.cardHead },
+          h('span', { style: Object.assign({}, S.badge, { color: sev.color, background: sev.bg }) }, f.severity),
+          h('span', { style: S.cardTitle }, `${f.id} ${f.title}`),
+          sess ? h('span', { style: S.cardScope }, sess) : null,
+        ),
+        h(
+          'div',
+          { style: S.cardBody },
+          h('div', null, f.summary),
+          first
+            ? h(
+                'div',
+                { style: S.row },
+                h('span', { style: S.rowLabel }, '证据'),
+                h(
+                  'span',
+                  { style: S.rowText },
+                  h('code', { style: { fontFamily: V.mono, fontSize: '12px' } }, shortLocator(first.locator)),
+                ),
+              )
+            : null,
+          f.impact
+            ? h(
+                'div',
+                { style: S.row },
+                h('span', { style: S.rowLabel }, '影响'),
+                h('span', { style: S.rowText }, f.impact),
+              )
+            : null,
+          h(
+            'div',
+            { style: S.row },
+            h('span', { style: S.rowLabel }, '置信度'),
+            h('span', { style: S.rowText }, f.confidence >= 0.8 ? '高' : '中'),
+          ),
+          first
+            ? h(
+                'div',
+                { style: S.codeBox },
+                h('span', { style: S.codeText }, first.locator),
+                h(CopyButton, { text: first.locator, label: '定位符' }),
+              )
+            : null,
+        ),
+      );
+    }
 
     // -----------------------------------------------------------------------
     // 侧边栏按钮
@@ -170,7 +386,7 @@ window.__ModuleLoader__.load({
           onClick: () => setOpen(!isOpen),
         },
         h('span', { 'aria-hidden': 'true' }, '🩺'),
-        h('span', null, '体检'),
+        h('span', null, isOpen ? '收起体检' : '体检'),
       );
     }
 
@@ -179,13 +395,13 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     function ClinicPanel() {
       const isOpen = useOpen();
-      const [state, setState] = React.useState({ status: 'idle', report: '', error: '' });
+      const [state, setState] = React.useState({ status: 'idle', data: null, text: '', error: '' });
       const [nonce, setNonce] = React.useState(0);
 
       React.useEffect(() => {
         if (!isOpen) return undefined;
         let cancelled = false;
-        setState((s) => ({ ...s, status: 'loading' }));
+        setState((s) => ({ status: 'loading', data: s.data, text: s.text, error: '' }));
 
         const req =
           typeof fetch === 'function'
@@ -194,14 +410,17 @@ window.__ModuleLoader__.load({
 
         req
           .then((r) => r.json())
-          .then((data) => {
+          .then((d) => {
             if (cancelled) return;
-            if (data && data.ok) setState({ status: 'ok', report: data.report || '', error: '' });
-            else setState({ status: 'error', report: '', error: (data && data.error) || '未知错误' });
+            if (d && d.ok) {
+              setState({ status: 'ok', data: d.data || null, text: d.report || '', error: '' });
+            } else {
+              setState({ status: 'error', data: null, text: '', error: (d && d.error) || '未知错误' });
+            }
           })
           .catch((e) => {
             if (cancelled) return;
-            setState({ status: 'error', report: '', error: String((e && e.message) || e) });
+            setState({ status: 'error', data: null, text: '', error: String((e && e.message) || e) });
           });
 
         return () => {
@@ -210,25 +429,89 @@ window.__ModuleLoader__.load({
       }, [isOpen, nonce]);
 
       if (!isOpen) return null;
-
       const close = () => setOpen(false);
 
-      const body =
-        state.status === 'loading'
-          ? h('div', { style: S.hint }, '正在读取本地会话并生成体检报告…')
-          : state.status === 'error'
+      let body;
+      if (state.status === 'loading') {
+        body = h('div', { style: S.note }, '正在读取本地会话并生成体检报告…');
+      } else if (state.status === 'error') {
+        body = h(
+          'div',
+          { style: S.note },
+          h('div', null, '未能取得报告：', h('code', { style: { fontFamily: V.mono } }, state.error)),
+          h(
+            'div',
+            { style: { marginTop: '10px' } },
+            '若提示服务不可用，说明宿主未挂载 webServer 服务；',
+            '此时仍可在会话里直接说「体检一下」，由模型调用工具产出报告。',
+          ),
+        );
+      } else if (!state.data) {
+        body = h(
+          'pre',
+          { style: { margin: 0, fontFamily: V.mono, fontSize: '12px', lineHeight: '1.7', whiteSpace: 'pre-wrap' } },
+          state.text,
+        );
+      } else {
+        const hd = state.data.header;
+        body = h(
+          'div',
+          null,
+          h(
+            'div',
+            { style: S.statsWrap },
+            h(Stat, { label: '会话', value: String(hd.sessions) }),
+            h(Stat, { label: '工具调用', value: String(hd.toolCalls) }),
+            h(Stat, { label: '错误率', value: `${(hd.errorRate * 100).toFixed(1)}%` }),
+            h(Stat, { label: 'input', value: hd.inputTokens.toLocaleString() }),
+            h(Stat, { label: 'output', value: hd.outputTokens.toLocaleString() }),
+            h(Stat, { label: 'cacheRead', value: hd.cacheReadTokens.toLocaleString() }),
+          ),
+
+          state.data.findings.length === 0
             ? h(
                 'div',
-                { style: S.hint },
-                h('div', null, '未能取得报告：', h('code', { style: S.code }, state.error)),
+                null,
+                h('h3', { style: S.sectionTitle }, '未发现问题'),
+                h('div', { style: S.empty }, '所有已实现的指标均未检测到异常。'),
+              )
+            : h(
+                'div',
+                null,
+                h('h3', { style: S.sectionTitle }, `发现 ${state.data.findings.length} 个问题（按严重度排序）`),
+                state.data.findings.map((f) => h(FindingCard, { key: `${f.id}|${f.scope || ''}`, f })),
+              ),
+
+          h('h3', { style: S.sectionTitle }, '未检测到异常的维度'),
+          state.data.notDetected.length
+            ? h(
+                'div',
+                { style: S.chips },
+                state.data.notDetected.map((d) => h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
+              )
+            : h('div', { style: S.empty }, '（无）'),
+
+          state.data.notImplemented.length
+            ? h(
+                'div',
+                { style: { marginTop: '16px' } },
+                h('h3', { style: S.sectionTitle }, '未实现的维度（骨架阶段）'),
                 h(
                   'div',
-                  { style: { marginTop: '10px' } },
-                  '若提示服务不可用，说明宿主未挂载 webServer 服务；',
-                  '此时仍可在会话里直接说「体检一下」，由模型调用工具产出报告。',
+                  { style: S.chips },
+                  state.data.notImplemented.map((d) => h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
                 ),
               )
-            : h('pre', { style: S.pre }, state.report);
+            : null,
+
+          h(
+            'div',
+            { style: S.footer },
+            h('span', null, state.data.footer),
+            h('span', null, `平台 ${hd.platform}`),
+          ),
+        );
+      }
 
       return h(
         'div',
@@ -245,15 +528,9 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.header },
             h('span', { style: S.title }, 'Agent 体检报告'),
-            h('span', { style: S.sub }, '只读 · 零外发'),
-            state.status === 'ok'
-              ? h('button', { type: 'button', style: S.refresh, onClick: () => setNonce((n) => n + 1) }, '刷新')
-              : null,
-            h(
-              'button',
-              { type: 'button', style: S.close, onClick: close, 'aria-label': '关闭' },
-              '×',
-            ),
+            h('span', { style: S.tag }, '只读 · 零外发'),
+            h('button', { type: 'button', style: S.iconBtn, onClick: () => setNonce((n) => n + 1) }, '刷新'),
+            h('button', { type: 'button', style: S.closeBtn, onClick: close, 'aria-label': '关闭' }, '×'),
           ),
           h('div', { style: S.body }, body),
         ),
@@ -280,11 +557,9 @@ window.__ModuleLoader__.load({
         try {
           slots.inject(slotName, () => slots.register({ name: slotName, id }, Component));
         } catch (e) {
-          // 无法在这里访问宿主 console 之外的通道，吞掉但保留信息在闭包中
           errors.push(`${label}(${slotName})：${String((e && e.message) || e)}`);
         }
       }
-      // eslint-disable-next-line no-console
       if (typeof console !== 'undefined' && errors.length) {
         console.warn('[agent-clinic] 部分 UI 未挂载：', errors.join('; '));
       }

@@ -1,8 +1,11 @@
 /**
- * L5 输出层 —— 体检报告生成
+ * L5 输出层 —— 体检报告
  *
- * 被 CLI（run.sh report）与 DSH 插件（agent_clinic_report）共用，
- * 避免两份真相。
+ * 单一事实来源：`analyze()` 只产结构化数据，再由两个渲染器分别输出：
+ *   - `buildReport()` → Markdown 文本（CLI / 模型工具用）
+ *   - 客户端 `plugin/client.js` → 结构化 UI（DSH 面板用）
+ *
+ * 这样避免「解析 markdown 文本」这种脆弱做法，也让面板能做出真正的卡片式 UI。
  *
  * 硬性要求（任务书 §5.3 / docs/report-format.md）：
  *   1. 每个结论必须带证据定位与复核命令
@@ -15,6 +18,51 @@ import { runDiagnostics } from './diagnostics/index.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
+ * 产出结构化体检结果。
+ *
+ * @param {{scan:object, summary:object}} ctx
+ * @param {Object} [opts]
+ * @returns {Object} 结构化结果
+ */
+export function analyze(ctx, opts = {}) {
+  const g = ctx.summary.global;
+  const { findings, notDetected, notImplemented } = runDiagnostics(ctx, opts);
+
+  return {
+    header: {
+      platform: 'DSH',
+      sessions: g.sessions ?? 0,
+      lines: g.lines ?? 0,
+      toolCalls: g.toolCalls ?? 0,
+      errorRate: g.errorRate ?? 0,
+      inputTokens: g.inputTokens ?? 0,
+      outputTokens: g.outputTokens ?? 0,
+      cacheReadTokens: g.cacheReadTokens ?? 0,
+      cacheWriteTokens: g.cacheWriteTokens ?? 0,
+      badFrames: g.badFrames ?? 0,
+      badLines: g.badLines ?? 0,
+    },
+    findings: findings.map((f) => ({
+      id: f.id,
+      title: f.title,
+      severity: f.severity,
+      category: f.category,
+      summary: f.summary,
+      scope: f.scope ?? null,
+      confidence: f.confidence,
+      impact: f.impact ?? null,
+      evidence: (f.evidence ?? []).map((e) => ({
+        locator: e.locator,
+        note: e.note ?? null,
+      })),
+    })),
+    notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
+    notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
+    footer: '证据可复核 · 全程本地 · 零外发',
+  };
+}
+
+/**
  * 生成体检报告（Markdown 文本）
  *
  * @param {{scan:object, summary:object}} ctx
@@ -22,33 +70,33 @@ import { num, pct } from './summary.mjs';
  * @returns {string}
  */
 export function buildReport(ctx, opts = {}) {
-  const g = ctx.summary.global;
-  const { findings, notDetected, notImplemented } = runDiagnostics(ctx, opts);
+  const data = analyze(ctx, opts);
+  const h = data.header;
   const out = [];
   const push = (s = '') => out.push(s);
 
-  push(`## Agent 体检报告（平台：DSH · ${g.sessions} 个会话）`);
+  push(`## Agent 体检报告（平台：${h.platform} · ${h.sessions} 个会话）`);
   push();
   push(
-    `扫描概览：${g.sessions} 会话 / ${g.lines} 行 / ${g.toolCalls} 次工具调用 / 错误率 ${pct(g.errorRate)}`,
+    `扫描概览：${h.sessions} 会话 / ${h.lines} 行 / ${h.toolCalls} 次工具调用 / 错误率 ${pct(h.errorRate)}`,
   );
   push(
-    `token：input ${num(g.inputTokens)} · output ${num(g.outputTokens)} · cacheRead ${num(g.cacheReadTokens)}`,
+    `token：input ${num(h.inputTokens)} · output ${num(h.outputTokens)} · cacheRead ${num(h.cacheReadTokens)}`,
   );
-  if (g.badFrames || g.badLines) {
-    push(`⚠ 数据完整性：坏帧 ${g.badFrames} / 坏行 ${g.badLines}`);
+  if (h.badFrames || h.badLines) {
+    push(`⚠ 数据完整性：坏帧 ${h.badFrames} / 坏行 ${h.badLines}`);
   }
   push();
 
-  if (findings.length === 0) {
+  if (data.findings.length === 0) {
     push('### 未发现问题');
     push();
     push('所有已实现的指标均未检测到异常。');
     push();
   } else {
-    push(`### 发现 ${findings.length} 个问题（按严重度排序）`);
+    push(`### 发现 ${data.findings.length} 个问题（按严重度排序）`);
     push();
-    for (const f of findings) {
+    for (const f of data.findings) {
       const sess = String(f.scope ?? '').replace(/^session-/, '').slice(0, 12);
       push(`**[${f.severity}] ${f.id} ${f.title}** —— 会话 ${sess}`);
       push(`- 结论：${f.summary}`);
@@ -64,17 +112,17 @@ export function buildReport(ctx, opts = {}) {
   }
 
   push('### 未检测到异常的维度');
-  push(notDetected.length ? notDetected.map((d) => `${d.id} ${d.title}`).join('、') : '（无）');
+  push(data.notDetected.length ? data.notDetected.map((d) => `${d.id} ${d.title}`).join('、') : '（无）');
   push();
 
-  if (notImplemented.length) {
+  if (data.notImplemented.length) {
     push('### 未实现的维度（骨架阶段）');
-    push(notImplemented.map((d) => `${d.id} ${d.title}`).join('、'));
+    push(data.notImplemented.map((d) => `${d.id} ${d.title}`).join('、'));
     push();
   }
 
   push('---');
-  push('证据可复核 · 全程本地 · 零外发');
+  push(data.footer);
 
   return `${out.join('\n')}\n`;
 }

@@ -367,6 +367,67 @@ process.stdout.write('\n10) 客户端 UI 契约\n');
   }
 }
 
+// --- 11. 宿主 → 客户端数据契约 ---
+process.stdout.write('\n11) 宿主→客户端数据契约\n');
+{
+  const { analyze } = await import('../src/report.mjs');
+  const data = analyze({ scan, summary: summarize(scan) });
+
+  check(
+    'analyze() 返回 header',
+    data.header && typeof data.header.sessions === 'number',
+    `sessions=${data.header?.sessions}`,
+  );
+  check(
+    'header 含面板需要的全部字段',
+    ['sessions', 'toolCalls', 'errorRate', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'platform'].every(
+      (k) => data.header[k] !== undefined,
+    ),
+  );
+  check(
+    'findings 含面板渲染所需字段',
+    data.findings.every(
+      (f) =>
+        f.id && f.title && f.severity && f.summary && Array.isArray(f.evidence) && f.evidence.length > 0,
+    ),
+    `${data.findings.length} 个`,
+  );
+  check(
+    '每条证据都带 locator',
+    data.findings.every((f) => f.evidence.every((e) => typeof e.locator === 'string' && e.locator.includes('#L'))),
+  );
+  check('未检测到的维度有记录', Array.isArray(data.notDetected), `${data.notDetected.length} 项`);
+  check('未实现的维度有记录', Array.isArray(data.notImplemented), `${data.notImplemented.length} 项`);
+
+  // 客户端与宿主各自算错误率 / 千分位会不一致，这里防的是「字段改名」这类回归
+  const jsBad = [];
+  try {
+    const captured = [];
+    globalThis.window = globalThis.window || {};
+    globalThis.window.__ModuleLoader__ = { load: (m) => captured.push(m) };
+    new Function(fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8'))(); // eslint-disable-line no-new-func
+    const ReactStub = {
+      createElement: () => ({}),
+      useState: (i) => [typeof i === 'function' ? i() : i, () => {}],
+      useEffect: () => {},
+      useSyncExternalStore: (s, snap) => snap(),
+    };
+    const mod = captured[0].factory((n) => (n === 'react' ? ReactStub : { jsx: () => ({}) }));
+    // 客户端读取 header.xxx：确认这些键都存在，不会渲染出 undefined
+    const src = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
+    for (const k of ['hd.sessions', 'hd.toolCalls', 'hd.errorRate', 'hd.inputTokens', 'hd.outputTokens', 'hd.cacheReadTokens']) {
+      if (src.includes(k)) {
+        const field = k.split('.')[1];
+        if (data.header[field] === undefined) jsBad.push(field);
+      }
+    }
+    void mod;
+  } catch (e) {
+    jsBad.push(`执行失败：${e.message}`);
+  }
+  check('客户端依赖的 header 字段在 analyze() 中都存在', jsBad.length === 0, jsBad.join(',') || '全部匹配');
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

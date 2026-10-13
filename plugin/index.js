@@ -21,7 +21,7 @@ import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { renderEvidence } from '../src/evidence/index.mjs';
-import { buildReport } from '../src/report.mjs';
+import { buildReport, analyze } from '../src/report.mjs';
 
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
@@ -118,6 +118,16 @@ function runReport(opts = {}) {
   const scan = scanSessions({ dshHome: opts.dshHome });
   const summary = summarize(scan);
   return buildReport({ scan, summary });
+}
+
+/** 结构化体检结果（供客户端面板渲染卡片式 UI，避免解析 markdown 文本） */
+function runAnalyze(opts = {}) {
+  if (!hasZstdSupport()) {
+    throw new Error(`运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）`);
+  }
+  const scan = scanSessions({ dshHome: opts.dshHome });
+  const summary = summarize(scan);
+  return analyze({ scan, summary });
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +251,15 @@ export function apply(ctx, config = {}) {
             res.end(body);
           };
           try {
-            const report = runReport({ dshHome: config.dshHome });
-            send(200, { ok: true, report, generatedAt: new Date().toISOString() });
+            const scan = scanSessions({ dshHome: config.dshHome });
+            const summary = summarize(scan);
+            const ctxReport = { scan, summary };
+            send(200, {
+              ok: true,
+              generatedAt: new Date().toISOString(),
+              report: buildReport(ctxReport),
+              data: analyze(ctxReport),
+            });
           } catch (e) {
             send(500, { ok: false, error: String(e?.message ?? e) });
           }

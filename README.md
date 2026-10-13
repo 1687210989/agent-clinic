@@ -56,7 +56,11 @@ curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/instal
 
 装完对 Agent 说「**体检一下**」即可触发。
 
-> 若 `raw.githubusercontent.com` 访问受限，改用：
+> **镜像备用地址**（中国大陆网络下 jsDelivr 通常更稳）：
+> ```bash
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@main/install.sh | bash
+> ```
+> 若遇到 `curl: (35)` 证书吊销检查错误，加 `--ssl-no-revoke`：
 > ```bash
 > curl -fsSL --ssl-no-revoke https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
 > ```

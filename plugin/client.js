@@ -176,14 +176,12 @@ window.__ModuleLoader__.load({
       },
 
       statsWrap: {
-        display: 'flex',
-        flexWrap: 'wrap',
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(116px, 1fr))',
         gap: '10px',
         marginBottom: '20px',
       },
       stat: {
-        flex: '1 1 128px',
-        minWidth: '118px',
         padding: '10px 12px',
         background: V.bg2,
         borderRadius: '8px',
@@ -243,6 +241,7 @@ window.__ModuleLoader__.load({
         color: V.text2,
       },
       codeText: { flex: '1 1 auto', wordBreak: 'break-all', whiteSpace: 'pre-wrap' },
+      howTo: { marginTop: '6px', fontSize: '11px', color: V.text3, lineHeight: '1.6' },
       copyBtn: {
         flex: '0 0 auto',
         border: `0.5px solid ${V.border2}`,
@@ -391,6 +390,15 @@ window.__ModuleLoader__.load({
                 { style: S.codeBox },
                 h('span', { style: S.codeText }, first.locator),
                 h(CopyButton, { text: first.locator, label: '定位符' }),
+              )
+            : null,
+          first
+            ? h(
+                'div',
+                { style: S.howTo },
+                '复制定位符后，在会话里运行 ',
+                h('code', { style: { fontFamily: V.mono } }, './run.sh show "<定位符>"'),
+                ' 可查看原始记录亲自复核',
               )
             : null,
         ),

@@ -140,6 +140,20 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 **零依赖** —— 不需要 `npm install`，只需要 Node ≥ 22.15（用于原生 zstd 解码）。
 **node 不必在 PATH 上** —— `run.sh` 与 `install.sh` 会自动定位它。
 
+### 更新插件
+
+插件**安装后不会自动更新**。仓库推送新代码后，按下面步骤：
+
+1. 侧边栏 → **插件** → 找到 agent-clinic → **卸载**（会要求确认）
+2. **添加插件** → 重新填 `https://github.com/1687210989/agent-clinic.git` → 安装 → 立即启用
+3. **完全退出 DeepSeek Harness**（从托盘/任务栏退出，不是关窗口）
+4. 重新打开
+
+> ⚠️ **第 3 步不能省。** 插件只在启动时装载，不重启进程里还是旧代码。
+>
+> 面板已内置识别：如果出现「宿主仍是旧版，请完全退出并重启 Harness」的提示条，
+> 就是在告诉你这件事。
+
 ### 两种路径对比
 
 | | Skill | Plugin |

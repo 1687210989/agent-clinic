@@ -26,6 +26,17 @@ import { buildReport, analyze } from '../src/report.mjs';
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
 
+/**
+ * API 版本号，随宿主响应回传。
+ *
+ * 客户端用同一个常量（plugin/client.js 的 CLIENT_VERSION）比对，识别
+ * 「插件文件已更新到磁盘、但 Harness 进程仍跑旧代码」的情况。
+ * 插件只在启动时装载，更新后必须重启才生效；若不显式提示，
+ * 用户只会看到面板内容没变，无法判断该做什么。
+ * 改动 /api/agent-clinic/report 的响应结构时，两边一起 +1。
+ */
+export const API_VERSION = '2';
+
 // ---------------------------------------------------------------------------
 // Config：优先用 schemastery；本地无 peer 时退化为朴素描述，保证可导入
 // ---------------------------------------------------------------------------
@@ -256,6 +267,7 @@ export function apply(ctx, config = {}) {
             const ctxReport = { scan, summary };
             send(200, {
               ok: true,
+              version: API_VERSION,
               generatedAt: new Date().toISOString(),
               report: buildReport(ctxReport),
               data: analyze(ctxReport),

@@ -40,6 +40,16 @@ window.__ModuleLoader__.load({
 
     const REPORT_API = '/api/agent-clinic/report';
 
+    /**
+     * 客户端版本号。宿主在响应里带回同一个值，用于识别
+     * 「客户端已更新、宿主还跑着旧代码」这种静默不一致。
+     *
+     * 这个场景很常见：插件文件更新在磁盘上后，浏览器会立即拿到新
+     * client.js，而宿主半是启动时装入进程的，必须重启才生效。
+     * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
+     */
+    const CLIENT_VERSION = '2';
+
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
     // -----------------------------------------------------------------------
@@ -258,6 +268,21 @@ window.__ModuleLoader__.load({
 
       note: { fontSize: '12px', color: V.text2, lineHeight: '1.75' },
       empty: { fontSize: '13px', color: V.text2, padding: '8px 0' },
+      banner: {
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: '10px',
+        padding: '10px 12px',
+        marginBottom: '16px',
+        background: 'rgba(239,159,39,0.12)',
+        border: '0.5px solid rgba(239,159,39,0.45)',
+        borderRadius: '8px',
+        fontSize: '12px',
+        lineHeight: '1.7',
+        color: '#854F0B',
+      },
+      bannerTitle: { fontWeight: 500, marginBottom: '2px' },
+      bannerIcon: { flex: '0 0 auto', fontSize: '14px', lineHeight: '1.4' },
       footer: {
         marginTop: '22px',
         paddingTop: '14px',
@@ -413,7 +438,13 @@ window.__ModuleLoader__.load({
           .then((d) => {
             if (cancelled) return;
             if (d && d.ok) {
-              setState({ status: 'ok', data: d.data || null, text: d.report || '', error: '' });
+              setState({
+                status: 'ok',
+                data: d.data || null,
+                text: d.report || '',
+                error: '',
+                version: d.version,
+              });
             } else {
               setState({ status: 'error', data: null, text: '', error: (d && d.error) || '未知错误' });
             }
@@ -454,9 +485,28 @@ window.__ModuleLoader__.load({
         );
       } else {
         const hd = state.data.header;
+        const stale = state.version !== CLIENT_VERSION;
         body = h(
           'div',
           null,
+          stale
+            ? h(
+                'div',
+                { style: S.banner },
+                h('span', { style: S.bannerIcon }, '⚠'),
+                h(
+                  'div',
+                  null,
+                  h('div', { style: S.bannerTitle }, '宿主仍是旧版，请完全退出并重启 Harness'),
+                  h(
+                    'div',
+                    null,
+                    '插件文件已更新到磁盘，但 Harness 进程里加载的还是旧代码。',
+                    '请从任务栏/托盘完全退出 DeepSeek Harness（不是关窗口）后重新打开。',
+                  ),
+                ),
+              )
+            : null,
           h(
             'div',
             { style: S.statsWrap },

@@ -405,7 +405,8 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
     const captured = [];
     globalThis.window = globalThis.window || {};
     globalThis.window.__ModuleLoader__ = { load: (m) => captured.push(m) };
-    new Function(fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8'))(); // eslint-disable-line no-new-func
+    const clientSrc = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
+    new Function(clientSrc)(); // eslint-disable-line no-new-func
     const ReactStub = {
       createElement: () => ({}),
       useState: (i) => [typeof i === 'function' ? i() : i, () => {}],
@@ -413,10 +414,8 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
       useSyncExternalStore: (s, snap) => snap(),
     };
     const mod = captured[0].factory((n) => (n === 'react' ? ReactStub : { jsx: () => ({}) }));
-    // 客户端读取 header.xxx：确认这些键都存在，不会渲染出 undefined
-    const src = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
     for (const k of ['hd.sessions', 'hd.toolCalls', 'hd.errorRate', 'hd.inputTokens', 'hd.outputTokens', 'hd.cacheReadTokens']) {
-      if (src.includes(k)) {
+      if (clientSrc.includes(k)) {
         const field = k.split('.')[1];
         if (data.header[field] === undefined) jsBad.push(field);
       }
@@ -426,6 +425,20 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
     jsBad.push(`执行失败：${e.message}`);
   }
   check('客户端依赖的 header 字段在 analyze() 中都存在', jsBad.length === 0, jsBad.join(',') || '全部匹配');
+
+  // 版本号：用于识别「磁盘已更新、进程仍跑旧代码」，两侧必须一致
+  const { API_VERSION } = await import('../plugin/index.js');
+  const clientSrcForVer = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
+  const m = clientSrcForVer.match(/const CLIENT_VERSION = '([^']+)'/);
+  check(
+    '宿主 API_VERSION 与客户端 CLIENT_VERSION 一致',
+    Boolean(m) && m[1] === API_VERSION,
+    `宿主=${API_VERSION} 客户端=${m ? m[1] : '未找到'}`,
+  );
+  check(
+    '路由响应携带 version',
+    /version:\s*API_VERSION/.test(fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8')),
+  );
 }
 
 // --- 汇总 ---

@@ -41,22 +41,48 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 
 ## 安装
 
-本仓库支持**两种安装路径**，同一个仓库两种用法：
-
-### 路径 A · 作为 Skill（推荐，零改动）
+### 一行安装（推荐）
 
 ```bash
-git clone https://github.com/<owner>/agent-clinic.git
-cd agent-clinic
-./install.sh          # 自动检测平台并部署到 ~/.agents/skills/
+curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
 ```
 
-装完对 DSH 说「**体检一下**」即可触发。
+**无需克隆、无需选位置、无需回答任何提问** —— 脚本会自动：
 
-### 路径 B · 作为 DSH Plugin（原生工具）
+1. 从 GitHub 拉取源码
+2. 定位可用的 Node（**不要求 node 在 PATH 上**）
+3. 自动检测已安装的平台（DSH / WorkBuddy）并部署到对应 skills 目录
+4. 已存在旧版本时先备份，绝不直接删除
+
+装完对 Agent 说「**体检一下**」即可触发。
+
+> 若 `raw.githubusercontent.com` 访问受限，改用：
+> ```bash
+> curl -fsSL --ssl-no-revoke https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
+> ```
+
+### 克隆安装（想读源码时）
 
 ```bash
-dsh plugin --profile <profile> add -w git+https://github.com/<owner>/agent-clinic.git
+git clone https://github.com/1687210989/agent-clinic.git
+cd agent-clinic
+./install.sh
+```
+
+### 常用参数
+
+```bash
+./install.sh --dry-run          # 预览，不写入
+./install.sh --dsh-only         # 只装 DSH
+./install.sh --workbuddy-only   # 只装 WorkBuddy
+./install.sh --target ~/my/skills   # 指定目录
+./install.sh --ref v0.1.0       # 指定版本
+```
+
+### 另：作为 DSH Plugin（原生工具）
+
+```bash
+dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-clinic.git
 # 装完必须重启 Harness —— 插件只在启动时装载
 ```
 

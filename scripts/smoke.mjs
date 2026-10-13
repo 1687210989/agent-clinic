@@ -281,6 +281,92 @@ if (diag) {
   );
 }
 
+// --- 10. 客户端 UI 契约 ---
+process.stdout.write('\n10) 客户端 UI 契约\n');
+{
+  const clientPath = new URL('../plugin/client.js', import.meta.url);
+  const src = fs.readFileSync(clientPath, 'utf8');
+
+  const captured = [];
+  globalThis.window = globalThis.window || {};
+  globalThis.window.__ModuleLoader__ = { load: (m) => captured.push(m) };
+
+  // 用 new Function 执行入口文件，捕获 window.__ModuleLoader__.load 的参数
+  try {
+    new Function(src)(); // eslint-disable-line no-new-func
+  } catch (e) {
+    check('客户端入口可执行', false, e.message);
+  }
+
+  check('客户端入口调用 __ModuleLoader__.load', captured.length === 1, `捕获 ${captured.length} 个模块`);
+  check('模块 id 与包名一致', captured[0] && captured[0].id === 'agent-clinic', captured[0]?.id);
+
+  if (captured[0]) {
+    const ReactStub = {
+      createElement: () => ({}),
+      useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+      useEffect: () => {},
+      useSyncExternalStore: (sub, snap) => snap(),
+    };
+    let mod = null;
+    try {
+      mod = captured[0].factory((name) => {
+        if (name === 'react') return ReactStub;
+        if (name === 'react/jsx-runtime') return { jsx: () => ({}), jsxs: () => ({}) };
+        throw new Error(`未知模块：${name}`);
+      });
+    } catch (e) {
+      check('客户端工厂可调用', false, e.message);
+    }
+
+    if (mod) {
+      check('客户端工厂可调用', true);
+      check('导出 inject', Array.isArray(mod.inject), JSON.stringify(mod.inject));
+      check('导出 apply 函数', typeof mod.apply === 'function');
+
+      // 模拟 slots 服务，验证两处 UI 挂载
+      // 真实契约：slots.inject(name, cb) 会在插槽可用时回调 cb，
+      // 由 cb 内部调用 slots.register({name, id}, Component)
+      const registered = [];
+      const injected = [];
+      const slots = {
+        inject: (name, cb) => {
+          injected.push(name);
+          cb();
+        },
+        register: (opts) => registered.push(`${opts.name}→${opts.id}`),
+      };
+      const ctx = { get: (n) => (n === 'slots' ? slots : undefined) };
+      let threw = '';
+      try {
+        await mod.apply(ctx);
+      } catch (e) {
+        threw = e.message;
+      }
+      check('apply() 不抛异常', !threw, threw);
+      check('注册了侧边栏入口', registered.some((r) => r.startsWith('sidebar.footer.action')), registered.join(', '));
+      check('注册了报告面板', registered.some((r) => r.startsWith('shell.overlay')), registered.join(', '));
+      check('两处插槽都已 inject', injected.length === 2, injected.join(', '));
+
+      // 容错：插槽未声明时 register 会抛错，apply 不应把错误传出去
+      // （宿主只在启动时装载客户端模块，抛错就意味着整个 UI 挂载失败，没有第二次机会）
+      const badSlots = {
+        inject: (name, cb) => cb(),
+        register: () => {
+          throw new Error('slot 未声明');
+        },
+      };
+      let guarded = true;
+      try {
+        await mod.apply({ get: (n) => (n === 'slots' ? badSlots : undefined) });
+      } catch {
+        guarded = false;
+      }
+      check('插槽不可用时 apply 不抛错（容错生效）', guarded);
+    }
+  }
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

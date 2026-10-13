@@ -116,10 +116,26 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 # 装完必须重启 Harness —— 插件只在启动时装载
 ```
 
-注册两个模型可见工具：`agent_clinic_scan`、`agent_clinic_show`。
+注册两个模型可见工具：`agent_clinic_scan`、`agent_clinic_show`、`agent_clinic_report`。
 
 > ⚠️ `-w`（workspace root）是必须的，漏掉会报 `ERR_PNPM_ADDING_TO_ROOT`。
 > 完整发布与安装步骤见 [DSH 插件指南](../agent-clinic-DSH插件发布与安装指南.md)。
+
+### 插件带 UI 面板
+
+作为 DSH 插件安装后，会在侧边栏底部多一个**「🩺 体检」按钮**，点开是**全页面板**，直接展示体检报告（含问题、证据定位、未检测到的维度）。
+
+| 位置 | 插槽 | 内容 |
+|---|---|---|
+| 侧边栏底部 | `sidebar.footer.action` | 「🩺 体检」入口按钮 |
+| 覆盖层面板 | `shell.overlay` | 体检报告全文 + 刷新 / 关闭 |
+
+数据流：面板 → `fetch('/api/agent-clinic/report')` → 宿主半路由 → `buildReport()` → JSON。
+该路由**只读本地会话，零外发**。
+
+> **纯 JavaScript 手写，无构建步骤** —— 客户端入口 `plugin/client.js` 通过
+> `window.__ModuleLoader__.load` 注册，React 取自宿主浏览器模块表。
+> 各插槽注册彼此隔离：某个插槽不可用时不会拖垮整个插件。
 
 **零依赖** —— 不需要 `npm install`，只需要 Node ≥ 22.15（用于原生 zstd 解码）。
 **node 不必在 PATH 上** —— `run.sh` 与 `install.sh` 会自动定位它。

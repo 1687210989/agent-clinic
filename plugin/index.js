@@ -209,4 +209,48 @@ export function apply(ctx, config = {}) {
 
     log('已注册工具：agent_clinic_scan、agent_clinic_show、agent_clinic_report');
   });
+
+  // -------------------------------------------------------------------------
+  // 宿主 HTTP 路由 —— 供客户端面板取数
+  //
+  // 客户端「浏览器半」没有 fetch/setTimeout 等浏览器全局；但静态客户端模块
+  // （/plugins/<包名>/client.js）是普通浏览器模块，可用 fetch。因此这里注册
+  // 一个只读路由，面板通过它拿到报告文本。
+  //
+  // 路由 API 实测确认（@deepseek-ai/dsh-host-webserver）：
+  //   ctx.webServer.register({ kind: 'exact'|'prefix', path, handler }) → disposer
+  //   handler 拥有完整响应生命周期；重复 (kind,path) 会抛错。
+  // -------------------------------------------------------------------------
+  try {
+    ctx.inject(['webServer'], (wsCtx) => {
+      const ws = typeof wsCtx.get === 'function' ? wsCtx.get('webServer') : wsCtx.webServer;
+      if (!ws || typeof ws.register !== 'function') {
+        log('webServer 服务不可用，跳过面板路由注册（面板将显示提示）');
+        return;
+      }
+      ws.register({
+        kind: 'exact',
+        path: '/api/agent-clinic/report',
+        handler: async (_req, res) => {
+          const send = (code, payload) => {
+            const body = JSON.stringify(payload);
+            res.writeHead(code, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            });
+            res.end(body);
+          };
+          try {
+            const report = runReport({ dshHome: config.dshHome });
+            send(200, { ok: true, report, generatedAt: new Date().toISOString() });
+          } catch (e) {
+            send(500, { ok: false, error: String(e?.message ?? e) });
+          }
+        },
+      });
+      log('已注册只读路由 /api/agent-clinic/report');
+    });
+  } catch (e) {
+    log(`路由注册失败（不影响其他功能）：${e?.message ?? e}`);
+  }
 }

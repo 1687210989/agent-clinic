@@ -21,6 +21,7 @@ import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { renderEvidence } from '../src/evidence/index.mjs';
+import { buildReport } from '../src/report.mjs';
 
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
@@ -110,6 +111,15 @@ function runShow(locator, context = 2) {
   }
 }
 
+function runReport(opts = {}) {
+  if (!hasZstdSupport()) {
+    return `运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）。`;
+  }
+  const scan = scanSessions({ dshHome: opts.dshHome });
+  const summary = summarize(scan);
+  return buildReport({ scan, summary });
+}
+
 // ---------------------------------------------------------------------------
 // 插件主体
 // ---------------------------------------------------------------------------
@@ -182,6 +192,21 @@ export function apply(ctx, config = {}) {
       }),
     );
 
-    log('已注册工具：agent_clinic_scan、agent_clinic_show');
+    toolCtx.tools.register(
+      defineTool({
+        name: 'agent_clinic_report',
+        description:
+          '生成 Agent 使用体检报告：诊断体验问题（死循环、反复失败、冗余重复调用等），每个结论附可复核的证据定位。只读，零外发。',
+        parameters: {
+          dsh_home: { type: 'string' },
+        },
+        output: TEXT_OUTPUT,
+        execute(args) {
+          return Promise.resolve(runReport({ dshHome: args?.dsh_home ?? config.dshHome }));
+        },
+      }),
+    );
+
+    log('已注册工具：agent_clinic_scan、agent_clinic_show、agent_clinic_report');
   });
 }

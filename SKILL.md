@@ -19,9 +19,9 @@ license: MIT
 
 ## 触发后做什么
 
-1. **扫描**：运行 `./run.sh scan`，读取 `~/.dsh/sessions/`（只读）
-2. **诊断**：运行 `./run.sh diagnose`，逐项判定指标
-3. **输出报告**：按 `docs/report-format.md` 的格式输出
+1. **出报告**：运行 `./run.sh report`，得到带证据的体检报告
+2. **复核**：对报告里的任一结论，用 `./run.sh show "<定位符>"` 展开原始记录亲眼确认
+3. **只报事实**：没有检测到问题的维度必须显式说明，不要编造问题
 
 ## 硬性约束
 
@@ -48,15 +48,19 @@ license: MIT
 统一用 `./run.sh`（自动定位 node，无需 node 在 PATH）：
 
 ```bash
+./run.sh report                  # 体检报告（推荐入口）
 ./run.sh scan                    # 扫描概览
-./run.sh diagnose                # 运行诊断
-./run.sh show "<file>#L<n>"      # 展开证据
-./run.sh report                  # 输出体检报告
-./scripts/smoke.sh               # 自检（26 项）
+./run.sh diagnose                # 只跑诊断，不生成完整报告
+./run.sh show "<file>#L<n>"      # 展开证据，复核结论
+./scripts/smoke.sh               # 自检（33 项）
 ```
 
-若环境中 node 已在 PATH 上，也可直接：
+## 已实现的诊断指标
 
-```bash
-node src/cli.mjs scan
-```
+| ID | 名称 | 判定 |
+|---|---|---|
+| E1 | 死循环 | 同工具 + 同参数 + 同错误，重复 ≥3 次 |
+| E2 | 反复失败 | 会话工具错误率 > 30%（样本 ≥10 次调用） |
+| E5 | 冗余重复调用 | 同工具 + 同参数 + 无错误，重复 ≥3 次 |
+
+> 其余指标（C1/C2/A1/A2 等）尚在骨架阶段，报告中会明确列为「未实现」，不会假装全知。

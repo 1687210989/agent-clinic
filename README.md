@@ -29,13 +29,37 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | 统一事件模型 | ✅ 可用 |
 | 聚合统计 | ✅ 可用 |
 | 证据层 `show` | ✅ 可用 |
-| **DSH 插件脚手架** | 🚧 契约已验证，待真实 DSH 加载 |
-| 诊断指标 E1 / E2 | 🚧 进行中 |
-| 体检报告 | ⏳ 待实现 |
+| **诊断指标 E1 / E2 / E5** | ✅ **可用** |
+| **体检报告 `report`** | ✅ **可用** |
+| DSH 插件脚手架 | 🚧 契约已验证，待真实 DSH 加载 |
 | 处方匹配 | ⏳ 待实现 |
+| C1 / C2 / A1 / A2 等指标 | ⏳ 待实现 |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**当前版本是 M1 骨架**，`scan` 与 `show` 已可实际使用；冒烟测试 **26/26 通过**（`node scripts/smoke.mjs`）。
+**M1 最小闭环已打通**：`./run.sh report` 可产出带可复核证据的体检报告；冒烟测试 **33/33 通过**。
+
+```
+$ ./run.sh report
+## Agent 体检报告（平台：DSH · 5 个会话）
+
+扫描概览：5 会话 / 1016 行 / 220 次工具调用 / 错误率 7.3%
+token：input 422,404 · output 112,503 · cacheRead 6,454,656
+
+### 发现 1 个问题（按严重度排序）
+
+**[中] E5 冗余重复调用** —— 会话 32fd3d17-6ab
+- 结论：list_agents 用完全相同的参数成功调用了 4 次（可省 3 次）
+- 证据定位：…/session.v4.jsonl.zstd#L182
+- 复核命令：./run.sh show "…/session.v4.jsonl.zstd#L182"
+- 影响估算：约 3 次冗余调用，每次都要重新消耗 token
+- 置信度：中
+
+### 未检测到异常的维度
+E1 死循环、E2 反复失败
+
+### 未实现的维度（骨架阶段）
+C1 token 消耗过快、C2 上下文膨胀、A1 MCP 闲置、A2 skill 闲置
+```
 
 ---
 
@@ -114,10 +138,11 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ## 使用
 
 ```bash
-./run.sh scan                                        # 扫描并输出概览
+./run.sh report      # 体检报告（推荐入口，同时写入 agent-clinic-report.md）
+./run.sh scan        # 扫描概览
+./run.sh diagnose    # 只跑诊断
 ./run.sh show "~/.dsh/sessions/<...>/session.v4.jsonl.zstd#L101-L108"   # 展开证据
-./run.sh diagnose                                    # 运行诊断
-./scripts/smoke.sh                                   # 自检（26 项）
+./scripts/smoke.sh   # 自检（33 项）
 ```
 
 > **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm / volta / fnm / Program Files）。
@@ -191,7 +216,7 @@ DSH 会话文件是**多帧 zstd 拼接**（单个文件实测含 60~233 个帧�
 
 ## 路线图
 
-- **M1**（进行中）DSH 解码 + E1/E2 + 证据层 + 报告
+- **M1** ✅ DSH 解码 + E1/E2/E5 诊断 + 证据层 + 体检报告（最小闭环已打通）
 - M2 扩展 C1/C2/A1/A2
 - M3 处方池 + 四重过滤 + 反馈闭环
 - M4 体检报告卡片（可分享）

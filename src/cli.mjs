@@ -12,6 +12,7 @@
  * 只读、零外发、零依赖。
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { scanSessions, resolveSessionsRoot } from './adapters/dsh.mjs';
@@ -19,6 +20,7 @@ import { summarize, topTools, num, pct } from './summary.mjs';
 import { hasZstdSupport } from './adapters/zstd-frames.mjs';
 import { renderEvidence } from './evidence/index.mjs';
 import { runDiagnostics } from './diagnostics/index.mjs';
+import { buildReport } from './report.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? 'help';
@@ -112,24 +114,36 @@ function doDiagnose() {
   envCheck();
   const scan = scanSessions({});
   const summary = summarize(scan);
-  const { findings, notDetected, notImplemented } = runDiagnostics(summary);
+  const { findings, notDetected, notImplemented } = runDiagnostics({ scan, summary });
 
-  process.stdout.write('运行诊断…\n');
+  process.stdout.write('运行诊断…\n\n');
   process.stdout.write(`发现 ${findings.length} 个问题\n`);
+  for (const f of findings) {
+    process.stdout.write(`  [${f.severity}] ${f.id} ${f.title} —— ${f.summary}\n`);
+  }
   if (notDetected.length) {
-    process.stdout.write(`未检测到异常：${notDetected.map((d) => d.id).join('、') || '（无）'}\n`);
+    process.stdout.write(`\n未检测到异常：${notDetected.map((d) => d.id).join('、') || '（无）'}\n`);
   }
   if (notImplemented.length) {
-    process.stdout.write(
-      `未实现（骨架阶段）：${notImplemented.map((d) => d.id).join('、')}\n`,
-    );
+    process.stdout.write(`未实现：${notImplemented.map((d) => d.id).join('、')}\n`);
   }
 }
 
 function doReport() {
   envCheck();
-  process.stdout.write('体检报告：M1 Step 5 待实现。\n');
-  process.stdout.write('当前可用：agent-clinic scan / show / diagnose\n');
+  const scan = scanSessions({});
+  const summary = summarize(scan);
+  const text = buildReport({ scan, summary });
+
+  process.stdout.write(text);
+
+  const reportPath = path.resolve(process.cwd(), 'agent-clinic-report.md');
+  try {
+    fs.writeFileSync(reportPath, text, 'utf8');
+    process.stdout.write(`\n报告已写入：${reportPath}\n`);
+  } catch (e) {
+    process.stdout.write(`\n（写入报告文件失败：${e.message}）\n`);
+  }
 }
 
 function doHelp() {

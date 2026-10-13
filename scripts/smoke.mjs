@@ -200,6 +200,87 @@ if (pluginOk) {
   }
 }
 
+// --- 9. 诊断层 ---
+process.stdout.write('\n9) 诊断层\n');
+const { runDiagnostics, REGISTRY, SEVERITY } = await import('../src/diagnostics/index.mjs');
+
+let diag = null;
+try {
+  diag = runDiagnostics({ scan, summary: summarize(scan) });
+} catch (e) {
+  check('runDiagnostics 可执行', false, e.message);
+}
+
+if (diag) {
+  check('runDiagnostics 可执行', true, `发现 ${diag.findings.length} 个问题`);
+  check(
+    'findings 结构完整',
+    diag.findings.every(
+      (f) =>
+        f.id &&
+        f.title &&
+        f.severity &&
+        f.category &&
+        f.summary &&
+        Array.isArray(f.evidence) &&
+        f.evidence.length > 0 &&
+        f.evidence.every((e) => typeof e.locator === 'string' && e.locator.includes('#L')),
+    ),
+  );
+  check(
+    '每个 finding 都带可定位证据',
+    diag.findings.every((f) => f.evidence.some((e) => e.locator.includes('#L'))),
+  );
+  check(
+    '按严重度排序',
+    diag.findings.every((f, i, a) => {
+      if (i === 0) return true;
+      const ord = { [SEVERITY.HIGH]: 0, [SEVERITY.MID]: 1, [SEVERITY.LOW]: 2 };
+      return (ord[a[i - 1].severity] ?? 9) <= (ord[f.severity] ?? 9);
+    }),
+  );
+  check(
+    '未检测到异常的维度已显式记录',
+    Array.isArray(diag.notDetected) && diag.notImplemented.length >= 0,
+    `未异常 ${diag.notDetected.length} 项 / 未实现 ${diag.notImplemented.length} 项`,
+  );
+  check(
+    '已实现指标与注册表一致',
+    REGISTRY.filter((m) => m.implemented).every((m) => typeof m.detect === 'function'),
+    `已实现 ${REGISTRY.filter((m) => m.implemented).map((m) => m.id).join('、')}`,
+  );
+
+  // 防误报：构造「参数有变化的 3 次失败」，必须不被 E1 判为死循环
+  const fakeSession = {
+    sessionId: 'smoke-e1-guard',
+    events: [],
+  };
+  for (let i = 0; i < 3; i++) {
+    const callId = `c${i}`;
+    fakeSession.events.push({
+      kind: KIND.TOOL_CALL,
+      tool_name: 'fake_tool',
+      tool_args_hash: `hash-${i}`, // 参数不同
+      tool_call_id: callId,
+      locator: `/fake/session.v4.jsonl.zstd#L${100 + i}`,
+    });
+    fakeSession.events.push({
+      kind: KIND.TOOL_RESULT,
+      tool_call_id: callId,
+      is_error: true,
+      locator: `/fake/session.v4.jsonl.zstd#L${100 + i}`,
+    });
+  }
+  const guardDiag = runDiagnostics({
+    scan: { sessions: [fakeSession] },
+    summary: { global: {} },
+  });
+  check(
+    'E1 不误报「参数有变化的试错」',
+    !guardDiag.findings.some((f) => f.id === 'E1'),
+  );
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

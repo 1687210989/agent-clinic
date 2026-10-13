@@ -85,13 +85,18 @@ say ""
 copy_payload() {
   local dest="$1"
   mkdir -p "$dest"
-  cp "$SRC_DIR/SKILL.md"      "$dest/" 2>/dev/null || true
-  cp "$SRC_DIR/package.json"  "$dest/" 2>/dev/null || true
-  cp "$SRC_DIR/README.md"     "$dest/" 2>/dev/null || true
-  cp "$SRC_DIR/LICENSE"       "$dest/" 2>/dev/null || true
-  rm -rf "$dest/src" "$dest/docs"
-  cp -R "$SRC_DIR/src"  "$dest/src"
-  cp -R "$SRC_DIR/docs" "$dest/docs"
+  # 顶层文件
+  cp "$SRC_DIR/SKILL.md"         "$dest/" 2>/dev/null || true
+  cp "$SRC_DIR/package.json"     "$dest/" 2>/dev/null || true
+  cp "$SRC_DIR/README.md"        "$dest/" 2>/dev/null || true
+  cp "$SRC_DIR/LICENSE"          "$dest/" 2>/dev/null || true
+  cp "$SRC_DIR/cordis.patch.yml" "$dest/" 2>/dev/null || true
+  # 目录：完整拷贝，保证安装 = 仓库完整副本（冒烟测试可自检通过）
+  rm -rf "$dest/src" "$dest/docs" "$dest/scripts" "$dest/plugin"
+  cp -R "$SRC_DIR/src"     "$dest/src"
+  cp -R "$SRC_DIR/docs"    "$dest/docs"
+  cp -R "$SRC_DIR/scripts" "$dest/scripts" 2>/dev/null || true
+  cp -R "$SRC_DIR/plugin"  "$dest/plugin"  2>/dev/null || true
 }
 
 for target in "${TARGETS[@]}"; do

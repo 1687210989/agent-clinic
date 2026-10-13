@@ -19,8 +19,8 @@ license: MIT
 
 ## 触发后做什么
 
-1. **扫描**：运行 `node src/cli.mjs scan`，读取 `~/.dsh/sessions/`（只读）
-2. **诊断**：运行 `node src/cli.mjs diagnose`，逐项判定指标
+1. **扫描**：运行 `./run.sh scan`，读取 `~/.dsh/sessions/`（只读）
+2. **诊断**：运行 `./run.sh diagnose`，逐项判定指标
 3. **输出报告**：按 `docs/report-format.md` 的格式输出
 
 ## 硬性约束
@@ -39,13 +39,24 @@ license: MIT
 ## 环境要求
 
 - Node ≥ 22.15（原生 zstd 解码）
+- **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm/volta/fnm 等）
+- 若自动定位失败，可用 `AGENT_CLINIC_NODE=/path/to/node` 显式指定
 - 缺依赖时必须**明确报错**，绝不静默跳过数据
 
 ## 命令
 
+统一用 `./run.sh`（自动定位 node，无需 node 在 PATH）：
+
 ```bash
-node src/cli.mjs scan                    # 扫描概览
-node src/cli.mjs diagnose                # 运行诊断
-node src/cli.mjs show "<file>#L<n>"      # 展开证据
-node src/cli.mjs report                  # 输出体检报告
+./run.sh scan                    # 扫描概览
+./run.sh diagnose                # 运行诊断
+./run.sh show "<file>#L<n>"      # 展开证据
+./run.sh report                  # 输出体检报告
+./scripts/smoke.sh               # 自检（26 项）
+```
+
+若环境中 node 已在 PATH 上，也可直接：
+
+```bash
+node src/cli.mjs scan
 ```

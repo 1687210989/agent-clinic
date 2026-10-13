@@ -31,26 +31,34 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 err()  { printf '  \033[31m✗\033[0m %s\n' "$*" >&2; }
 
 # ---------------------------------------------------------------------------
-# 前置检查
+# 前置检查 —— 用定位器找 node，不假设它在 PATH 上
 # ---------------------------------------------------------------------------
 say ""
 say "agent-clinic 安装程序"
 say "====================="
 say ""
 
-if ! command -v node >/dev/null 2>&1; then
-  err "未找到 node。本技能需要 Node >= 22.15.0（用于原生 zstd 解码）。"
+NODE_BIN="$(bash "$SRC_DIR/scripts/find-node.sh" 2>/dev/null)" || NODE_BIN=""
+
+if [ -z "$NODE_BIN" ]; then
+  err "未找到可用的 Node.js（需要 >= 22.15.0）"
+  say ""
+  say "  本技能用 Node 的原生 zstd 解码读取 DSH 会话文件，无法绕过。"
+  say "  已自动搜索 PATH、~/.workbuddy-ai/binaries/node、~/.dsh/dsh-runtimes、"
+  say "  /c/Program Files/nodejs、nvm、volta、fnm 等常见位置，均未命中。"
+  say ""
+  say "  解决办法："
+  say "    1) 安装 Node 22.x LTS 或更高：https://nodejs.org"
+  say "    2) 或显式指定：AGENT_CLINIC_NODE=/path/to/node ./install.sh"
+  say ""
   exit 1
 fi
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-NODE_MINOR="$(node -p 'process.versions.node.split(".")[1]')"
-if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 15 ]; }; then
-  err "Node 版本过低：$(node --version)（需要 >= 22.15.0）"
-  err "zstd 解码依赖 Node 22.15+ 的原生支持，低版本无法运行。"
-  exit 1
+ok "Node $("$NODE_BIN" -p 'process.versions.node')  ($NODE_BIN)"
+
+if [ -n "${AGENT_CLINIC_NODE:-}" ]; then
+  warn "已通过 AGENT_CLINIC_NODE 指定 node；技能运行时会同样使用该变量"
 fi
-ok "Node $(node --version)"
 
 # ---------------------------------------------------------------------------
 # 平台检测
@@ -91,6 +99,7 @@ copy_payload() {
   cp "$SRC_DIR/README.md"        "$dest/" 2>/dev/null || true
   cp "$SRC_DIR/LICENSE"          "$dest/" 2>/dev/null || true
   cp "$SRC_DIR/cordis.patch.yml" "$dest/" 2>/dev/null || true
+  cp "$SRC_DIR/run.sh"           "$dest/" 2>/dev/null || true
   # 目录：完整拷贝，保证安装 = 仓库完整副本（冒烟测试可自检通过）
   rm -rf "$dest/src" "$dest/docs" "$dest/scripts" "$dest/plugin"
   cp -R "$SRC_DIR/src"     "$dest/src"

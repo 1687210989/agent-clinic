@@ -66,6 +66,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/<owner>/agent-clini
 > 完整发布与安装步骤见 [DSH 插件指南](../agent-clinic-DSH插件发布与安装指南.md)。
 
 **零依赖** —— 不需要 `npm install`，只需要 Node ≥ 22.15（用于原生 zstd 解码）。
+**node 不必在 PATH 上** —— `run.sh` 与 `install.sh` 会自动定位它。
 
 ### 两种路径对比
 
@@ -81,12 +82,15 @@ dsh plugin --profile <profile> add -w git+https://github.com/<owner>/agent-clini
 ## 使用
 
 ```bash
-# 扫描并输出概览
-node src/cli.mjs scan
-
-# 展开某条证据（复核用）
-node src/cli.mjs show "~/.dsh/sessions/<...>/session.v4.jsonl.zstd#L101-L108"
+./run.sh scan                                        # 扫描并输出概览
+./run.sh show "~/.dsh/sessions/<...>/session.v4.jsonl.zstd#L101-L108"   # 展开证据
+./run.sh diagnose                                    # 运行诊断
+./scripts/smoke.sh                                   # 自检（26 项）
 ```
+
+> **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm / volta / fnm / Program Files）。
+> 若自动定位失败，用 `AGENT_CLINIC_NODE=/path/to/node ./run.sh scan` 显式指定。
+> 若你环境里 node 已在 PATH 上，也可以直接用 `node src/cli.mjs scan`。
 
 `scan` 输出示例：
 
@@ -141,7 +145,7 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片
 ## 已知限制
 
 - **只支持 DSH v4 会话格式**；v3 / 无压缩格式兼容待验证
-- 需要 Node ≥ 22.15（低版本会明确报错，不会静默跳过数据）
+- 需要 Node ≥ 22.15（低版本会明确报错，不会静默跳过数据）；node 不在 PATH 上也没关系，会自动定位
 - 目前只实现 2 个诊断指标
 - 需要 `~/.agents/skills/` 目录存在（`install.sh` 会自动创建）
 

@@ -20,3 +20,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# 防止误把仓库克隆到自身内部（会产生嵌套 git 仓库）
+/agent-clinic/

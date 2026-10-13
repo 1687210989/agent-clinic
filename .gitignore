@@ -1,0 +1,22 @@
+# 依赖（本项目零运行时依赖，仅防御性忽略）
+node_modules/
+
+# 生成物
+agent-clinic-report.md
+*.report.md
+out/
+dist/
+
+# 状态文件（不应提交）
+.agent-clinic/
+state.json
+
+# 本地探针脚本产物
+probe/out/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

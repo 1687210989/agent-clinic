@@ -1,0 +1,16 @@
+# 统一换行符，避免跨平台问题
+* text=auto
+
+# shell 脚本必须用 LF —— 否则在 Linux/macOS 上会报 "bad interpreter"
+*.sh text eol=lf
+install.sh text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.gif binary
+*.tgz binary
+*.ico binary
+
+# 语言标注（影响 GitHub 统计）
+*.mjs linguist-language=JavaScript

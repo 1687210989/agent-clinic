@@ -1,0 +1,64 @@
+{
+  "name": "agent-clinic",
+  "version": "0.1.0",
+  "description": "Agent 体检诊所 —— 用可复核证据诊断 Agent 使用体验问题，并开出可执行处方",
+  "type": "module",
+  "main": "plugin/index.js",
+  "exports": {
+    ".": "./plugin/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./src/*": "./src/*"
+  },
+  "bin": {
+    "agent-clinic": "./src/cli.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "scan": "node src/cli.mjs scan",
+    "report": "node src/cli.mjs report",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "files": [
+    "plugin",
+    "src",
+    "docs",
+    "scripts",
+    "cordis.patch.yml",
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "install.sh"
+  ],
+  "keywords": [
+    "agent",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "diagnostics",
+    "token-cost",
+    "skill"
+  ],
+  "license": "MIT",
+  "dependencies": {},
+  "private": false
+}

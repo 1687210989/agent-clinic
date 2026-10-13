@@ -1,0 +1,22 @@
+# agent-clinic 的 cordis 补丁层
+#
+# 格式对照真实插件 @shengsheng/dsh-taskboard 的 cordis.patch.yml 确认：
+#   顶层 YAML 数组，元素为 loader patch entry；
+#   `insert` 表示向插件树插入本插件的实例，条目含 id / name / config。
+#   `name` 必须是**包名**（模块说明符），不是插件短名。
+#
+# 本文件由 package.json 的 dsh.bundle.patch 指向，被 Harness 在启动时读取。
+# 用户若要改配置，改这里（或复制到 profiles/<profile>/cordis.patch.yml 覆盖）。
+
+- insert:
+    - id: agent-clinic
+      name: 'agent-clinic'
+      config:
+        # DSH 数据根目录；留空则按 DSH_HOME 环境变量 → ~/.dsh 依次回退
+        dshHome: !!js process.env.DSH_HOME ?? undefined
+        # 单次扫描最多处理的会话数
+        maxSessions: 500
+        # E1 死循环判定：同工具+同参数+同错误 的最少复现次数
+        minRepeatCount: 3
+        # 证据展开时上下各取几行
+        contextLines: 2

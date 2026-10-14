@@ -1763,6 +1763,30 @@ process.stdout.write('\n15) 第二轮评估整改护栏\n');
     'F10：README 的隐私措辞是"默认零外发"而不是无限的"零外部请求"',
     !/零外部请求/.test(readmeSrc) && /默认零外发|默认不联网/.test(readmeSrc),
   );
+  // README 是门面：指标数必须与 REGISTRY 联动，否则又会漂移成第二个"文档谎言"
+  check(
+    'README 的"已实现指标数"与 REGISTRY 一致',
+    readmeSrc.includes(`**${regImpl.length} 项已实现**`),
+    `README 应写 **${regImpl.length} 项已实现**`,
+  );
+  check(
+    'README 的指标表覆盖全部已实现指标',
+    regImpl.every((id) => new RegExp(`^\\| ${id} \\|`, 'm').test(readmeSrc)),
+    regImpl.filter((id) => !new RegExp(`^\\| ${id} \\|`, 'm').test(readmeSrc)).join(',') || '全覆盖',
+  );
+  // 我本人踩过：示例块里嵌了 ```yaml，外层却用 ``` 导致代码块被提前截断 —— 加个护栏
+  const fenceBug = (() => {
+    const lines = readmeSrc.split(/\r?\n/);
+    let fence = null;
+    for (const l of lines) {
+      const m = l.match(/^(`{3,})/);
+      if (!m) continue;
+      if (!fence) fence = { ticks: m[1].length };
+      else if (m[1].length >= fence.ticks && l.trim() === m[1]) fence = null;
+    }
+    return fence;
+  })();
+  check('README 的代码块全部闭合（示例报告含 yaml 子块，需用 4 反引号外层）', !fenceBug);
 
   // F4：目录读不了不能伪装成"没有会话"
   const { scanSessions: scanWith } = await import('../src/adapters/dsh.mjs');

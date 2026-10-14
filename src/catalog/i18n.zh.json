@@ -158,5 +158,56 @@
   },
   "@morlay/dsh-agent-instructions-as-prompt": {
     "summary": "@deepseek-ai/dsh-agent-instructions 的分支：把工作区指令基线作为提示词投递。"
+  },
+  "sage-mem": {
+    "summary": "基于文件的 DSH 记忆插件：跨会话记忆存成纯 Markdown 文件，带记忆星图视图、类型/标签筛选、检索别名，以及可选手动或定时的 autodream 记忆整理。"
+  },
+  "dsh-tavern": {
+    "summary": "DeepSeek Tavern —— DSH 角色扮演插件：角色卡、世界设定书、预设、记忆、关系与剧情选项；另配套 dsh-muv-engine 与 dsh-muv-table 才能获得状态栏、剧情选项与变量表。"
+  },
+  "@aident-ai/cli": {
+    "summary": "Aident 命令行：统一访问 Loadout 集成、Playbook 自动化、Intern 工具与 Aident 平台。"
+  },
+  "@try-works/dsh-memory": {
+    "summary": "由 Git 托管、按工作区分层的 DSH 记忆（全局层 + 每个工作区一层）。"
+  },
+  "@ljwei-stak/dsh-mv-cli": {
+    "summary": "DSH 桌面版音乐视频播放器：把文字、Canvas2D 与 WebGL2 三维场景同步到自备音频；沙箱化的作品包可含授权的双语歌词、时间轴与视觉素材。插件代码 MIT 协议。"
+  },
+  "@a9i5k4/dsh-auto-memory": {
+    "summary": "DSH 的主动联想记忆：模型开口前先注入回忆、三层自动整理、技能结晶，以及 Astra 式的上下文管理（交接台账、PLAN 白板、水位感知）；本地优先。"
+  },
+  "@sparkelf/dsh-plugin-backup": {
+    "summary": "全栈的用户数据备份插件（Plus）：宿主侧流式归档路由 + 设置界面。"
+  },
+  "dsh-workbuddy-console": {
+    "summary": "DSH 的 WorkBuddy 控制台，一个插件搞定：账号/模型池、带输入框内技能选择器的技能市场、批量签到、待办任务、会话健康、历史与额度用量；中英双语。"
+  },
+  "codeburn": {
+    "summary": "看清 AI 花费花在哪：按任务、工具、模型与项目拆账。"
+  },
+  "@openviking/dsh-memory-plugin": {
+    "summary": "OpenViking 为 DSH 提供的记忆与上下文打包。"
+  },
+  "@henri-ralmeida/prumo": {
+    "summary": "证据驱动的任务编排（PO First），支持 Claude Code、Kiro、Codex、DSH、Antigravity、OpenCode、Grok Build、GitHub Copilot、Hermes Agent 与 OpenClaw。"
+  },
+  "@linxin666/dsh-session-archive": {
+    "summary": "DSH Web 的会话归档管理：集中清点、批量归档/恢复、级联物理删除，以及可选的自动归档 / 自动清理策略。"
+  },
+  "@linxin666/dsh-usage": {
+    "summary": "dsh web GUI 的用量统计插件：按提供方查余额与编程套餐额度，配实时 token 用量台账，侧边栏设置行上方还有一张紧凑的价格速览卡。"
+  },
+  "@linxin666/dsh-client-ui-task-board": {
+    "summary": "DSH Web GUI 的任务板（宿主为权威）：真实会话执行、宿主 cron 定时，以及可选的跨平台休眠保护；无需改动 DSH 源码即可挂载。"
+  },
+  "@linxin666/dsh-client-ui-skill-explorer": {
+    "summary": "DSH 技能中心：在 Web 面板里按来源（内置 / 项目 / 用户 / 自定义 / 运行时）浏览已加载技能，启用或停用，新建与删除。"
+  },
+  "dsh-context": {
+    "summary": "DSH 的上下文洞察与管理插件：提供上下文仪表盘与 context 命令，用来看清上下文由什么构成、如何演变。"
+  },
+  "@liustack/modlens": {
+    "summary": "给纯文本大模型补上「视觉」的插件，底层调用免费的 Antigravity CLI。"
   }
 }

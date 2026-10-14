@@ -161,11 +161,14 @@ function doCatalogSync() {
 }
 
 function doCatalog() {
-  const { activeCatalog, SNAPSHOT_PATH: snapPath, I18N_PATH: i18nPath } = catalogMod;
+  const { activeCatalog, SNAPSHOT_PATH: snapPath, I18N_PATH: i18nPath, formatHeat, kindLabel } = catalogMod;
   const a = activeCatalog();
   const cjk = /[\u4e00-\u9fff]/;
   const withCaps = a.entries.filter((e) => (e.capabilities ?? []).length);
   const untranslated = withCaps.filter((e) => !cjk.test(e.summary ?? ''));
+  const community = a.entries.filter((e) => kindLabel(e) === '社区插件').length;
+  const bundled = a.entries.filter((e) => kindLabel(e) === '官方内置包').length;
+  const withHeat = a.entries.filter((e) => formatHeat(e)).length;
   process.stdout.write('插件目录\n');
   process.stdout.write(`  总条目：${a.entries.length}\n`);
   process.stdout.write(`  人工核实：${a.sources.curated} 条\n`);
@@ -175,6 +178,8 @@ function doCatalog() {
       (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) +
       '\n',
   );
+  process.stdout.write(`  社区插件 ${community} 条 · 官方内置包 ${bundled} 条（内置包一般不必再装）\n`);
+  process.stdout.write(`  带热度数据：${withHeat} 条（star / 下载量，只用于同分排序）\n`);
   process.stdout.write(
     `  中文简介：${withCaps.length - untranslated.length}/${withCaps.length} 条（可能被推荐的条目）· 覆盖层 ${i18nPath}\n`,
   );
@@ -183,11 +188,15 @@ function doCatalog() {
   }
   const synced = a.entries.filter((e) => e.origin && e.origin !== 'curated');
   if (synced.length) {
-    process.stdout.write('\n  同步条目（前 20）:\n');
-    for (const e of synced.slice(0, 20)) {
+    // 按热度排一下，让"最近热度高 / 较多人推荐"的排前面（与推荐排序同一口径）
+    const ranked = [...synced].sort((x, y) => (y.heat?.stars ?? -1) - (x.heat?.stars ?? -1) || (y.heat?.weeklyDownloads ?? -1) - (x.heat?.weeklyDownloads ?? -1));
+    process.stdout.write('\n  同步条目（热度前 20）:\n');
+    for (const e of ranked.slice(0, 20)) {
       const tag = e.origin === 'github' ? 'gh ' : 'npm';
+      const heat = formatHeat(e);
       process.stdout.write(
-        `    [${tag}] ${e.package}${e.version ? ` v${e.version}` : ''} — ${(e.capabilities ?? []).join('/') || '(未标注能力)'}\n`,
+        `    [${tag}] ${e.package}${e.version ? ` v${e.version}` : ''} — ${(e.capabilities ?? []).join('/') || '(未标注能力)'}` +
+          `${heat ? ` · ${heat}` : ''}\n`,
       );
     }
     process.stdout.write('\n  提示：./run.sh catalog-sync 可更新这份清单\n');

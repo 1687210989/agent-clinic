@@ -164,30 +164,68 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 我事后用 npm registry 核实（v0.2.27、有 `dsh.bundle.patch`、README 自述测试版）
 才写进 `src/catalog/index.mjs`。检索逻辑是真的，目录是手工维护的。
 
-现在目录有**两个来源**，每条都标出处：
+现在目录有**三个来源**，每条都标出处：
 
 | 来源 | 怎么来的 | 本机实测 | 说明 |
 |---|---|---|---|
 | `curated` | 人工核实并写进 `src/catalog/index.mjs` | 5 条 | 读过包文档，带 `targets` 与风险说明 |
-| `npm-registry` | `./run.sh catalog-sync` 检索 npm registry | 59 条 | 从描述/关键词推导能力标签 |
-| `github` | `./run.sh catalog-sync --source github` 核实 GitHub 仓库 | 5 条 | 很多插件只在 GitHub、没发 npm；只核实**仓库存在 + package.json 元数据**，未审阅源码 |
+| `npm-registry` | `./run.sh catalog-sync` 检索 npm registry | 150 条 | 从描述/关键词推导能力标签，带真实下载量 |
+| `github` | `./run.sh catalog-sync --source github` 核实 GitHub 仓库 | 1 条 | 很多插件只在 GitHub、没发 npm；只核实**仓库存在 + package.json 元数据**，未审阅源码 |
+
+### 扩大检索数量（多关键词 + 翻页 + 热度排序）
+
+用户要求：「有什么方法能增加检索到的插件数量，可以从最近热度高的插件，
+或者较多人推荐的插件进行检索」。
+
+- **多路检索**：单条关键词会漏，所以 `NPM_QUERIES` 同时跑
+  `keywords:dsh-plugin`（8444 条）、`keywords:dsh`（10636 条）、
+  `text:deepseek harness plugin`（32 万条，噪音多但能捞到没打关键词的包）
+- **翻页收集**：`--pool`（默认 600）条候选全收进来，再按热度排序取前
+  `--limit`（默认 120）个抓 packument 详情
+- **热度来自真实数据**：npm 侧用搜索接口自带的周/月下载量、被依赖数、
+  popularity 分（`heatOfNpm()`）；GitHub 侧用仓库 star / fork / 最近推送时间。
+  界面与报告都如实显示（`formatHeat()`），**拿不到就返回 null，不编造**
+- **热度不参与打分**：一个插件能不能解决问题，靠的是指标靶子与能力标签；
+  热度只在**分数相同**时决定先看哪个 —— 有断言守住（"高热但不对症依然不推荐"）
+
+### 官方内置包 vs 社区插件
+
+按下载量排序时，`@deepseek-ai/dsh-*` 这些**随 dsh-base 分发的内置包会碾压社区插件**
+（实测周下载 50 万+），把收录名额全占满 —— 目录里于是塞满用户本来就装好了、
+根本不需要再装的东西。所以：
+
+- `isOfficialBundle()` 识别 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*`
+- **抓详情的名额社区优先**（`pickForDetail()`）：社区包先占满，不够才用内置包填
+- 排序上社区插件排在官方内置包前面（`rankKind()`），`kindLabel()` 如实标注
+  「人工核实 / 社区插件 / 官方内置包」
+- 万一内置包进了推荐，报告与面板会附一句：通常已随 dsh-base 挂载，一般不需要再装
 
 ### GitHub 方向（受限网络下的做法）
 
 用户要求：「不能从插件市场检索的话就去 GitHub 上寻找开源的可以解决问题的插件」。
 
 现实约束（本机实测）：`api.github.com`、`github.com/search`、`raw.githubusercontent.com`
-都被 hosts 拦成 127.0.0.1 —— **搜不了**；但 `git` 协议与 `codeload.github.com` 是通的。
-所以 GitHub 方向拆成"发现"与"核实"两步：
+都被 hosts 拦成 127.0.0.1；`git` 协议与 `codeload.github.com` 通。
+**但是**：公共镜像 `gh-proxy.com` 能**原样中继 GitHub API**（`ghfast.top` 403，
+`hub.gitmirror.com` / `api.kkgithub.com` / `bgithub.xyz` 均不可达）——
+所以真正的 GitHub 检索是可用的（`GH_RELAYS` 直连优先，失败逐个试中继）。
 
-1. **发现**：优先 `api.github.com/search/repositories`（没被墙的机器直接可用）；
-   不可用时退回 `scripts/catalog-github-seeds.txt` —— 由联网检索（web_search）得到的
-   候选清单，一行一个 `owner/repo`
-2. **核实**：对每个候选执行 `git ls-remote https://github.com/<owner>/<repo>.git HEAD`
-   证明仓库真实存在，再 `git clone --depth 1 --filter=blob:none --no-checkout` 浅克隆读
-   `package.json`（判定 `dsh.bundle.patch` / `dshhub` 并推导能力）
+做法：
 
-GitHub 条目没有 npm 包可装，安装入口如实写成"按仓库 README 自行安装"，
+1. **发现**：`GH_QUERIES` 五条检索式，既按 star 数（"较多人推荐"）
+   也按最近更新（"最近热度高"）：`topic:dsh-plugin`（1.9 万）、
+   `topic:deepseek-harness`（1.5 万）、`dsh-plugin in:name,description,readme` 等
+2. **相关性过滤**：GitHub 的关键词检索是全文匹配，star 排序头部全是
+   `ollama/ollama`、`avelino/awesome-go` 这类蹭到词的大仓库 ——
+   `isDshRelated()` 先按名字/描述/主题过一遍（实测一次剔除 57 个），宁缺毋滥
+3. **核实**：`/repos/{slug}` 证明存在并取 star/fork/最近推送，`/contents/package.json`
+   读清单判定 `dsh.bundle.patch` / `dshhub` 并推导能力。
+   **API 通道优先、`git` 只做兜底** —— 踩过的坑：受限沙箱里 spawn `git`
+   直接 `EPERM`（piped stdio 打不开命名管道），把 git 放第一步会让整个
+   GitHub 方向全军覆没；现在 API 挂了才退回 `git ls-remote` + 浅克隆
+4. 拿不到 API 时，`scripts/catalog-github-seeds.txt`（6 条人工种子）仍是最后退路
+
+GitHub 条目没有 npm 包可装，安装入口如实写成"按仓库 README 自行安装",
 风险提示明确标注**未审阅源码**。
 
 ### 打分与门槛

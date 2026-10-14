@@ -385,6 +385,53 @@ function findingText(finding) {
 }
 
 /**
+ * 热度：把「较多人推荐」（GitHub star / npm 周下载量）折算成一个可比较的数。
+ *
+ * 契约上的诚实之处：**热度只做同分时的排序参考，不参与打分**——
+ * 一个插件能不能解决问题，靠的是它的指标/能力标签；热度只回答
+ * 「在同样对症的几个插件里，先看哪个」。拿不到热度数据时返回 0，
+ * 不猜测、不编造。
+ */
+export function heatScore(entry) {
+  const h = entry?.heat ?? {};
+  if (typeof h.stars === 'number') return 1000 + Math.min(h.stars, 50000);
+  if (typeof h.weeklyDownloads === 'number') return 500 + Math.min(h.weeklyDownloads, 50000);
+  return 0;
+}
+
+/**
+ * 同分时的排序优先级：人工核实 0 → 社区插件 1 → 官方内置包 2。
+ *
+ * 内置包（`@deepseek-ai/dsh-*`）多半已经随 dsh-base 挂载好了，
+ * 把它们排在社区插件前面等于让用户去看自己已经装过的东西。
+ */
+function rankKind(entry) {
+  if ((entry.origin ?? 'curated') === 'curated') return 0;
+  return entry.kind === 'bundled' ? 2 : 1;
+}
+
+/** 条目种类的中文标注（界面/报告共用；没有 kind 的老条目按时长最长的"第三方"处理） */
+export function kindLabel(entry) {
+  if ((entry?.origin ?? 'curated') === 'curated') return '人工核实';
+  if (entry?.kind === 'bundled') return '官方内置包';
+  return '社区插件';
+}
+
+/** 热度的可读文案（界面/报告都用它，避免两处各写一份口径） */
+export function formatHeat(entry) {
+  const h = entry?.heat;
+  if (!h) return null;
+  const parts = [];
+  if (typeof h.stars === 'number') parts.push(`★ ${h.stars}`);
+  if (typeof h.forks === 'number' && h.forks > 0) parts.push(`fork ${h.forks}`);
+  if (typeof h.weeklyDownloads === 'number') parts.push(`周下载 ${h.weeklyDownloads}`);
+  if (typeof h.monthlyDownloads === 'number') parts.push(`月下载 ${h.monthlyDownloads}`);
+  if (typeof h.dependents === 'number' && h.dependents > 0) parts.push(`被 ${h.dependents} 个包依赖`);
+  if (h.updatedAt) parts.push(`最近更新 ${String(h.updatedAt).slice(0, 10)}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/**
  * 按能力检索目录，为一个 finding 找出相关插件。
  *
  * 打分（可解释，不做黑盒推荐）：
@@ -454,7 +501,15 @@ export function matchPlugins(finding, opts = {}) {
   }
 
   return hits
-    .sort((a, b) => b.score - a.score || String(a.entry.id).localeCompare(String(b.entry.id)))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        // 同分时：人工核实过的优先（我们能担保其行为），再按热度
+        Number((b.origin ?? 'curated') === 'curated') - Number((a.origin ?? 'curated') === 'curated') ||
+        rankKind(a.entry) - rankKind(b.entry) ||
+        heatScore(b.entry) - heatScore(a.entry) ||
+        String(a.entry.id).localeCompare(String(b.entry.id)),
+    )
     .slice(0, limit);
 }
 
@@ -499,6 +554,11 @@ export function searchCatalog(findings, opts = {}) {
           sourceVia: h.entry.source?.via ?? null,
           installed: h.installed,
           score: h.score,
+          heat: h.entry.heat ?? null,
+          heatText: formatHeat(h.entry),
+          summaryLang: h.entry.summaryLang ?? null,
+          kind: h.entry.kind ?? null,
+          kindText: kindLabel(h.entry),
           // 同一个插件命中多个指标时，在这里一次性列全
           findingIds: [f.id],
           reasons: [...h.reasons],
@@ -514,7 +574,14 @@ export function searchCatalog(findings, opts = {}) {
     }
   }
 
-  const recommendations = [...byPackage.values()].sort((a, b) => b.score - a.score);
+  // 排序：先看对症程度（score），同分再看人工核实、社区优先与热度 —— 热度不参与打分
+  const recommendations = [...byPackage.values()].sort(
+    (a, b) =>
+      b.score - a.score ||
+      Number(b.origin === 'curated') - Number(a.origin === 'curated') ||
+      rankKind(a) - rankKind(b) ||
+      heatScore({ heat: b.heat }) - heatScore({ heat: a.heat }),
+  );
 
   return {
     matches,

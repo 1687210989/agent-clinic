@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '12';
+    const CLIENT_VERSION = '13';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -861,6 +861,29 @@ window.__ModuleLoader__.load({
             : hit.origin === 'github'
               ? h('span', { style: { fontSize: '10px', color: V.text3 } }, 'GitHub 核实')
               : null,
+          hit.kindText && hit.kindText !== '人工核实'
+            ? h(
+                'span',
+                {
+                  style: {
+                    fontSize: '10px',
+                    color: V.text3,
+                    border: `0.5px solid ${V.border || 'rgba(127,127,127,0.3)'}`,
+                    borderRadius: '999px',
+                    padding: '0 6px',
+                    flex: '0 0 auto',
+                  },
+                },
+                hit.kindText,
+              )
+            : null,
+          hit.heatText
+            ? h(
+                'span',
+                { style: { fontSize: '10px', color: V.text3, flex: '0 0 auto' }, title: '热度只用于同分排序，不参与对症打分' },
+                hit.heatText,
+              )
+            : null,
           h('span', { style: { flex: '1 1 auto' } }),
           h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
@@ -906,6 +929,13 @@ window.__ModuleLoader__.load({
                     h('span', { style: S.codeText }, hit.install.cli),
                     h(CopyButton, { text: hit.install.cli, label: '命令' }),
                   )
+                : null,
+              h(MetaRow, { label: '热度', text: hit.heatText }),
+              hit.kindText === '官方内置包'
+                ? h(MetaRow, {
+                    label: '提示',
+                    text: 'DSH 官方内置包，通常已随 dsh-base 挂载，一般不需要再装（可当配置参考）',
+                  })
                 : null,
               h(MetaRow, { label: '风险', text: hit.risk }),
               h(MetaRow, { label: '核实', text: [hit.verifiedAt, hit.repo].filter(Boolean).join(' · ') }),

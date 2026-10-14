@@ -1103,6 +1103,95 @@ process.stdout.write('\n12d) 插件目录（npm 同步 + 去重）\n');
       return t.summaryLang === 'en' && t.summary === 'English only summary.';
     })(),
   );
+
+  // --- 热度检索（用户要求：按"最近热度高 / 较多人推荐"检索）---
+  check(
+    'formatHeat 如实渲染 star / 下载量，缺数据时返回 null（不编造热度）',
+    (() => {
+      const gh = cat.formatHeat({ heat: { stars: 42, forks: 3, updatedAt: '2026-10-01T00:00:00Z' } });
+      const npm = cat.formatHeat({ heat: { weeklyDownloads: 27764 } });
+      return (
+        gh === '★ 42 · fork 3 · 最近更新 2026-10-01' &&
+        npm === '周下载 27764' &&
+        cat.formatHeat({}) === null &&
+        cat.formatHeat({ heat: {} }) === null
+      );
+    })(),
+  );
+  check(
+    '热度只做同分 tiebreak，不参与打分：高热但不对症的插件依然不推荐',
+    (() => {
+      const hot = {
+        id: 'npm:hot-but-useless',
+        package: 'hot-but-useless',
+        summary: '很热但与问题无关',
+        targets: [],
+        capabilities: [],
+        keywords: [],
+        heat: { weeklyDownloads: 999999 },
+        origin: 'npm-registry',
+      };
+      return cat.matchPlugins(
+        { id: 'E5', title: '冗余重复调用', summary: '同参数重复调用', category: 'E' },
+        { catalog: [hot], installed: [] },
+      ).length === 0;
+    })(),
+  );
+  check(
+    '同分时社区插件排在官方内置包前面（内置包多半已随 dsh-base 挂载）',
+    (() => {
+      const base = {
+        targets: ['C1'],
+        capabilities: ['token-saving'],
+        keywords: [],
+        origin: 'npm-registry',
+        summary: 'x',
+      };
+      const bundled = { ...base, id: 'npm:@deepseek-ai/dsh-x', package: '@deepseek-ai/dsh-x', kind: 'bundled' };
+      const community = { ...base, id: 'npm:community-x', package: 'community-x', kind: 'community' };
+      const hits = cat.matchPlugins(
+        { id: 'C1', title: 'token 消耗过快', summary: 'token 花得快', category: 'C' },
+        // 故意把内置包放前面，检验排序是否真的会翻过来
+        { catalog: [bundled, community], installed: [] },
+      );
+      return hits.length === 2 && hits[0].entry.kind === 'community';
+    })(),
+  );
+  check(
+    'kindLabel 如实区分人工核实 / 社区插件 / 官方内置包',
+    cat.kindLabel({ origin: 'curated' }) === '人工核实' &&
+      cat.kindLabel({ origin: 'npm-registry', kind: 'bundled' }) === '官方内置包' &&
+      cat.kindLabel({ origin: 'npm-registry', kind: 'community' }) === '社区插件',
+  );
+
+  check(
+    '官方内置包识别：@deepseek-ai/dsh 与 @deepseek-ai/dsh-* 都算，社区包不算',
+    syncMod.isOfficialBundle('@deepseek-ai/dsh') &&
+      syncMod.isOfficialBundle('@deepseek-ai/dsh-compaction-basic') &&
+      !syncMod.isOfficialBundle('@deepseek-ai/dshmarket-ui') &&
+      !syncMod.isOfficialBundle('dshmarket'),
+  );
+  check(
+    '抓详情名额社区优先：内置包下载量再高也填不满结果',
+    (() => {
+      const cands = [
+        { name: '@deepseek-ai/dsh-a' },
+        { name: '@deepseek-ai/dsh-b' },
+        { name: 'community-1' },
+        { name: 'community-2' },
+      ];
+      const picked = syncMod.pickForDetail(cands, 3);
+      return picked.length === 3 && picked.filter((p) => !syncMod.isOfficialBundle(p.name)).length === 2;
+    })(),
+  );
+  check(
+    'GitHub 相关性过滤：ollama / awesome-go 这类蹭词大仓库会被剔除，真 dsh 仓库留下',
+    !syncMod.isDshRelated({ slug: 'ollama/ollama', description: 'Get up and running with large language models.', topics: ['llm'] }) &&
+      !syncMod.isDshRelated({ slug: 'avelino/awesome-go', description: 'A curated list of awesome Go frameworks.', topics: ['awesome-list'] }) &&
+      syncMod.isDshRelated({ slug: 'dsh-market/dsh-market', description: 'DSH plugin market', topics: ['dsh-plugin'] }) &&
+      syncMod.isDshRelated({ slug: 'x/y', description: 'A DeepSeek Harness plugin', topics: [] }) &&
+      syncMod.isDshRelated({ slug: 'x/z', description: 'whatever', topics: ['dsh-plugin'] }),
+  );
 }
 
 // --- 13. 全维度覆盖与误报防护 ---

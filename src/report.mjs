@@ -311,6 +311,11 @@ export function analyze(ctx, opts = {}) {
         sourceVia: r.sourceVia,
         installed: r.installed,
         score: r.score,
+        // 热度（star / 下载量）：只用于同分排序与展示，不参与对症打分
+        heat: r.heat ?? null,
+        heatText: r.heatText ?? null,
+        kind: r.kind ?? null,
+        kindText: r.kindText ?? null,
         findingIds: r.findingIds,
         reasons: r.reasons,
       })),
@@ -489,11 +494,16 @@ export function buildReport(ctx, opts = {}) {
       );
     }
     push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，**装过的不再推荐**。');
+    push('> 热度（star / 下载量）只用于同分时排序与展示，**不参与对症打分**。');
     push();
     for (const h of data.catalog.recommendations) {
       const originLabel =
         h.origin === 'github' ? ' · GitHub 核实' : h.origin === 'npm-registry' ? ' · 来自 npm 同步' : ' · 人工核实';
       push(`- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}${originLabel}）`);
+      if (h.heatText) push(`  - 热度：${h.heatText}`);
+      if (h.kindText === '官方内置包') {
+        push('  - 提示：这是 DSH 官方内置包，通常已随 dsh-base 挂载，一般不需要再装（可当配置参考）');
+      }
       push(`  - 命中指标：${(h.findingIds ?? []).join(' / ')}`);
       push(`  - 能力：${(h.capabilities ?? []).join(' / ') || '(目录未标注)'}`);
       push(`  - 作用：${h.summary}${h.summaryLang === 'en' ? '（英文原文）' : ''}`);

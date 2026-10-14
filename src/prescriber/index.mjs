@@ -86,6 +86,83 @@ export function selfJustify(prescription, problemId) {
 
 const q = (v) => `'${String(v)}'`;
 
+/**
+ * 构造「具体怎么做」的分步指引。
+ *
+ * 用户反馈：「图一虽然给出建议，但是用户不知道具体操作步骤」、
+ * 「图二给出命令，命令具体在哪里输入使用给出具体的」。
+ * 所以每条处方都必须能展开成一串**照着做就行**的步骤，而不是一句结论。
+ *
+ * 配置 / 命令 / 插件 / 设置四类在这里按 action 生成（要带上真实文件路径）；
+ * 行为类由 remedies.mjs 自带 steps。
+ */
+function buildSteps(remedy, finding, ctx, action) {
+  if (Array.isArray(remedy.steps)) return remedy.steps;
+  if (typeof remedy.steps === 'function') return remedy.steps(finding, ctx, action);
+
+  const snap = ctx.config ?? null;
+  const verify = remedy.verify
+    ? `验证：${remedy.verify}`
+    : '验证：重跑 ./run.sh report，看这条指标是否还命中。';
+
+  // --- 改配置：打开文件 → 定位 → 替换/追加 → 保存 → 生效 → 验证 ---
+  if (remedy.kind === REMEDY_KIND.CONFIG && remedy.row) {
+    const file = action?.file || '~/.dsh/profiles/<profile>/cordis.patch.yml';
+    const exists = snap?.patchExists;
+    return [
+      `用任意文本编辑器打开这个文件：${file}` +
+        (exists
+          ? ''
+          : '　—— 该文件当前不存在，按同样路径新建一个即可（目录 ~/.dsh/profiles/desktop/ 已存在）'),
+      `在文件里搜索这一行：- id: ${remedy.row.id}`,
+      '分两种情况：① 搜到了 → 用下面的 YAML 片段把它**整段替换**（profile patch 是「整体替换」这一行的 config，没变的键也要一起写进去，缩进保持 2 空格）；② 没搜到 → 把片段**追加到文件末尾**',
+      '保存文件。profile 配置默认会热重载；若行为没有变化，完全退出 Harness（从托盘退出，不是关窗口）再重新打开',
+      verify,
+    ];
+  }
+
+  // --- 插件：界面安装 → 启用 → 重启 → 验证 ---
+  if (remedy.kind === REMEDY_KIND.PLUGIN) {
+    const pkg = remedy.source?.package;
+    const steps = [
+      '打开侧边栏 → 插件 → 添加插件',
+      `在输入框里粘贴包名并回车：${pkg}`,
+      '点「安装」，装完点「立即启用」',
+      '**完全退出 Harness**（从托盘/任务栏退出，不是关窗口）后重新打开 —— 插件只在启动时装载',
+      verify,
+    ];
+    if (remedy.install?.cli) {
+      steps.push(
+        `（仅自建 profile 适用；桌面版 profile 由应用独占，只能用上面的界面安装）命令行等价写法：${remedy.install.cli}`,
+      );
+    }
+    return steps;
+  }
+
+  // --- 斜杠命令：在输入框里敲 ---
+  if (remedy.kind === REMEDY_KIND.COMMAND) {
+    return [
+      `在 Harness 会话的输入框里直接输入并回车：${remedy.command}`,
+      '注意：Agent 必须处于空闲状态，正在执行时会被拒绝',
+      '该命令不接受参数；没有可压缩的历史时它会明确告诉你',
+      verify,
+    ];
+  }
+
+  // --- 设置项：点哪里、改成什么 ---
+  if (remedy.kind === REMEDY_KIND.SETTINGS && remedy.settings) {
+    const kv = Object.entries(remedy.settings.keys).map(([k, v]) => `${k} = ${fmt(v)}`).join('、');
+    return [
+      `打开：${remedy.settings.where}`,
+      `把这几项改成：${kv}`,
+      '保存（用户值会覆盖插件自带的组合配置）',
+      verify,
+    ];
+  }
+
+  return [verify];
+}
+
 /** 找到 finding 的证据定位（第一条） */
 const firstLocator = (f) => f?.evidence?.[0]?.locator ?? null;
 
@@ -138,8 +215,19 @@ export function buildPrescription(remedy, finding, ctx = {}) {
           : '未能读到该行（profile 未找到）';
 
     const snippet = remedy.row ? toPatchSnippet(remedy.row.id, remedy.suggest, remedy.row.name) : null;
+    const action = {
+      type: 'config',
+      file: snap?.patchPath ?? '~/.dsh/profiles/<profile>/cordis.patch.yml',
+      rowId: remedy.row.id,
+      packageName: remedy.row.name,
+      config: remedy.suggest,
+      snippet,
+      note: 'profile patch 按 id 定位、**整体替换**该行的 config，所以片段里要把这一行需要的键写全',
+    };
     return {
       ...base,
+      brief: `${current.join(' · ')} → ${suggest.join(' · ')}`,
+      steps: buildSteps(remedy, finding, ctx, action),
       detail:
         `${remedy.solves}。\n` +
         `当前：${current.join(' · ')}（${origin}）\n` +
@@ -147,26 +235,21 @@ export function buildPrescription(remedy, finding, ctx = {}) {
         (evidence ? `\n为什么是你：${evidence}` : ''),
       command: snippet,
       because: `它解决「${remedy.solves}」，正好对上检测到的 ${finding.id}（${finding.summary}）`,
-      action: {
-        type: 'config',
-        file: snap?.patchPath ?? '~/.dsh/profiles/<profile>/cordis.patch.yml',
-        rowId: remedy.row.id,
-        packageName: remedy.row.name,
-        config: remedy.suggest,
-        snippet,
-        note: 'profile patch 按 id 定位、**整体替换**该行的 config，所以片段里要把这一行需要的键写全',
-      },
+      action,
     };
   }
 
   // --- command ---
   if (remedy.kind === REMEDY_KIND.COMMAND) {
+    const action = { type: 'command', command: remedy.command };
     return {
       ...base,
+      brief: `在会话输入框里输入 ${remedy.command} 并回车`,
+      steps: buildSteps(remedy, finding, ctx, action),
       detail: `${remedy.solves}。${evidence ? `\n为什么是你：${evidence}` : ''}`,
       command: remedy.command,
       because: `它解决「${remedy.solves}」，正好对上检测到的 ${finding.id}（${finding.summary}）`,
-      action: { type: 'command', command: remedy.command },
+      action,
     };
   }
 
@@ -174,8 +257,11 @@ export function buildPrescription(remedy, finding, ctx = {}) {
   if (remedy.kind === REMEDY_KIND.PLUGIN) {
     const gui = remedy.install?.gui ?? null;
     const cli = remedy.install?.cli ?? null;
+    const action = { type: 'plugin', packageName: remedy.source?.package, gui, cli };
     return {
       ...base,
+      brief: `装社区插件 ${remedy.source?.package}（界面：插件 → 添加插件）`,
+      steps: buildSteps(remedy, finding, ctx, action),
       detail:
         `${remedy.solves}。\n` +
         (gui ? `界面安装：${gui}\n` : '') +
@@ -183,15 +269,18 @@ export function buildPrescription(remedy, finding, ctx = {}) {
         (evidence ? `\n为什么是你：${evidence}` : ''),
       command: cli,
       because: `它解决「${remedy.solves}」，正好对上检测到的 ${finding.id}（${finding.summary}）`,
-      action: { type: 'plugin', packageName: remedy.source?.package, gui, cli },
+      action,
     };
   }
 
   // --- settings ---
   if (remedy.kind === REMEDY_KIND.SETTINGS && remedy.settings) {
     const kv = Object.entries(remedy.settings.keys).map(([k, v]) => `${k} = ${fmt(v)}`).join(' · ');
+    const action = { type: 'settings', where: remedy.settings.where, keys: remedy.settings.keys };
     return {
       ...base,
+      brief: `${remedy.settings.where}：${kv}`,
+      steps: buildSteps(remedy, finding, ctx, action),
       detail:
         `${remedy.solves}。\n` +
         `在哪里改：${remedy.settings.where}\n` +
@@ -200,19 +289,34 @@ export function buildPrescription(remedy, finding, ctx = {}) {
         (evidence ? `\n为什么是你：${evidence}` : ''),
       command: null,
       because: `它解决「${remedy.solves}」，正好对上检测到的 ${finding.id}（${finding.summary}）`,
-      action: { type: 'settings', where: remedy.settings.where, keys: remedy.settings.keys },
+      action,
     };
   }
 
   // --- behavior ---
-  const built = typeof remedy.build === 'function' ? remedy.build(finding, ctx) : { detail: remedy.solves, because:'' };
+  const built =
+    typeof remedy.build === 'function'
+      ? remedy.build(finding, ctx)
+      : { detail: remedy.solves, because: '' };
+  const action = { type: 'behavior' };
   return {
     ...base,
+    // 收起时只显示这一行；展开才给完整说明与分步操作
+    brief: built.brief || firstSentence(built.detail ?? remedy.solves),
+    steps: buildSteps(remedy, finding, ctx, action),
     detail: built.detail,
     command: null,
     because: built.because || `针对 ${finding.id}（${finding.summary}）`,
-    action: { type: 'behavior' },
+    action,
   };
+}
+
+/** 取第一句（收起态用），过长则截断 */
+function firstSentence(text) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const m = s.match(/^.*?[。！？；]/);
+  const one = m ? m[0] : s;
+  return one.length > 72 ? `${one.slice(0, 70)}…` : one;
 }
 
 const fmt = (v) => {
@@ -247,8 +351,9 @@ export function prescribeOne(finding, opts = {}) {
   for (const remedy of candidates) {
     const check = selfJustify(remedy, finding.id);
     if (!check.ok) continue;
-    // 当前值已经不弱于建议 → 撤掉这条，绝不为了"有话说"而凑数
-    const skip = typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, finding) : null;
+    // 当前值已经不弱于建议 → 撤掉这条，绝不为了"有话说"而凑数。
+    // 注意：**只有真的读到了配置快照**才做这个否决 —— 读不到配置时不该假装知道当前值。
+    const skip = snap && typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, finding) : null;
     if (skip) continue;
     const built = buildPrescription(remedy, finding, ctx);
     if (rejected.has(built.targetId)) continue;
@@ -261,6 +366,7 @@ export function prescribeOne(finding, opts = {}) {
 export function skippedFor(finding, opts = {}) {
   const snap = (opts.ctx ?? {}).config ?? null;
   const out = [];
+  if (!snap) return out; // 没读到配置就不谈"否决"
   for (const remedy of REMEDIES.filter((r) => r.targets.includes(finding.id))) {
     const skip = typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, finding) : null;
     if (skip) out.push({ id: remedy.id, title: remedy.title, reason: skip });
@@ -345,21 +451,28 @@ export function tokenInventory(opts = {}) {
     if (remedy.kind === REMEDY_KIND.BEHAVIOR) continue; // 清单只列"开关"，不列行为
     if (exclude.has(remedy.id)) continue;
 
-    const skip = typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, { id: remedy.targets[0], summary: '' }) : null;
+    const skip =
+      snap && typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, { id: remedy.targets[0], summary: '' }) : null;
     // 已经被判定为"当前值已足够"的开关，不进清单 —— 列出来只会说一句正确的废话
     if (skip) continue;
 
     if (remedy.kind === REMEDY_KIND.CONFIG && remedy.row) {
       const row = snap?.rows?.[remedy.row.id] ?? null;
+      const action = {
+        type: 'config',
+        file: snap?.patchPath ?? '~/.dsh/profiles/<profile>/cordis.patch.yml',
+        rowId: remedy.row.id,
+      };
       rows.push({
         id: remedy.id,
         kind: remedy.kind,
         kindLabel: KIND_LABEL[remedy.kind],
         title: remedy.title,
         solves: remedy.solves,
+        steps: buildSteps(remedy, { id: remedy.targets[0], summary: '' }, ctx, action),
         rowId: remedy.row.id,
         packageName: remedy.row.name,
-        fileName: snap?.patchPath ?? '~/.dsh/profiles/<profile>/cordis.patch.yml',
+        fileName: action.file,
         current: remedy.suggest
           ? Object.keys(remedy.suggest).map((k) => `${k}=${fmt(row?.config?.[k])}`).join(' · ')
           : null,
@@ -382,6 +495,12 @@ export function tokenInventory(opts = {}) {
         kindLabel: KIND_LABEL[remedy.kind],
         title: remedy.title,
         solves: remedy.solves,
+        steps: buildSteps(
+          remedy,
+          { id: remedy.targets[0], summary: '' },
+          ctx,
+          { type: 'plugin', packageName: remedy.source?.package },
+        ),
         packageName: remedy.source?.package ?? null,
         repo: remedy.source?.repo ?? null,
         install: remedy.install ?? null,

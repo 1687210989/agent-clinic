@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '6';
+    const CLIENT_VERSION = '7';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -523,11 +523,36 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** 分步操作指引（展开后显示的第一块） */
+    function Steps({ steps }) {
+      if (!steps || !steps.length) return null;
+      return h(
+        'div',
+        {
+          style: {
+            marginTop: '8px',
+            padding: '10px 12px',
+            borderRadius: '8px',
+            background: 'rgba(127,127,127,0.08)',
+          },
+        },
+        h('div', { style: { fontSize: '11px', fontWeight: 500, color: V.text2, marginBottom: '6px' } }, '具体怎么做'),
+        h(
+          'ol',
+          { style: { margin: 0, paddingLeft: '18px', fontSize: '12px', lineHeight: '1.8', color: V.text2 } },
+          steps.map((s, i) => h('li', { key: i, style: { marginBottom: '2px' } }, s)),
+        ),
+      );
+    }
+
+    /** 可折叠处方卡：收起只给一行结论，展开才是全部内容 */
     function RxCard({ rx }) {
+      const [open, setOpen] = React.useState(false);
       const k = KIND_STYLE[rx.kind] || KIND_STYLE.behavior;
       const isConfig = rx.action && rx.action.type === 'config';
       const snippet = isConfig ? rx.action.snippet || rx.command : null;
       const cli = !isConfig ? rx.command : null;
+      const brief = rx.brief || String(rx.detail || '').split('\n')[0];
       return h(
         'div',
         {
@@ -535,13 +560,18 @@ window.__ModuleLoader__.load({
             border: `0.5px solid ${k.bd}`,
             background: k.card,
             borderRadius: '10px',
-            padding: '12px 14px',
+            padding: '10px 14px',
             marginBottom: '10px',
           },
         },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' } },
+          {
+            style: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' },
+            onClick: () => setOpen((o) => !o),
+            role: 'button',
+            'aria-expanded': open,
+          },
           h(
             'span',
             {
@@ -558,48 +588,76 @@ window.__ModuleLoader__.load({
             rx.kindLabel || (rx.kind === 'install' ? '装插件' : '行为建议'),
           ),
           h('span', { style: { fontSize: '13px', fontWeight: 500 } }, rx.title),
-          rx.findingId
-            ? h('span', { style: S.cardScope }, `针对 ${rx.findingId}`)
-            : null,
+          rx.findingId ? h('span', { style: S.cardScope }, `针对 ${rx.findingId}`) : null,
+          h('span', { style: { flex: '1 1 auto' } }),
+          h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
-        String(rx.detail || '')
-          .split('\n')
-          .map((line, i) => h('div', { key: i, style: { fontSize: '13px', lineHeight: '1.65' } }, line)),
-        snippet
+        h(
+          'div',
+          {
+            style: {
+              marginTop: '6px',
+              fontSize: '12px',
+              lineHeight: '1.6',
+              color: V.text2,
+              wordBreak: 'break-word',
+            },
+          },
+          brief,
+        ),
+        open
           ? h(
               'div',
-              { style: { marginTop: '8px' } },
-              isConfig && rx.action?.file
-                ? h('div', { style: S.howTo }, '改这份文件（只给片段，不代你改）：', h('code', { style: { fontFamily: V.mono } }, rx.action.file))
+              null,
+              String(rx.detail || '')
+                .split('\n')
+                .map((line, i) =>
+                  h('div', { key: i, style: { marginTop: '6px', fontSize: '12px', lineHeight: '1.7', color: V.text2 } }, line),
+                ),
+              h(Steps, { steps: rx.steps }),
+              snippet
+                ? h(
+                    'div',
+                    { style: { marginTop: '8px' } },
+                    isConfig && rx.action?.file
+                      ? h(
+                          'div',
+                          { style: S.howTo },
+                          '改这份文件（只给片段，不代你改）：',
+                          h('code', { style: { fontFamily: V.mono } }, rx.action.file),
+                        )
+                      : null,
+                    h(
+                      'div',
+                      { style: S.codeBox },
+                      h('span', { style: S.codeText }, snippet),
+                      h(CopyButton, { text: snippet, label: '片段' }),
+                    ),
+                  )
                 : null,
-              h(
-                'div',
-                { style: S.codeBox },
-                h('span', { style: S.codeText }, snippet),
-                h(CopyButton, { text: snippet, label: '片段' }),
-              ),
+              cli
+                ? h(
+                    'div',
+                    { style: S.codeBox },
+                    h('span', { style: S.codeText }, cli),
+                    h(CopyButton, { text: cli, label: '命令' }),
+                  )
+                : null,
+              rx.action && rx.action.type === 'settings' && rx.action.where
+                ? h('div', { style: S.howTo }, '改哪里：', h('code', { style: { fontFamily: V.mono } }, rx.action.where))
+                : null,
+              h(MetaRow, { label: '依据', text: rx.because }),
+              h(MetaRow, { label: '风险', text: rx.risk }),
+              h(MetaRow, { label: '怎么确认有效', text: rx.verify }),
+              h(MetaRow, { label: '出处', text: [rx.source, rx.sourceVia].filter(Boolean).join(' · ') }),
             )
           : null,
-        cli
-          ? h(
-              'div',
-              { style: S.codeBox },
-              h('span', { style: S.codeText }, cli),
-              h(CopyButton, { text: cli, label: '命令' }),
-            )
-          : null,
-        rx.action && rx.action.type === 'settings' && rx.action.where
-          ? h('div', { style: S.howTo }, '改哪里：', h('code', { style: { fontFamily: V.mono } }, rx.action.where))
-          : null,
-        h(MetaRow, { label: '依据', text: rx.because }),
-        h(MetaRow, { label: '风险', text: rx.risk }),
-        h(MetaRow, { label: '怎么确认有效', text: rx.verify }),
-        h(MetaRow, { label: '出处', text: [rx.source, rx.sourceVia].filter(Boolean).join(' · ') }),
       );
     }
 
-    /** 省 token 开关清单：陈列本机真实存在的旋钮（不是体检结论） */
+    /** 省 token 开关清单：陈列本机真实存在的旋钮（不是体检结论），同样可折叠 */
     function LeverRow({ lv }) {
+      const [open, setOpen] = React.useState(false);
       const k = KIND_STYLE[lv.kind] || KIND_STYLE.config;
       return h(
         'div',
@@ -614,7 +672,12 @@ window.__ModuleLoader__.load({
         },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' } },
+          {
+            style: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' },
+            onClick: () => setOpen((o) => !o),
+            role: 'button',
+            'aria-expanded': open,
+          },
           h(
             'span',
             {
@@ -631,8 +694,9 @@ window.__ModuleLoader__.load({
             lv.kindLabel,
           ),
           h('span', { style: { fontSize: '12px', fontWeight: 500 } }, lv.title),
+          h('span', { style: { flex: '1 1 auto' } }),
+          h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
-        h('div', { style: { fontSize: '12px', color: V.text2, lineHeight: '1.6' } }, lv.solves),
         lv.current || lv.suggested
           ? h(
               'div',
@@ -640,25 +704,33 @@ window.__ModuleLoader__.load({
               `当前 ${lv.current || '(未读到)'} → 建议 ${lv.suggested || '按需'}`,
             )
           : null,
-        lv.snippet
+        open
           ? h(
               'div',
-              { style: S.codeBox },
-              h('span', { style: S.codeText }, lv.snippet),
-              h(CopyButton, { text: lv.snippet, label: '片段' }),
+              null,
+              h('div', { style: { marginTop: '6px', fontSize: '12px', color: V.text2, lineHeight: '1.6' } }, lv.solves),
+              h(Steps, { steps: lv.steps }),
+              lv.snippet
+                ? h(
+                    'div',
+                    { style: S.codeBox },
+                    h('span', { style: S.codeText }, lv.snippet),
+                    h(CopyButton, { text: lv.snippet, label: '片段' }),
+                  )
+                : null,
+              lv.install && lv.install.gui ? h('div', { style: S.howTo }, '安装：', lv.install.gui) : null,
+              lv.install && lv.install.cli
+                ? h(
+                    'div',
+                    { style: S.codeBox },
+                    h('span', { style: S.codeText }, lv.install.cli),
+                    h(CopyButton, { text: lv.install.cli, label: '命令' }),
+                  )
+                : null,
+              h(MetaRow, { label: '风险', text: lv.risk }),
+              h(MetaRow, { label: '出处', text: lv.source }),
             )
           : null,
-        lv.install && lv.install.gui ? h('div', { style: S.howTo }, '安装：', lv.install.gui) : null,
-        lv.install && lv.install.cli
-          ? h(
-              'div',
-              { style: S.codeBox },
-              h('span', { style: S.codeText }, lv.install.cli),
-              h(CopyButton, { text: lv.install.cli, label: '命令' }),
-            )
-          : null,
-        h(MetaRow, { label: '风险', text: lv.risk }),
-        h(MetaRow, { label: '出处', text: lv.source }),
       );
     }
 

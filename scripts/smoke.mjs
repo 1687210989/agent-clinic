@@ -570,6 +570,46 @@ process.stdout.write('\n12) 处方层\n');
     spill ? spill.detail.split('\n')[1] : '(无)',
   );
 
+  // 用户反馈：卡片只给结论、不知道该干什么 → 每条处方都必须能"展开成步骤"
+  const { readEffectiveConfig: readCfg } = await import('../src/config/index.mjs');
+  const synth = { config: readCfg({ HOME: '/nonexistent-home', USERPROFILE: '/nonexistent-home' }), summary: { global: { byTool: { web_fetch: 12 } } } };
+  const allRx = REMEDIES.flatMap((r) =>
+    prescribeOne(
+      { id: r.targets[0], tool: 'list_agents', repeatCount: 4, summary: '合成样本', evidence: [] },
+      { ctx: synth },
+    ),
+  );
+  check(
+    '每条处方都有分步操作指引（展开即照着做）',
+    allRx.length > 0 && allRx.every((r) => Array.isArray(r.steps) && r.steps.length >= 3),
+    allRx.filter((r) => !r.steps || r.steps.length < 3).map((r) => r.targetId).join(', ') ||
+      `${allRx.length} 条均有步骤`,
+  );
+  check(
+    '每条处方都有收起态摘要（一行说明白）',
+    allRx.every((r) => typeof r.brief === 'string' && r.brief.trim().length > 0),
+  );
+  const cfgSteps = (allRx.find((r) => r.targetId === 'spill-tighten') || {}).steps || [];
+  check(
+    '配置处方的步骤带真实文件路径与"整段替换"提醒',
+    cfgSteps.length >= 4 &&
+      cfgSteps.some((s) => /cordis\.patch\.yml/.test(s)) &&
+      cfgSteps.some((s) => /整段替换/.test(s)),
+    cfgSteps[0] ? cfgSteps[0].slice(0, 56) : '(无)',
+  );
+  const plugSteps = (allRx.find((r) => r.targetId === 'plugin-smart-compaction') || {}).steps || [];
+  check(
+    '插件处方的步骤写明界面入口与"完全重启"',
+    plugSteps.some((s) => /插件 → 添加插件/.test(s)) && plugSteps.some((s) => /完全退出/.test(s)),
+    `${plugSteps.length} 步`,
+  );
+  check(
+    '行为处方的步骤是具体动作而非结论',
+    ((allRx.find((r) => r.targetId === 'behavior-solidify-sequence') || {}).steps || []).some((s) =>
+      /SKILL\.md|\.agents\/skills/.test(s),
+    ) === true,
+  );
+
   // 用真实数据跑一遍
   const rx = prescribe(findings_12, { ctx: { config: analysis.config ? { rows: {} } : null } });
   check('处方数量 <= 4（仍不放任刷屏）', rx.length <= 4, `${rx.length} 条`);

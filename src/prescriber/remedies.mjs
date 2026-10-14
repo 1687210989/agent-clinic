@@ -519,7 +519,89 @@ for (const r of REMEDIES) {
   }
 }
 
-/** 会话里调用次数最多的工具（用于让处方"对着你的用法说话"） */function topTool(ctx) {
+/**
+ * 行为处方的**具体操作步骤**。
+ *
+ * 为什么单独一张表：用户反馈"图一虽然给出建议，但是用户不知道具体操作步骤"。
+ * 「把这个序列写成一个小 skill」这种话对老手够用，对新手等于没说 ——
+ * 每条行为处方都要能展开成"先做什么、再做什么"。
+ *
+ * 配置 / 命令 / 插件 / 设置四类处方的步骤是通用的（在 index.mjs 里按 action 生成，
+ * 需要带上真实文件路径），这里只写行为类。
+ */
+const EXPLICIT_STEPS = {
+  'behavior-split-session': [
+    '在当前会话里说一句：「先把进度写成交接文件：当前目标、已完成、已确认的结论、下一步、涉及的文件路径」',
+    '让 Agent 把交接写到工作区的一个固定文件（例如 HANDOFF.md），确认文件真的写出来了',
+    '新开一个会话，把交接文件路径贴进去，让 Agent 先读它再开工',
+    '旧会话不要继续追加需求 —— 留着当存档，需要时用 ./run.sh show 复核',
+  ],
+  'behavior-context-hygiene': [
+    '把反复粘贴的长内容挑出来：项目约定、目录结构、接口文档、术语表',
+    '在项目根目录建文件（例如 AGENTS.md 或 docs/PROJECT.md），把这些内容写进去',
+    '之后每个新会话只贴一行：「先读 docs/PROJECT.md」',
+    '需要新增约定时改文件，不再往对话里贴 —— 同一份内容就不会被反复计费',
+  ],
+  'behavior-new-session': [
+    '打开 ./run.sh scan，找到消息数最多的那个会话',
+    '在这个会话里让 Agent 输出一份交接说明（目标 / 结论 / 未完成 / 关键文件）',
+    '新建会话，把交接内容作为第一条消息发过去，继续未完成的部分',
+    '旧会话封存不删 —— 需要回溯时用证据定位符复核',
+  ],
+  'behavior-reuse-result': [
+    '从报告里给出的重复调用（证据定位可逐条复核）确认是哪几个工具',
+    '把这条写进项目 AGENTS.md：「同一轮里已经取回的结果直接复用，不要重复调用同一工具同一参数」',
+    '需要反复复查的内容，用脚本一次取回并落盘，让 Agent 读文件而不是反复调用工具',
+  ],
+  'behavior-break-loop': [
+    '用 ./run.sh show "<定位符>" 打开那几次失败的原始记录，看错误文本是什么',
+    '按错误类型处理：权限不足 → 授权或换目录；命令不存在 → 换等价命令；网络 → 检查代理',
+    '确认走不通时直接告诉 Agent：「这条路已验证不通，换方案，不要再重试同样的命令」',
+  ],
+  'behavior-error-rate': [
+    '用 ./run.sh show "<定位符>" 抽样 3~5 条失败记录',
+    '把失败原因归类（权限 / 路径 / 依赖缺失 / 网络），找出出现最多的那一类',
+    '修好这一类（例如把常用目录加进可写范围、安装缺失的命令）',
+    '在项目 AGENTS.md 里写明正确的前置命令，避免 Agent 再试探一遍',
+  ],
+  'behavior-danger-confirm': [
+    '用 ./run.sh show "<定位符>" 逐条看命中的高危调用，判断是不是真的必要',
+    '确实需要的：固化成脚本，并在 AGENTS.md 里写明「执行前必须先问我」',
+    '不必要的：在 AGENTS.md 里明确禁止这类操作',
+    '高风险操作保留人工确认，不要为了省事关掉审批',
+  ],
+  'behavior-drop-idle-skill': [
+    '打开 ~/.agents/skills/，确认报告里列出的 skill 目录确实存在',
+    '先备份：把整个目录复制到别处，或重命名加 .bak 后缀，不要直接删',
+    '确认不再需要后再删除；若是插件带的 skill，改 profile 的 dsh.profile.bundles 移除它',
+    '重跑 ./run.sh report，A2 里不应再出现它',
+  ],
+  'behavior-solidify-sequence': [
+    '从证据定位里把这段序列抄下来（哪几个工具、什么参数、什么顺序）',
+    '在 ~/.agents/skills/ 下新建目录，例如 my-sequence/',
+    '写 SKILL.md：frontmatter 必须含 name 与 description，description 要写清"什么时候用"（它决定会不会被触发）',
+    '把固定不变的部分写成脚本放在同目录，SKILL.md 里说明怎么调用',
+    '之后一句话就能触发，不用每次手动带 Agent 走一遍',
+  ],
+  'behavior-subagent-budget': [
+    '翻最近的会话，找出派了子代理但结果没被真正用上的那些',
+    '下次派活时把任务缩到一句话能说清：目标 / 输入文件 / 期望输出格式 / 边界（不许做什么）',
+    '在指令里加上「只回结论，不要回过程」',
+    '能自己做完的小任务不要派子代理 —— 子代理按独立会话全额计费',
+  ],
+  'behavior-todo-update': [
+    '在项目 AGENTS.md 里写明：「每完成一步立刻更新 todo 状态，不要全部做完后一次性回写」',
+    '长任务开始时先让 Agent 用 todo_write 列出计划（3~7 条为宜）',
+    '中途抽看一眼计划：如果工具调用了很多次但状态还停在第一项，当场纠正',
+  ],
+};
+
+for (const r of REMEDIES) {
+  if (EXPLICIT_STEPS[r.id]) r.steps = EXPLICIT_STEPS[r.id];
+}
+
+/** 会话里调用次数最多的工具（用于让处方"对着你的用法说话"） */
+function topTool(ctx) {
   const byTool = ctx?.summary?.global?.byTool ?? null;
   if (!byTool) return [null, 0];
   const sorted = Object.entries(byTool).sort((a, b) => b[1] - a[1]);

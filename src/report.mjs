@@ -200,7 +200,11 @@ export function buildReport(ctx, opts = {}) {
     }
     for (const [i, rx] of data.prescriptions.entries()) {
       push(`${i + 1}. **【${rx.kindLabel}】${rx.title}** —— 针对 ${rx.findingId}`);
-      push(`   - 怎么做：${rx.detail.replace(/\n/g, '\n     ')}`);
+      if (rx.steps?.length) {
+        push('   - 具体怎么做：');
+        for (const [n, s] of rx.steps.entries()) push(`     ${n + 1}. ${s}`);
+      }
+      push(`   - 说明：${rx.detail.replace(/\n/g, '\n     ')}`);
       if (rx.command) {
         const isYaml = rx.action?.type === 'config';
         push(isYaml ? '   - 改成（可整段粘进 profile patch）：' : '   - 命令：');
@@ -227,6 +231,10 @@ export function buildReport(ctx, opts = {}) {
       push(`  - 作用：${lv.solves}`);
       if (lv.current || lv.suggested) {
         push(`  - 当前：${lv.current ?? '(未读到)'} → 建议：${lv.suggested ?? '按需'}`);
+      }
+      if (lv.steps?.length) {
+        push('  - 具体怎么做：');
+        for (const [n, s] of lv.steps.entries()) push(`    ${n + 1}. ${s}`);
       }
       if (lv.snippet) {
         push('  - 片段：');

@@ -22,7 +22,7 @@ import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { renderEvidence } from '../src/evidence/index.mjs';
-import { buildReport, analyze } from '../src/report.mjs';
+import { buildReport, analyze, analyzeLive } from '../src/report.mjs';
 
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
@@ -36,7 +36,13 @@ export const name = 'agent-clinic';
  * 用户只会看到面板内容没变，无法判断该做什么。
  * 改动 /api/agent-clinic/report 的响应结构时，两边一起 +1。
  */
-export const API_VERSION = '13';
+export const API_VERSION = '14';
+
+/**
+ * 面板「联网现搜」的预算上限（毫秒）。
+ * 比 CLI 的默认值小：面板是交互式的，让用户等十几秒不如早点给结果。
+ */
+const LIVE_BUDGET_MS = 10000;
 
 // ---------------------------------------------------------------------------
 // Config：优先用 schemastery；本地无 peer 时退化为朴素描述，保证可导入
@@ -422,6 +428,42 @@ export function apply(ctx, config = {}) {
         },
       });
       log('已注册只读路由 /api/agent-clinic/report');
+      // 「发现问题就联网找方案」的面板入口。
+      // 刻意做成**独立路由**而不是 /report 的一个参数：
+      //   - 面板默认仍然零外发（用户直接看报告不会偷偷联网）
+      //   - 只有点「联网现搜」按钮才会走这里
+      // 只发送问题类型关键词，不发送任何会话内容（响应里的 sent 列出实际检索词）。
+      ws.register({
+        kind: 'exact',
+        path: '/api/agent-clinic/live',
+        handler: async (_req, res) => {
+          const send = (code, payload) => {
+            const body = JSON.stringify(payload);
+            res.writeHead(code, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            });
+            res.end(body);
+          };
+          try {
+            const scan = scanSessions({ dshHome: config.dshHome });
+            const summary = summarize(scan);
+            const { data, live } = await analyzeLive({ scan, summary }, {
+              liveOptions: { budgetMs: LIVE_BUDGET_MS },
+            });
+            send(200, {
+              ok: true,
+              version: API_VERSION,
+              generatedAt: new Date().toISOString(),
+              live,
+              data,
+            });
+          } catch (e) {
+            send(500, { ok: false, error: String(e?.message ?? e) });
+          }
+        },
+      });
+      log('已注册联网现搜路由 /api/agent-clinic/live（仅按钮触发）');
       ws.register({
         kind: 'exact',
         path: '/api/agent-clinic/watch',

@@ -63,6 +63,9 @@ E2 反复失败（错误率 7.3%，低于 30% 阈值）、C1、C2、A1、A2…�
   - 具体怎么做：1. 侧边栏 → 插件 → 添加插件 2. 粘贴 smart-compaction …
 
 ### 插件目录检索（目录 N 条 · 本地已装 M 个）
+> 目录来源：人工核实 X 条 + npm 同步 Y 条 + GitHub 核实 Z 条（同步于 YYYY-MM-DD）
+> **本次联网现搜**：新发现 K 条（共取回 N 条，耗时 X.Xs）
+> 实际发出的检索词（不含任何会话内容）：`npm: keywords:dsh-plugin`、`npm: context compression`、`github: topic:dsh-plugin`
 > 按「能力标签 + 关键词」从已核实的插件目录里检索出来的相关插件 —— 每条都说明**为什么命中**。
 **针对 C1**
 - **Billion Context（ACP 上下文压缩）**（`billion-context-dsh`，未安装）
@@ -70,6 +73,18 @@ E2 反复失败（错误率 7.3%，低于 30% 阈值）、C1、C2、A1、A2…�
   - 命中原因：能力标签「token-saving」对上 C1 需要的能力；你的问题描述里出现了「token」「消耗」
   - 安装：侧边栏 → 插件 → 添加插件 → 粘贴 billion-context-dsh
   - 核实：2026-10-15 · https://github.com/Tyan66666/billion-context-dsh
+- **ranxianglei/billion-context**（`ranxianglei/billion-context` · 本次联网现搜）
+  - 热度：★ 1240 · fork 108 · 最近更新 2026-10-14
+  - 安装：按仓库 README 安装（本工具不代装）—— https://github.com/ranxianglei/billion-context
+
+未联网只读目录时，该段会明确提示：`> 本次未联网（只读本地目录）。要"发现问题就联网找最新插件"：./run.sh report --live`。
+
+页脚会跟着变（不得谎称"零外发"）：
+
+| 场景 | 页脚 |
+|---|---|
+| 默认 / `network: false` | `证据可复核 · 全程本地 · 零外发` |
+| `report --live` | `证据可复核 · 会话数据全程本地 · 插件检索已联网（仅发送问题类型关键词，报告上方列出实际检索词）` |
 
 ### 未实现（骨架阶段）
 A1

@@ -259,14 +259,15 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 数据流：面板 → `fetch('/api/agent-clinic/report')` → 宿主半路由 → `buildReport()` → JSON。
 该路由**只读本地会话，零外发**。
 
-> **纯 JavaScript 手写，无构建步骤** —— 客户端入口 `plugin/client.js` 通过
-> `window.__ModuleLoader__.load` 注册，React 取自宿主浏览器模块表。
-> 各插槽注册彼此隔离：某个插槽不可用时不会拖垮整个插件。
-> 若面板提示「宿主仍是旧版」，说明插件更新后没完全重启 Harness。
+面板右上角还有一个 **「联网现搜插件」** 按钮：点它才会走 `fetch('/api/agent-clinic/live')`，
+按本次发现的问题**当场**去 npm registry 与 GitHub 检索插件（不点就不联网）。
+只发送问题类型关键词（如 `context compression`），**不发送任何会话内容**，
+面板与报告里会列出实际发出的检索词；默认 10s 预算，到点带已有结果返回并标注降级。
 
 > **纯 JavaScript 手写，无构建步骤** —— 客户端入口 `plugin/client.js` 通过
 > `window.__ModuleLoader__.load` 注册，React 取自宿主浏览器模块表。
 > 各插槽注册彼此隔离：某个插槽不可用时不会拖垮整个插件。
+> 若面板提示「宿主仍是旧版」，说明插件更新后没完全重启 Harness。
 
 **零依赖** —— 不需要 `npm install`，只需要 Node ≥ 22.15（用于原生 zstd 解码）。
 **node 不必在 PATH 上** —— `run.sh` 与 `install.sh` 会自动定位它。

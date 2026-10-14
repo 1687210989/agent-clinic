@@ -23,6 +23,8 @@ import { summarize } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { readRange } from '../src/evidence/index.mjs';
 import { KIND } from '../src/adapters/base.mjs';
+import * as liveMod from '../src/catalog/live.mjs';
+import * as reportMod from '../src/report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -1238,6 +1240,64 @@ process.stdout.write('\n13) 全维度覆盖与误报防护\n');
     rAll.findings.every((f) => f.scope === null || (Array.isArray(f.evidence) && f.evidence.length > 0)),
     rAll.findings.map((f) => `${f.id}${f.evidence?.length ? '' : '(全局)'}`).join(' · '),
   );
+}
+
+// --- 14. 联网现搜（只测离线可验证的部分：检索词构造 / 过滤 / 降级） ---
+process.stdout.write('\n14) 联网现搜插件（发现问题 → 联网找方案）\n');
+{
+  // 检索词**只**来自问题类型，不含任何会话内容
+  const q = liveMod.buildLiveQueries([{ id: 'C1' }, { id: 'C3' }, { id: 'E5' }]);
+  check('检索词包含固定广谱式', q.npm.includes('keywords:dsh-plugin'), q.npm.join(' / '));
+  check(
+    'C1（token 消耗）会带出上下文压缩类检索词',
+    q.npm.includes('context compression'),
+    q.npm.join(' / '),
+  );
+  check('检索词带来源前缀，便于在报告里复核', q.sent.every((s) => /^(npm|github): /.test(s)));
+  check(
+    '检索词里不含会话内容（长度与字符集都受限）',
+    q.sent.every((s) => s.length <= 40 && !/[\\/]|\.dsh|#L\d/.test(s)),
+    q.sent.join(' | '),
+  );
+  check(
+    '能力需求由指标推导，并记录是哪个指标提的',
+    liveMod.capabilitiesForFindings([{ id: 'C1' }]).some((c) => c.cap === 'token-saving' && c.metrics.includes('C1')),
+  );
+  check(
+    '没有检索词能力的内部标签不会发出请求',
+    liveMod.capabilitiesForFindings([{ id: 'C2' }]).every((c) => liveMod.CAPABILITY_TERMS[c.cap]),
+    liveMod.capabilitiesForFindings([{ id: 'C2' }]).map((c) => c.cap).join(','),
+  );
+
+  // npm 全文检索会带回无关包，必须过滤
+  check(
+    'DSH 相关性过滤：dsh 插件保留',
+    liveMod.looksDsh({ name: 'dsh-cost-meter', description: '', keywords: [] }) &&
+      liveMod.looksDsh({ name: '@scope/dsh-thing', description: '', keywords: [] }) &&
+      liveMod.looksDsh({ name: 'whatever', description: 'a plugin for DeepSeek Harness', keywords: [] }),
+  );
+  check(
+    'DSH 相关性过滤：无关包剔除',
+    !liveMod.looksDsh({ name: 'express', description: 'web framework', keywords: ['http'] }) &&
+      !liveMod.looksDsh({ name: 'ollama', description: 'run LLMs locally', keywords: ['llm'] }),
+  );
+
+  // 断网/禁用联网时必须降级而不是抛异常
+  const offline = await liveMod.searchPluginsLive([{ id: 'C1' }], { network: false });
+  check('禁用联网：不抛异常且返回空结果', Array.isArray(offline.entries) && offline.entries.length === 0);
+  check('禁用联网：如实标记 networked=false 与降级原因', offline.networked === false && offline.errors.length > 0, offline.errors[0]);
+  check('禁用联网：仍返回将要发出的检索词（可复核）', offline.sent.length > 0, `${offline.sent.length} 条`);
+
+  // analyzeLive 在禁用联网时：结果与普通报告一致，且页脚不得谎称已联网
+  const liveOff = await reportMod.analyzeLive({ scan, summary: summarize(scan) }, { liveOptions: { network: false } });
+  check('analyzeLive 返回 live 元信息', Boolean(liveOff.live) && liveOff.live.networked === false);
+  check(
+    '禁用联网时页脚仍写「零外发」',
+    liveOff.footer.includes('零外发'),
+    liveOff.footer,
+  );
+  const mdOff = reportMod.renderReport(liveOff);
+  check('禁用联网时报告不出现"本次联网现搜"块', !mdOff.includes('本次联网现搜'));
 }
 
 // --- 汇总 ---

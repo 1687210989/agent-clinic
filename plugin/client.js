@@ -40,6 +40,8 @@ window.__ModuleLoader__.load({
 
     const REPORT_API = '/api/agent-clinic/report';
     const WATCH_API = '/api/agent-clinic/watch';
+    /** 「联网现搜插件」端点：只有点按钮才会请求，面板默认零外发 */
+    const LIVE_API = '/api/agent-clinic/live';
     const POLL_MS = 6000;
 
     /**
@@ -50,7 +52,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '13';
+    const CLIENT_VERSION = '14';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -999,6 +1001,31 @@ window.__ModuleLoader__.load({
       const isOpen = useOpen();
       const [state, setState] = React.useState({ status: 'idle', data: null, text: '', error: '' });
       const [nonce, setNonce] = React.useState(0);
+      // 联网现搜：独立状态，不随普通刷新被清掉（见下方 runLive）
+      const [live, setLive] = React.useState(null);
+      const [liveBusy, setLiveBusy] = React.useState(false);
+      const [liveErr, setLiveErr] = React.useState('');
+
+      /**
+       * 「发现问题后联网找方案」—— 点按钮才联网。
+       * 面板默认仍然是零外发的：不点这个按钮，宿主不会发起任何外部请求。
+       */
+      const runLive = () => {
+        if (typeof fetch !== 'function') {
+          setLiveErr('当前环境不提供 fetch，无法联网检索');
+          return;
+        }
+        setLiveBusy(true);
+        setLiveErr('');
+        fetch(LIVE_API, { headers: { accept: 'application/json' } })
+          .then((r) => r.json())
+          .then((dd) => {
+            if (dd && dd.ok) setLive({ info: dd.live || null, data: dd.data || null });
+            else setLiveErr((dd && dd.error) || '联网检索失败');
+          })
+          .catch((e) => setLiveErr(String((e && e.message) || e)))
+          .finally(() => setLiveBusy(false));
+      };
 
       React.useEffect(() => {
         if (!isOpen) return undefined;
@@ -1068,8 +1095,12 @@ window.__ModuleLoader__.load({
           state.text,
         );
       } else {
-        const hd = state.data.header;
-        const configPath = (state.data.config && state.data.config.patchPath) || null;
+        // 「联网现搜」返回的是**完整的一份分析结果**（含按现搜目录重算的处方），
+        // 所以拿到后整体替换展示数据，而不是只往里塞几条插件 ——
+        // 否则"问题卡上的处方"和"插件列表"会来自两次不同的分析，对不上。
+        const d = state.live && state.live.data ? state.live.data : state.data;
+        const hd = d.header;
+        const configPath = (d.config && d.config.patchPath) || null;
         const stale = state.version !== CLIENT_VERSION;
         body = h(
           'div',
@@ -1103,8 +1134,26 @@ window.__ModuleLoader__.load({
             h(Stat, { label: 'cacheRead', value: hd.cacheReadTokens.toLocaleString() }),
           ),
 
-          (state.data.groups && state.data.groups.length) || state.data.findings.length === 0
-            ? (state.data.groups || []).length === 0
+          liveBusy || live || liveErr
+            ? h(
+                'div',
+                { style: { ...S.howTo, marginTop: '10px' } },
+                liveBusy
+                  ? '正在联网检索插件（npm + GitHub，只发送问题类型关键词，不发送会话内容）…'
+                  : liveErr
+                    ? `联网检索失败：${liveErr}。若提示 404，说明宿主进程还在跑旧插件代码，完全退出并重启 Harness 后重试。`
+                    : `本次联网现搜：新发现 ${(live.info && live.info.stats && live.info.stats.kept) || 0} 条候选，` +
+                      `耗时 ${(((live.info && live.info.elapsedMs) || 0) / 1000).toFixed(1)}s` +
+                      `${live.info && live.info.degraded ? '（部分通道降级，见下）' : ''}。` +
+                      `实际发出的检索词：${((live.info && live.info.sent) || []).join('、') || '(无)'}` +
+                      (live.info && live.info.errors && live.info.errors.length
+                        ? ` ⚠ ${live.info.errors.join('；')}`
+                        : ''),
+              )
+            : null,
+
+          (d.groups && d.groups.length) || d.findings.length === 0
+            ? (d.groups || []).length === 0
               ? h(
                   'div',
                   null,
@@ -1117,7 +1166,7 @@ window.__ModuleLoader__.load({
                   h(
                     'h3',
                     { style: S.sectionTitle },
-                    `发现 ${state.data.groups.length} 类问题（共 ${state.data.groups.reduce(
+                    `发现 ${d.groups.length} 类问题（共 ${d.groups.reduce(
                       (n, g) => n + g.count,
                       0,
                     )} 处 · 按严重度排序）`,
@@ -1127,21 +1176,21 @@ window.__ModuleLoader__.load({
                     { style: S.howTo },
                     '同一指标的多处命中已合并成一张卡（不再重复展示）。点开卡片：能看到每一处的会话与证据定位，以及**这个问题的处方与建议**。',
                   ),
-                  state.data.groups.map((g) => h(GroupCard, { key: g.id, g })),
+                  d.groups.map((g) => h(GroupCard, { key: g.id, g })),
                 )
             : h(
                 'div',
                 null,
-                h('h3', { style: S.sectionTitle }, `发现 ${state.data.findings.length} 个问题（按严重度排序）`),
+                h('h3', { style: S.sectionTitle }, `发现 ${d.findings.length} 个问题（按严重度排序）`),
                 h('div', { style: S.empty }, '（宿主未返回合并视图，请更新插件后重启以启用同类型合并）'),
               ),
 
           h('h3', { style: S.sectionTitle }, '未检测到异常的维度'),
-          state.data.notDetected.length
+          d.notDetected.length
             ? h(
                 'div',
                 { style: S.chips },
-                state.data.notDetected.map((d) =>
+                d.notDetected.map((d) =>
                   h(
                     'span',
                     { key: d.id, style: S.chip, title: d.note || '未检测到异常' },
@@ -1150,18 +1199,18 @@ window.__ModuleLoader__.load({
               )
             : h('div', { style: S.empty }, '（无）'),
 
-          state.data.notDetected.some((d) => d.note)
+          d.notDetected.some((d) => d.note)
             ? h(
                 'div',
                 { style: { marginTop: '8px', fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
-                state.data.notDetected
+                d.notDetected
                   .filter((d) => d.note)
                   .map((d) => `${d.id} ${d.title}：${d.note}`)
                   .join('；'),
               )
             : null,
 
-          state.data.notImplemented && state.data.notImplemented.length
+          d.notImplemented && d.notImplemented.length
             ? h(
                 'div',
                 { style: { marginTop: '16px' } },
@@ -1169,13 +1218,13 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: S.chips },
-                  state.data.notImplemented.map((d) =>
+                  d.notImplemented.map((d) =>
                     h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
                 ),
               )
             : null,
 
-          state.data.unimplementable && state.data.unimplementable.length
+          d.unimplementable && d.unimplementable.length
             ? h(
                 'div',
                 { style: { marginTop: '16px' } },
@@ -1183,20 +1232,20 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: { fontSize: '11px', color: V.text3, lineHeight: '1.8' } },
-                  state.data.unimplementable.map((d) =>
+                  d.unimplementable.map((d) =>
                     h('div', { key: d.id }, `${d.id} ${d.title} —— ${d.reason}`)),
                 ),
               )
             : null,
 
-          state.data.prescriptions && state.data.prescriptions.length
+          d.prescriptions && d.prescriptions.length
             ? h(
                 'div',
                 { style: { marginTop: '20px' } },
                 h(
                   'h3',
                   { style: S.sectionTitle },
-                  `最该先做的 ${state.data.prescriptions.length} 条（从上面各问题里挑出）`,
+                  `最该先做的 ${d.prescriptions.length} 条（从上面各问题里挑出）`,
                 ),
                 configPath
                   ? h(
@@ -1207,32 +1256,32 @@ window.__ModuleLoader__.load({
                       '（本工具只读它，不代你改）',
                     )
                   : null,
-                state.data.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
-                state.data.config && state.data.config.warnings && state.data.config.warnings.length
-                  ? h('div', { style: S.howTo }, `配置读取提示：${state.data.config.warnings.join('；')}`)
+                d.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
+                d.config && d.config.warnings && d.config.warnings.length
+                  ? h('div', { style: S.howTo }, `配置读取提示：${d.config.warnings.join('；')}`)
                   : null,
               )
             : null,
 
-          state.data.catalog && state.data.catalog.recommendations && state.data.catalog.recommendations.length
+          d.catalog && d.catalog.recommendations && d.catalog.recommendations.length
             ? h(
                 'div',
                 { style: { marginTop: '20px' } },
                 h(
                   'h3',
                   { style: S.sectionTitle },
-                  `插件目录检索（目录 ${state.data.catalog.size} 条 · 本地已装 ${state.data.catalog.installedCount} 个）`,
+                  `插件目录检索（目录 ${d.catalog.size} 条 · 本地已装 ${d.catalog.installedCount} 个）`,
                 ),
-                state.data.catalog.sources
+                d.catalog.sources
                   ? h(
                       'div',
                       { style: S.howTo },
-                      `目录来源：人工核实 ${state.data.catalog.sources.curated} 条 + npm 同步 ${state.data.catalog.sources.registry} 条` +
-                        (state.data.catalog.sources.github
-                          ? ` + GitHub 核实 ${state.data.catalog.sources.github} 条`
+                      `目录来源：人工核实 ${d.catalog.sources.curated} 条 + npm 同步 ${d.catalog.sources.registry} 条` +
+                        (d.catalog.sources.github
+                          ? ` + GitHub 核实 ${d.catalog.sources.github} 条`
                           : '') +
-                        (state.data.catalog.sources.snapshotAt
-                          ? `（同步于 ${String(state.data.catalog.sources.snapshotAt).slice(0, 10)}）`
+                        (d.catalog.sources.snapshotAt
+                          ? `（同步于 ${String(d.catalog.sources.snapshotAt).slice(0, 10)}）`
                           : '（快照未同步，可跑 ./run.sh catalog-sync）'),
                     )
                   : null,
@@ -1241,11 +1290,11 @@ window.__ModuleLoader__.load({
                   { style: S.howTo },
                   '按「能力标签 + 关键词」检索出来的插件 —— 同一个插件只列一次，**装过的不再推荐**。',
                 ),
-                state.data.catalog.recommendations.map((hit, i) => h(CatalogRow, { key: hit.id || i, hit })),
+                d.catalog.recommendations.map((hit, i) => h(CatalogRow, { key: hit.id || i, hit })),
               )
             : null,
 
-          state.data.levers && state.data.levers.length
+          d.levers && d.levers.length
             ? h(
                 'div',
                 { style: { marginTop: '20px' } },
@@ -1255,14 +1304,14 @@ window.__ModuleLoader__.load({
                   { style: S.howTo },
                   '这是工具陈列，不是体检结论 —— 本次未触发对应指标，列出来是因为你随时可以拧它们。',
                 ),
-                state.data.levers.map((lv, i) => h(LeverRow, { key: lv.id || i, lv })),
+                d.levers.map((lv, i) => h(LeverRow, { key: lv.id || i, lv })),
               )
             : null,
 
           h(
             'div',
             { style: S.footer },
-            h('span', null, state.data.footer),
+            h('span', null, d.footer),
             h('span', null, `平台 ${hd.platform}`),
           ),
         );
@@ -1283,7 +1332,22 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.header },
             h('span', { style: S.title }, 'Agent 体检报告'),
-            h('span', { style: S.tag }, '只读 · 零外发'),
+            h(
+              'span',
+              { style: S.tag },
+              live ? '只读 · 本次已联网现搜插件' : '只读 · 零外发',
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                style: { ...S.iconBtn, opacity: liveBusy ? 0.55 : 1 },
+                disabled: liveBusy,
+                title: '按本次发现的问题，实时去 npm / GitHub 检索插件（只发送问题类型关键词）',
+                onClick: runLive,
+              },
+              liveBusy ? '检索中…' : '联网现搜插件',
+            ),
             h('button', { type: 'button', style: S.iconBtn, onClick: () => setNonce((n) => n + 1) }, '刷新'),
             h('button', { type: 'button', style: S.closeBtn, onClick: close, 'aria-label': '关闭' }, '×'),
           ),

@@ -28,6 +28,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
+// 能力标签规则是**共享**的：同步脚本与体检时的联网现搜（src/catalog/live.mjs）
+// 用同一份规则，否则"目录里能搜到的"与"联网现搜到的"会给出不同标签。
+import {
+  CAPABILITY_RULES,
+  CAPABILITY_TERMS,
+  deriveCapabilities,
+  installOf,
+  textOf,
+} from '../src/catalog/capabilities.mjs';
+
+export { CAPABILITY_RULES, CAPABILITY_TERMS, deriveCapabilities, installOf, textOf };
+
 const SEARCH_URL = 'https://registry.npmjs.org/-/v1/search?text=keywords:dsh-plugin&size=250';
 const GH_API = 'https://api.github.com/search/repositories';
 const DEFAULT_OUT = path.join(os.homedir(), '.agent-clinic', 'catalog.snapshot.json');
@@ -42,65 +54,6 @@ const argOf = (name, dflt) => {
 const DETAIL_LIMIT = Number(argOf('--limit', 120)) || 120;
 const OUT = argOf('--out', DEFAULT_OUT);
 const SOURCE = argOf('--source', 'both'); // both | npm | github
-
-/**
- * 关键词 → 能力标签。
- *
- * 这是"检索为什么命中"的唯一依据：每命中一个能力标签，都记下**是哪个词命中的**，
- * 报告与面板里会原样展示。规则是可读的，不是黑盒。
- *
- * ⚠️ 规则必须**具体**。踩过的坑：`loop-guard` 一开始写了裸词 `retry|loop|重试`，
- *    结果 `@morlay/session-branch`（会话分支编辑）因为描述里出现一次 "retry"
- *    就被标成"循环防护"，进而被推给 E5 冗余重复调用 —— 纯噪音。
- *    所以这类泛词一律删掉，只保留指向明确的说法。
- */
-export const CAPABILITY_RULES = [
-  { cap: 'token-saving', re: /上下文压缩|压缩上下文|上下文精简|上下文管理|上下文优化|context compress|compact(ion)?\b|token (节省|压缩|优化)|省 ?token|prune/i },
-  { cap: 'cost', re: /成本|费用|花费|计费|价格|cost|billing|budget|额度|用量统计/i },
-  { cap: 'long-session', re: /长会话|长期任务|长任务|续航|long[- ]?session|checkpoint|检查点|断点续跑/i },
-  { cap: 'memory', re: /记忆|memory|recall|mnemon|知识库|知识图谱/i },
-  { cap: 'skill-asset', re: /skill|技能库|技能管理|提示词库|prompt library/i },
-  { cap: 'planning', re: /计划|待办|todo|任务看板|看板|task ?board|工作流|workflow/i },
-  { cap: 'web-search', re: /联网|网络搜索|网页抓取|web ?search|web ?fetch|爬虫|浏览器自动化/i },
-  { cap: 'loop-guard', re: /死循环|重复调用|循环调用|循环检测|loop ?guard|duplicate (tool )?call|repeat(ed)? tool/i },
-  { cap: 'safety', re: /安全审计|权限管理|permission|审计|audit|沙箱|sandbox|危险命令/i },
-  { cap: 'subagent-control', re: /子代理|子智能体|subagent|多智能体|agent ?team|代理团队/i },
-  { cap: 'session-mgmt', re: /会话归档|会话管理|会话分支|归档|archive|会话导出|session (manage|archive|branch)/i },
-  { cap: 'observability', re: /监控|用量看板|统计面板|dashboard|可视化|metrics|telemetry/i },
-];
-
-/** 从一段文本里推导能力标签，并记下命中的词 */
-export function deriveCapabilities(text) {
-  const out = [];
-  const s = String(text ?? '');
-  for (const rule of CAPABILITY_RULES) {
-    const m = s.match(rule.re);
-    if (m) out.push({ cap: rule.cap, matched: m[0] });
-  }
-  return out;
-}
-
-/** 从 npm 搜索结果的 package 描述里拼出可检索文本 */
-function textOf(pkg, hub) {
-  return [
-    pkg.name,
-    pkg.description,
-    (pkg.keywords ?? []).join(' '),
-    hub?.summary,
-    hub?.displayName,
-    (hub?.categories ?? []).join(' '),
-    (hub?.capabilities?.provides ?? []).join(' '),
-    hub?.surfaces ? Object.keys(hub.surfaces).join(' ') : '',
-  ]
-    .filter(Boolean)
-    .join(' \n ');
-}
-
-/** 单个包的 install 入口（与既有处方层保持同一措辞） */
-const installOf = (name) => ({
-  gui: `侧边栏 → 插件 → 添加插件 → 粘贴 ${name}`,
-  cli: `dsh plugin --profile <你的 profile> add ${name}`,
-});
 
 async function fetchJson(url, timeoutMs = 20000, extraHeaders = {}) {
   const ac = new AbortController();

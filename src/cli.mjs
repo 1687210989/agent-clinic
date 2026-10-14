@@ -22,10 +22,15 @@ import { summarize, topTools, num, pct } from './summary.mjs';
 import { hasZstdSupport } from './adapters/zstd-frames.mjs';
 import { renderEvidence } from './evidence/index.mjs';
 import { runDiagnostics } from './diagnostics/index.mjs';
-import { buildReport } from './report.mjs';
+import { buildReport, buildReportLive } from './report.mjs';
 import * as catalogMod from './catalog/index.mjs';
 
 const argv = process.argv.slice(2);
+/** 取 `--flag value` 形式的参数值 */
+const argOf = (name, dflt) => {
+  const i = argv.indexOf(name);
+  return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : dflt;
+};
 const cmd = argv[0] ?? 'help';
 
 function fail(msg, code = 1) {
@@ -132,10 +137,39 @@ function doDiagnose() {
   }
 }
 
-function doReport() {
+async function doReport() {
   envCheck();
   const scan = scanSessions({});
   const summary = summarize(scan);
+
+  // --live：发现问题后**当场联网**去 npm / GitHub 找插件（默认关闭，联网是显式动作）
+  if (argv.includes('--live')) {
+    const budget = argOf('--live-budget', 12000);
+    process.stdout.write(
+      `\n正在联网检索插件（预算 ${budget}ms，只发问题类型、不发会话内容）…\n`,
+    );
+    const { text, live } = await buildReportLive({ scan, summary }, {
+      liveOptions: { budgetMs: Number(budget) || 12000 },
+    });
+    process.stdout.write(text);
+    if (live) {
+      process.stdout.write(
+        `\n联网现搜：npm 检索 ${live.stats.npmQueries} 式 → ${live.stats.npmCandidates} 个候选 → 收录 ${live.stats.npmEntries} 条` +
+          `；GitHub 检索 ${live.stats.githubQueries} 式 → ${live.stats.githubCandidates} 个仓库 → 收录 ${live.stats.githubEntries} 条` +
+          `（通道：${live.stats.githubRelay ? '中继 ' + live.stats.githubRelay : '直连'}，耗时 ${(live.elapsedMs / 1000).toFixed(1)}s）\n`,
+      );
+      for (const e of live.errors) process.stdout.write(`  ⚠ ${e}\n`);
+    }
+    const reportPath = path.resolve(process.cwd(), 'agent-clinic-report.md');
+    try {
+      fs.writeFileSync(reportPath, text, 'utf8');
+      process.stdout.write(`\n报告已写入：${reportPath}\n`);
+    } catch (e) {
+      process.stdout.write(`\n（写入报告文件失败：${e.message}）\n`);
+    }
+    return;
+  }
+
   const text = buildReport({ scan, summary });
 
   process.stdout.write(text);
@@ -148,6 +182,7 @@ function doReport() {
     process.stdout.write(`\n（写入报告文件失败：${e.message}）\n`);
   }
 }
+
 
 /**
  * 插件目录同步：**唯一会联网的命令**，且只在用户显式执行时运行。
@@ -212,12 +247,16 @@ function doHelp() {
       '  agent-clinic scan                 扫描 DSH 会话并输出概览',
       '  agent-clinic show "<file>#L<n>"   展开证据（复核用）',
       '  agent-clinic diagnose             只跑诊断',
-      '  agent-clinic report               输出体检报告',
+      '  agent-clinic report               输出体检报告（只读本地目录）',
+      '  agent-clinic report --live        发现问题后**联网现搜**插件（npm + GitHub）',
+      '                                    --live-budget 12000  联网预算（毫秒，默认 12000）',
       '  agent-clinic catalog              查看插件目录（人工核实 + npm + GitHub）',
-      '  agent-clinic catalog-sync         同步插件目录（npm registry + GitHub，唯一联网命令）',
+      '  agent-clinic catalog-sync         同步插件目录（npm registry + GitHub）',
       '                                    --source npm|github|both（默认 both）',
       '',
-      '只读 · 零依赖 · 体检本体零外发（只有 catalog-sync 联网）',
+      '只读 · 零依赖 · 默认零外发',
+      '联网动作只有两个，都需显式指定：catalog-sync（同步目录）、report --live（现搜插件）',
+      'report --live 只发送问题类型关键词，不发送任何会话内容（报告里会列出实际发出的检索词）',
     ].join('\n') + '\n',
   );
 }
@@ -235,7 +274,7 @@ switch (cmd) {
     doDiagnose();
     break;
   case 'report':
-    doReport();
+    await doReport();
     break;
   case 'catalog':
     doCatalog();

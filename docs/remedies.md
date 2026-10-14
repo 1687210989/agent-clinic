@@ -171,6 +171,34 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 | `curated` | 人工核实并写进 `src/catalog/index.mjs` | 5 条 | 读过包文档，带 `targets` 与风险说明 |
 | `npm-registry` | `./run.sh catalog-sync` 检索 npm registry | 150 条 | 从描述/关键词推导能力标签，带真实下载量 |
 | `github` | `./run.sh catalog-sync --source github` 核实 GitHub 仓库 | 1 条 | 很多插件只在 GitHub、没发 npm；只核实**仓库存在 + package.json 元数据**，未审阅源码 |
+| `npm-live` / `github-live` | `./run.sh report --live`（或面板「联网现搜插件」按钮）**当场**检索 | 每次不同 | 不落盘、不进快照；同名时让位给上面三种已审阅/已同步的条目 |
+
+### 发现问题后联网现搜（`report --live`）
+
+用户要求：「我想要的结果是发现问题后联网搜索得到解决方案」。
+
+在它之前，体检只读一份可能过期的快照 —— 新出的插件要手动跑 `catalog-sync` 才看得见。
+现在 `src/catalog/live.mjs` 会在**诊断出问题之后、生成处方之前**跑一次实时检索：
+
+1. **检索词由问题推导**（`buildLiveQueries()`）：
+   `CAPABILITY_BY_METRIC` 给出该指标需要什么能力，`CAPABILITY_TERMS` 再给出该能力的关键词。
+   例：C1（token 消耗过快）→ `token-saving`/`cost` → `context compression`、`token saving`、`compaction`。
+   npm 侧必带一条广谱式 `keywords:dsh-plugin`（捞最新上架的），GitHub 侧必带 `topic:dsh-plugin`。
+2. **只发问题类型，不发会话内容**（刻意的硬约束）：
+   `sent` 数组会被原样写进报告与面板，可逐条核对；冒烟里有断言
+   「检索词里不含会话内容（长度与字符集都受限）」。
+3. **硬截止**：默认 12s（面板 10s）总预算，`Promise.race` 兜底 ——
+   只靠单请求超时是不够的（实测 12s 预算跑了 14.7s，因为在途并发请求会拖过去）。
+   到点就用已拿到的部分，并记录「超出预算，本次未采用其结果」。
+4. **两条通道独立降级**：npm 与 GitHub 各自失败各自记录，
+   网络全断只是"本次没搜到"，报告照常出。
+5. **不落盘**：现搜结果只活在这一份报告里，不会污染 `~/.agent-clinic/catalog.snapshot.json`；
+   同名条目让位给快照/人工条目（避免把已审阅的降级成未审阅版本），并在报告里标「本次联网现搜」。
+6. **JSON 输出里可复核**：`data.catalog.sources.live = { at, elapsedMs, kept, added, sent, networked, degraded, errors }`。
+
+页脚与面板标签会跟着变：跑过 `--live` 就不再写「零外发」；
+禁用联网（`network: false`）时 `networked: false`，措辞退回「零外发」——有断言守住这一点。
+
 
 ### 扩大检索数量（多关键词 + 翻页 + 热度排序）
 
@@ -275,7 +303,8 @@ npm / GitHub 同步进来的插件描述大多是英文。处理办法是**人�
 - 目录条目必须标出处（人工核实 / npm 同步 / GitHub 核实 + 时间），不允许匿名条目
 - 简介必须中文；实在没有中文来源就如实标"英文原文"，不机翻
 - 检索不到就诚实说"没有对症插件"，不硬凑
-- **体检本体零外发**；`catalog-sync` 是唯一联网命令，且只在用户显式执行时运行
+- **默认零外发**；联网动作有两个，都只在用户显式指定时运行：
+  `catalog-sync`（同步目录）与 `report --live`（发现问题后当场现搜，只发问题类型关键词）
 
 ---
 

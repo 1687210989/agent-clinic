@@ -20,7 +20,8 @@
 import { runDiagnostics } from './diagnostics/index.mjs';
 import { prescribe, prescribeOne, skippedFor, tokenInventory, KIND_LABEL } from './prescriber/index.mjs';
 import { readEffectiveConfig } from './config/index.mjs';
-import { searchCatalog } from './catalog/index.mjs';
+import { activeCatalog, applyTranslation, searchCatalog } from './catalog/index.mjs';
+import { searchPluginsLive } from './catalog/live.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
@@ -195,9 +196,39 @@ export function analyze(ctx, opts = {}) {
   }
 
   // 插件目录检索：读本地已装插件 + 用能力/关键词匹配每个问题
+  //
+  // 两条数据来源，优先级从高到低：
+  //   1. 本次联网现搜（`analyzeLive()` 传入的 opts.liveEntries）—— 最新，但同名时
+  //      让位给已审阅过的素材（下面 2、3）
+  //   2. 人工核实条目（写死在 catalog 里，人工读过）
+  //   3. 同步快照（可能过期）
+  // 现搜条目只在"目录里没有"时补进来，避免把人工核实过的同一条降级成未审阅版本。
   let catalog = null;
+  let liveMeta = opts.liveMeta ?? null;
   try {
-    catalog = searchCatalog(findings, { env: opts.env ?? process.env });
+    const snapshot = activeCatalog({ env: opts.env ?? process.env });
+    const snapshotNames = new Set(snapshot.entries.map((e) => e.package));
+    const liveOnly = (opts.liveEntries ?? []).filter((e) => !snapshotNames.has(e.package));
+    const entries = [...snapshot.entries, ...liveOnly.map(applyTranslation)];
+    catalog = searchCatalog(findings, {
+      env: opts.env ?? process.env,
+      catalog: entries.length ? entries : undefined,
+    });
+    catalog.sources = {
+      ...(catalog.sources ?? snapshot.sources),
+      live: liveMeta
+        ? {
+            at: liveMeta.fetchedAt,
+            elapsedMs: liveMeta.elapsedMs,
+            kept: liveMeta.stats?.kept ?? 0,
+            added: liveOnly.length,
+            sent: liveMeta.sent ?? [],
+            networked: liveMeta.networked ?? false,
+            degraded: liveMeta.degraded ?? false,
+            errors: liveMeta.errors ?? [],
+          }
+        : null,
+    };
   } catch (e) {
     catalog = { matches: {}, installed: { installed: [], error: e.message }, catalogSize: 0, catalogVersion: null };
   }
@@ -346,7 +377,10 @@ export function analyze(ctx, opts = {}) {
           warnings: config.warnings,
         }
       : { patchPath: null, patchExists: false, error: configError },
-    footer: '证据可复核 · 全程本地 · 零外发',
+    // 页脚必须如实描述本次到底有没有联网 —— 跑过 --live 就不能再写「零外发」
+    footer: liveMeta && liveMeta.networked
+      ? '证据可复核 · 会话数据全程本地 · 插件检索已联网（仅发送问题类型关键词，报告上方列出实际检索词）'
+      : '证据可复核 · 全程本地 · 零外发',
   };
 }
 
@@ -358,7 +392,39 @@ export function analyze(ctx, opts = {}) {
  * @returns {string}
  */
 export function buildReport(ctx, opts = {}) {
-  const data = analyze(ctx, opts);
+  return renderReport(analyze(ctx, opts));
+}
+
+/**
+ * 体检 + **联网现搜**（发现问题后当场去 npm / GitHub 找插件），再渲染 Markdown。
+ *
+ * 与 `buildReport()` 的唯一区别是它在诊断出 findings 之后、生成处方之前
+ * 先跑一次 `searchPluginsLive()`，把现搜到的插件并进目录参与匹配。
+ * 联网失败只会让报告少几条推荐（并在报告里如实写明），不会让体检失败。
+ *
+ * @param {{scan:object, summary:object}} ctx
+ * @param {Object} [opts] 另见 `src/catalog/live.mjs` 的 LIVE_DEFAULTS
+ * @returns {Promise<{text:string, live:object, data:object}>}
+ */
+export async function buildReportLive(ctx, opts = {}) {
+  const data = await analyzeLive(ctx, opts);
+  return { text: renderReport(data), live: data.live ?? null, data };
+}
+
+/**
+ * 结构化版 `buildReportLive()`：只产数据，不渲染。
+ * 面板（`plugin/index.js`）用这个，CLI 用 `buildReportLive()`。
+ */
+export async function analyzeLive(ctx, opts = {}) {
+  // 先同步跑一次诊断，只为拿到 findings（现搜的检索词完全由 findings 决定）
+  const dry = analyze(ctx, opts);
+  const findings = dry.findings.map((f) => ({ id: f.id, scope: f.scope ?? null }));
+  const live = await searchPluginsLive(findings, opts.liveOptions ?? {});
+  const data = analyze(ctx, { ...opts, liveEntries: live.entries, liveMeta: live });
+  return { ...data, live };
+}
+
+export function renderReport(data) {
   const h = data.header;
   const out = [];
   const push = (s = '') => out.push(s);
@@ -493,12 +559,30 @@ export function buildReport(ctx, opts = {}) {
             : '（快照未同步，可跑 `./run.sh catalog-sync`）'),
       );
     }
+    // 联网现搜的坦白：发了什么、拿到多少、是否降级 —— 都要能复核
+    if (src?.live && src.live.networked !== false) {
+      const L = src.live;
+      push(
+        `> **本次联网现搜**：新发现 ${L.added} 条（共取回 ${L.kept} 条，耗时 ${(L.elapsedMs / 1000).toFixed(1)}s` +
+          `${L.degraded ? '，部分通道降级' : ''}）`,
+      );
+      if (L.sent?.length) push(`> 实际发出的检索词（不含任何会话内容）：\`${L.sent.join('`、`')}\``);
+      for (const e of L.errors ?? []) push(`> ⚠ ${e}`);
+    } else if (data.catalog.size && !src?.live) {
+      push('> 本次未联网（只读本地目录）。要"发现问题就联网找最新插件"：`./run.sh report --live`');
+    }
     push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，**装过的不再推荐**。');
     push('> 热度（star / 下载量）只用于同分时排序与展示，**不参与对症打分**。');
     push();
     for (const h of data.catalog.recommendations) {
       const originLabel =
-        h.origin === 'github' ? ' · GitHub 核实' : h.origin === 'npm-registry' ? ' · 来自 npm 同步' : ' · 人工核实';
+        h.origin === 'npm-live' || h.origin === 'github-live'
+          ? ' · 本次联网现搜'
+          : h.origin === 'github'
+            ? ' · GitHub 核实'
+            : h.origin === 'npm-registry'
+              ? ' · 来自 npm 同步'
+              : ' · 人工核实';
       push(`- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}${originLabel}）`);
       if (h.heatText) push(`  - 热度：${h.heatText}`);
       if (h.kindText === '官方内置包') {

@@ -31,7 +31,7 @@ license: MIT
 | 约束 | 说明 |
 |---|---|
 | **只读** | 绝不修改 `~/.dsh/` 下任何文件（读 profile 配置是为了说出"当前值"，也只读） |
-| **零外发** | 体检本体（scan / diagnose / report / 面板）不发送任何内容到外部服务。**唯一联网命令是 `./run.sh catalog-sync`**：由用户显式执行，只拉公开的插件清单（npm registry，以及经 `gh-proxy.com` 中继的 GitHub 公开仓库元数据），不上传任何本地数据 |
+| **零外发（默认）** | 体检本体（scan / diagnose / report / 面板）默认不发送任何内容到外部服务。**联网动作只有两个，都需显式指定**：<br>① `./run.sh catalog-sync` —— 同步插件目录（npm registry + 经 `gh-proxy.com` 中继的 GitHub 公开仓库元数据），不上传任何本地数据；<br>② `./run.sh report --live` —— **发现问题后当场联网现搜插件**（见下） |
 | **可定位** | 每个结论必须附 `file#L` 定位，不可复现的结论不出 |
 | **未异常要说明** | 没有检测到问题的维度必须显式列出"未检测到异常" |
 | **处方必须可执行** | 每条处方必须给出：YAML 片段 / 命令 / 插件安装入口 / 界面路径 / 指向具体动作的建议；并附**分步操作指引**、风险、验证方式、出处 |
@@ -51,16 +51,32 @@ license: MIT
 统一用 `./run.sh`（自动定位 node，无需 node 在 PATH）：
 
 ```bash
-./run.sh report                  # 体检报告（推荐入口）
+./run.sh report                  # 体检报告（推荐入口，读本地目录）
+./run.sh report --live           # 体检 + **发现问题后当场联网现搜插件**（npm + GitHub）
+./run.sh report --live --live-budget 15000   # 联网预算（毫秒，默认 12000）
 ./run.sh scan                    # 扫描概览
 ./run.sh diagnose                # 只跑诊断，不生成完整报告
 ./run.sh show "<file>#L<n>"      # 展开证据，复核结论
 ./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步 + GitHub 核实，按热度排序）
-./run.sh catalog-sync            # 同步插件目录（npm + GitHub，唯一联网命令）
+./run.sh catalog-sync            # 同步插件目录（npm + GitHub）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
-./scripts/smoke.sh               # 自检（155 项）
+./scripts/smoke.sh               # 自检（169 项）
 ```
+
+### 发现问题后联网找方案（`report --live`）
+
+体检默认只读本地目录，可能过期。`--live` 会在诊断出问题之后**当场**按问题的能力需求
+去 npm registry 与 GitHub 现搜插件，把新发现的并进目录再生成处方。面板上对应
+「联网现搜插件」按钮（走独立端点 `/api/agent-clinic/live`，不点就不联网）。
+
+三条承诺：
+
+1. **只发问题类型，不发会话内容** —— 检索词由指标推导（如 C1 → `context compression`），
+   报告里用 `实际发出的检索词` 一行原样列出，可自行核对。
+2. **不能拖死体检** —— 默认 12s 预算，到点带已有结果返回并标记降级；
+   网络全断只是"本次没搜到"，报告照常出。
+3. **不编造** —— 拿不到的字段留空；联网失败/降级/超时都会在报告与面板里写明。
 
 ## 已实现的诊断指标
 

@@ -166,13 +166,20 @@ function doCatalog() {
   process.stdout.write('插件目录\n');
   process.stdout.write(`  总条目：${a.entries.length}\n`);
   process.stdout.write(`  人工核实：${a.sources.curated} 条\n`);
-  process.stdout.write(`  npm 同步：${a.sources.registry} 条` +
-    (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) + '\n');
-  const byOrigin = a.entries.filter((e) => e.origin === 'npm-registry');
-  if (byOrigin.length) {
-    process.stdout.write('\n  npm 同步条目（前 20）:\n');
-    for (const e of byOrigin.slice(0, 20)) {
-      process.stdout.write(`    ${e.package}${e.version ? ` v${e.version}` : ''} — ${(e.capabilities ?? []).join('/') || '(未标注能力)'}\n`);
+  process.stdout.write(`  npm 同步：${a.sources.registry} 条\n`);
+  process.stdout.write(
+    `  GitHub 核实：${a.sources.github} 条` +
+      (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) +
+      '\n',
+  );
+  const synced = a.entries.filter((e) => e.origin && e.origin !== 'curated');
+  if (synced.length) {
+    process.stdout.write('\n  同步条目（前 20）:\n');
+    for (const e of synced.slice(0, 20)) {
+      const tag = e.origin === 'github' ? 'gh ' : 'npm';
+      process.stdout.write(
+        `    [${tag}] ${e.package}${e.version ? ` v${e.version}` : ''} — ${(e.capabilities ?? []).join('/') || '(未标注能力)'}\n`,
+      );
     }
     process.stdout.write('\n  提示：./run.sh catalog-sync 可更新这份清单\n');
   }
@@ -188,8 +195,9 @@ function doHelp() {
       '  agent-clinic show "<file>#L<n>"   展开证据（复核用）',
       '  agent-clinic diagnose             只跑诊断',
       '  agent-clinic report               输出体检报告',
-      '  agent-clinic catalog              查看插件目录（人工核实 + npm 同步）',
-      '  agent-clinic catalog-sync         从 npm registry 同步插件目录（唯一联网命令）',
+      '  agent-clinic catalog              查看插件目录（人工核实 + npm + GitHub）',
+      '  agent-clinic catalog-sync         同步插件目录（npm registry + GitHub，唯一联网命令）',
+      '                                    --source npm|github|both（默认 both）',
       '',
       '只读 · 零依赖 · 体检本体零外发（只有 catalog-sync 联网）',
     ].join('\n') + '\n',

@@ -55,9 +55,10 @@ license: MIT
 ./run.sh scan                    # 扫描概览
 ./run.sh diagnose                # 只跑诊断，不生成完整报告
 ./run.sh show "<file>#L<n>"      # 展开证据，复核结论
-./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步）
-./run.sh catalog-sync            # 从 npm registry 同步插件目录（唯一联网命令）
-./scripts/smoke.sh               # 自检（134 项）
+./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步 + GitHub 核实）
+./run.sh catalog-sync            # 同步插件目录（npm + GitHub，唯一联网命令）
+./run.sh catalog-sync --source github   # 只同步 GitHub 方向
+./scripts/smoke.sh               # 自检（144 项）
 ```
 
 ## 已实现的诊断指标

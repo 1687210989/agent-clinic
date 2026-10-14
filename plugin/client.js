@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '10';
+    const CLIENT_VERSION = '11';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -858,7 +858,9 @@ window.__ModuleLoader__.load({
             : null,
           hit.origin === 'npm-registry'
             ? h('span', { style: { fontSize: '10px', color: V.text3 } }, 'npm 同步')
-            : null,
+            : hit.origin === 'github'
+              ? h('span', { style: { fontSize: '10px', color: V.text3 } }, 'GitHub 核实')
+              : null,
           h('span', { style: { flex: '1 1 auto' } }),
           h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
@@ -1188,18 +1190,19 @@ window.__ModuleLoader__.load({
                   ? h(
                       'div',
                       { style: S.howTo },
-                      `目录来源：人工核实 ${state.data.catalog.sources.curated} 条` +
-                        (state.data.catalog.sources.registry
-                          ? ` + npm registry 同步 ${state.data.catalog.sources.registry} 条（同步于 ${String(
-                              state.data.catalog.sources.snapshotAt,
-                            ).slice(0, 10)}）`
-                          : '（npm 快照未同步；可跑 ./run.sh catalog-sync 更新）'),
+                      `目录来源：人工核实 ${state.data.catalog.sources.curated} 条 + npm 同步 ${state.data.catalog.sources.registry} 条` +
+                        (state.data.catalog.sources.github
+                          ? ` + GitHub 核实 ${state.data.catalog.sources.github} 条`
+                          : '') +
+                        (state.data.catalog.sources.snapshotAt
+                          ? `（同步于 ${String(state.data.catalog.sources.snapshotAt).slice(0, 10)}）`
+                          : '（快照未同步，可跑 ./run.sh catalog-sync）'),
                     )
                   : null,
                 h(
                   'div',
                   { style: S.howTo },
-                  '按「能力标签 + 关键词」检索出来的插件 —— 同一个插件只列一次，并说明为什么命中。',
+                  '按「能力标签 + 关键词」检索出来的插件 —— 同一个插件只列一次，**装过的不再推荐**。',
                 ),
                 state.data.catalog.recommendations.map((hit, i) => h(CatalogRow, { key: hit.id || i, hit })),
               )

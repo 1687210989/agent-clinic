@@ -169,22 +169,31 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 | 来源 | 怎么来的 | 本机实测 | 说明 |
 |---|---|---|---|
 | `curated` | 人工核实并写进 `src/catalog/index.mjs` | 5 条 | 读过包文档，带 `targets` 与风险说明 |
-| `npm-registry` | `./run.sh catalog-sync` 同步 npm registry | 59 条 | 只有从描述/关键词推导的能力标签，标"未逐行审阅源码" |
+| `npm-registry` | `./run.sh catalog-sync` 检索 npm registry | 59 条 | 从描述/关键词推导能力标签 |
+| `github` | `./run.sh catalog-sync --source github` 核实 GitHub 仓库 | 5 条 | 很多插件只在 GitHub、没发 npm；只核实**仓库存在 + package.json 元数据**，未审阅源码 |
 
-同步脚本 `scripts/catalog-sync.mjs`：
+### GitHub 方向（受限网络下的做法）
 
-1. 检索 `https://registry.npmjs.org/-/v1/search?text=keywords:dsh-plugin&size=250`
-2. 拉取前 N 个包的 packument（含 `dshhub` 元数据与 `dsh.bundle.patch` 声明）
-3. 用 `CAPABILITY_RULES` 从"包名 + 描述 + 关键词 + dshhub 摘要/分类/能力"推导能力标签，
-   **并记下是哪个词命中的**（`capabilityEvidence`）
-4. 落盘 `~/.agent-clinic/catalog.snapshot.json`
+用户要求：「不能从插件市场检索的话就去 GitHub 上寻找开源的可以解决问题的插件」。
 
-体检本体（`report` / 面板）**不联网**，只读这份快照；同包名时人工条目优先。
+现实约束（本机实测）：`api.github.com`、`github.com/search`、`raw.githubusercontent.com`
+都被 hosts 拦成 127.0.0.1 —— **搜不了**；但 `git` 协议与 `codeload.github.com` 是通的。
+所以 GitHub 方向拆成"发现"与"核实"两步：
 
-### 打分与去重
+1. **发现**：优先 `api.github.com/search/repositories`（没被墙的机器直接可用）；
+   不可用时退回 `scripts/catalog-github-seeds.txt` —— 由联网检索（web_search）得到的
+   候选清单，一行一个 `owner/repo`
+2. **核实**：对每个候选执行 `git ls-remote https://github.com/<owner>/<repo>.git HEAD`
+   证明仓库真实存在，再 `git clone --depth 1 --filter=blob:none --no-checkout` 浅克隆读
+   `package.json`（判定 `dsh.bundle.patch` / `dshhub` 并推导能力）
+
+GitHub 条目没有 npm 包可装，安装入口如实写成"按仓库 README 自行安装"，
+风险提示明确标注**未审阅源码**。
+
+### 打分与门槛
 
 三层打分：指标靶子 +5、能力标签每个 +3（最多计 2 个）、问题文本关键词每个 +2。
-`npm-registry` 条目门槛更高（≥5）：它们没有人工读过的 `targets`，
+**非人工条目（npm / GitHub）门槛 ≥5**：它们没有人工读过的 `targets`，
 **单个泛能力标签不算数**。
 
 > 踩过的坑：`loop-guard` 规则一开始写了裸词 `retry|loop|重试`，结果
@@ -192,9 +201,13 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 > "循环防护"，进而被推给 E5 冗余重复调用 —— 纯噪音。现在规则全部改成指向明确的
 > 说法（`死循环|重复调用|循环检测|repeat(ed)? tool`），并有断言守住。
 
-**去重**：同一个插件只列一次，`findingIds` 列出它命中的全部指标
-（billion-context 同时命中 C1 与 C3 → 一行 `→ C1 / C3`，不再出现三次）。
-全局处方列表也按 `targetId` 去重。
+### 去重与已安装过滤
+
+- **同一个插件只列一次**，`findingIds` 列出它命中的全部指标
+  （billion-context 命中 C1 与 C3 → 一行 `→ C1 / C3`）
+- **已经安装的插件不再出现在推荐里**（用户要求）：`searchCatalog()`、
+  `pluginRecommendations()`、`tokenInventory()` 三处都过滤。
+  本机实测：用户装了 `billion-context-dsh` 后，报告里 `billion` 出现 **0 次**
 
 ### 本地插件目录（只读扫描）
 
@@ -203,11 +216,11 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 - `$DSH_HOME/profiles/<profile>/package.json` 的 `dsh.profile.bundles` + `dependencies`
 - 同目录 `node_modules` 的顶层包名（跳过 `.pnpm` / `.bin` 等点开头目录）
 
-用途：报告里显示「本地已装 N 个」；**已安装的插件不再推"安装"**，改推"确认已启用"。
+用途：报告里显示「本地已装 N 个」并据此**剔除已装插件**。
 
 ### 纪律
 
-- 目录条目必须标出处（人工核实 / npm 同步 + 同步时间），不允许匿名条目
+- 目录条目必须标出处（人工核实 / npm 同步 / GitHub 核实 + 时间），不允许匿名条目
 - 检索不到就诚实说"没有对症插件"，不硬凑
 - **体检本体零外发**；`catalog-sync` 是唯一联网命令，且只在用户显式执行时运行
 

@@ -478,25 +478,26 @@ export function buildReport(ctx, opts = {}) {
     );
     push();
     if (src) {
+      const parts = [`人工核实 ${src.curated} 条`, `npm 同步 ${src.registry} 条`];
+      if (src.github) parts.push(`GitHub 核实 ${src.github} 条`);
       push(
-        `> 目录来源：**人工核实 ${src.curated} 条**` +
-          (src.registry
-            ? ` + **npm registry 同步 ${src.registry} 条**（同步于 ${String(src.snapshotAt).slice(0, 10)}，\`./run.sh catalog-sync\` 可更新）`
-            : ` + npm 快照未同步（可选：\`./run.sh catalog-sync\`）`),
+        `> 目录来源：${parts.join(' + ')}` +
+          (src.snapshotAt
+            ? `（同步于 ${String(src.snapshotAt).slice(0, 10)}，\`./run.sh catalog-sync\` 可更新）`
+            : '（快照未同步，可跑 `./run.sh catalog-sync`）'),
       );
     }
-    push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，并说明**为什么命中**。');
+    push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，**装过的不再推荐**。');
     push();
     for (const h of data.catalog.recommendations) {
-      push(
-        `- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}，` +
-          `${h.installed ? '本地已安装' : '未安装'}${h.origin === 'npm-registry' ? ' · 来自 npm 同步' : ' · 人工核实'}）`,
-      );
+      const originLabel =
+        h.origin === 'github' ? ' · GitHub 核实' : h.origin === 'npm-registry' ? ' · 来自 npm 同步' : ' · 人工核实';
+      push(`- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}${originLabel}）`);
       push(`  - 命中指标：${(h.findingIds ?? []).join(' / ')}`);
       push(`  - 能力：${(h.capabilities ?? []).join(' / ') || '(目录未标注)'}`);
       push(`  - 作用：${h.summary}`);
       for (const r of h.reasons) push(`  - 命中原因：${r}`);
-      if (!h.installed && h.install?.gui) push(`  - 安装：${h.install.gui}`);
+      if (h.install?.gui) push(`  - 安装：${h.install.gui}`);
       if (h.install?.cli) push(`  - 命令行：\`${h.install.cli}\``);
       if (h.risk) push(`  - 风险：${h.risk}`);
       if (h.repo) push(`  - 仓库：${h.repo}`);

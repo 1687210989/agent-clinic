@@ -202,8 +202,8 @@ export const PLUGIN_CATALOG = [
 const CURATED = PLUGIN_CATALOG.map((e) => ({ ...e, origin: 'curated' }));
 
 /**
- * 读取 npm 同步快照（不存在或损坏都返回 null，绝不抛）。
- * @returns {{entries:Array, fetchedAt:string, source:string}|null}
+ * 读取同步快照（npm + GitHub；不存在或损坏都返回 null，绝不抛）。
+ * @returns {{entries:Array, fetchedAt:string, source:string, file:string}|null}
  */
 export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
   try {
@@ -212,20 +212,22 @@ export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
     return {
       entries: entries.map((e) => ({
         ...e,
-        origin: 'npm-registry',
-        // registry 条目没有人工读过的 targets，只靠能力与关键词命中
+        origin: e.origin ?? 'npm-registry',
+        // 同步进来的条目没有人工读过的 targets，只靠能力与关键词命中
         targets: e.targets ?? [],
         risk:
           e.risk ??
-          `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
-            `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`,
+          (e.origin === 'github'
+            ? `来自 GitHub（未发 npm；本工具只核实了仓库存在与 package.json 元数据，未审阅源码）。` +
+              `安装需按仓库 README 自行操作：${e.repo ?? ''}`
+            : `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
+              `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`),
         verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
       })),
       fetchedAt: doc.fetchedAt ?? null,
-      source: doc.source ?? 'npm registry',
+      source: typeof doc.source === 'string' ? doc.source : JSON.stringify(doc.source ?? ''),
       file,
     };
-    /* eslint-disable-next-line no-unreachable */
   } catch {
     return null;
   }
@@ -239,12 +241,13 @@ export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
 export function activeCatalog(opts = {}) {
   const snap = opts.snapshot === null ? null : loadRegistrySnapshot(opts.snapshotPath ?? SNAPSHOT_PATH);
   const curatedNames = new Set(CURATED.map((e) => e.package));
-  const fromRegistry = (snap?.entries ?? []).filter((e) => !curatedNames.has(e.package));
+  const synced = (snap?.entries ?? []).filter((e) => !curatedNames.has(e.package));
   return {
-    entries: [...CURATED, ...fromRegistry],
+    entries: [...CURATED, ...synced],
     sources: {
       curated: CURATED.length,
-      registry: fromRegistry.length,
+      registry: synced.filter((e) => e.origin === 'npm-registry').length,
+      github: synced.filter((e) => e.origin === 'github').length,
       snapshotAt: snap?.fetchedAt ?? null,
       snapshotSource: snap?.source ?? null,
       snapshotPath: snap?.file ?? (opts.snapshotPath ?? SNAPSHOT_PATH),
@@ -363,10 +366,10 @@ export function matchPlugins(finding, opts = {}) {
 
   const hits = [];
   for (const entry of catalog) {
-    // npm 同步进来的条目没有人工读过文档，门槛更高：单个泛能力标签不算数。
+    // npm / GitHub 同步进来的条目没有人工读过文档，门槛更高：单个泛能力标签不算数。
     // （踩过的坑：某会话分支插件因描述里出现一次 "retry" 被当作循环防护推给 E5）
-    const isRegistry = (entry.origin ?? 'curated') === 'npm-registry';
-    const minScore = opts.minScore ?? (isRegistry ? 5 : 3);
+    const isAudited = (entry.origin ?? 'curated') === 'curated';
+    const minScore = opts.minScore ?? (isAudited ? 3 : 5);
     let score = 0;
     const reasons = [];
 
@@ -431,9 +434,11 @@ export function searchCatalog(findings, opts = {}) {
 
   for (const f of findings) {
     const hits = matchPlugins(f, { catalog, installed: scan.installed, ...opts });
-    if (!hits.length) continue;
-    matches[f.id] = hits;
-    for (const h of hits) {
+    // 用户要求：**已经安装的就不再显示推荐** —— 直接过滤掉，不再以"已装"形式出现
+    const fresh = hits.filter((h) => !h.installed);
+    if (!fresh.length) continue;
+    matches[f.id] = fresh;
+    for (const h of fresh) {
       const key = h.entry.package;
       if (!byPackage.has(key)) {
         byPackage.set(key, {

@@ -26,7 +26,7 @@
 import { REMEDY_KIND, RX_TYPE, KIND_LABEL, toPatchSnippet } from './types.mjs';
 import { REMEDIES, VERIFY_VIA } from './remedies.mjs';
 import { readEffectiveConfig, valueOf } from '../config/index.mjs';
-import { matchPlugins, PLUGIN_CATALOG } from '../catalog/index.mjs';
+import { matchPlugins, PLUGIN_CATALOG, activeCatalog } from '../catalog/index.mjs';
 import { num } from '../summary.mjs';
 
 export { REMEDY_KIND, RX_TYPE, KIND_LABEL };
@@ -383,13 +383,14 @@ export function buildCatalogPrescription(hit, finding, ctx = {}) {
   };
 }
 
-/** 为一个 finding 做插件目录检索（返回处方形态） */
+/** 为一个 finding 做插件目录检索（返回处方形态；**已安装的不再推荐**） */
 export function pluginRecommendations(finding, ctx = {}) {
   const hits = matchPlugins(finding, {
     installed: ctx.installedPlugins ?? [],
-    limit: ctx.pluginLimit ?? 2,
+    limit: ctx.pluginLimit ?? 3,
   });
-  return hits.map((hit) => buildCatalogPrescription(hit, finding, ctx));
+  // 用户要求：已经装了的插件不再作为"推荐"出现
+  return hits.filter((hit) => !hit.installed).map((hit) => buildCatalogPrescription(hit, finding, ctx));
 }
 
 // ---------------------------------------------------------------------------
@@ -607,16 +608,19 @@ export function tokenInventory(opts = {}) {
     }
   }
 
-  // 插件目录里与「省 token / 省成本」相关的条目也进清单（含未安装的），
+  // 插件目录里与「省 token / 省成本」相关的条目也进清单（含 npm / GitHub 同步进来的），
   // 这样即使用户这次没有命中 C1/C2/C3，也能看到"有哪些插件能省 token"。
+  // 已安装的不列（用户要求：装过的不再显示推荐）。
   const installedList = ctx.installedPlugins ?? [];
-  for (const entry of PLUGIN_CATALOG) {
+  const catalogEntries = ctx.catalogEntries ?? activeCatalog().entries;
+  for (const entry of catalogEntries) {
     const caps = entry.capabilities ?? [];
     if (!caps.includes('token-saving') && !caps.includes('cost')) continue;
     if (exclude.has('catalog-' + entry.id)) continue;
     const installed = installedList.some(
       (n) => n === entry.package || n === entry.package.replace(/^@[^/]+\//, ''),
     );
+    if (installed) continue;
     const pseudo = {
       id: 'catalog-' + entry.id,
       kind: REMEDY_KIND.PLUGIN,
@@ -628,24 +632,19 @@ export function tokenInventory(opts = {}) {
       id: 'catalog-' + entry.id,
       kind: REMEDY_KIND.PLUGIN,
       kindLabel: KIND_LABEL[REMEDY_KIND.PLUGIN],
-      title: `${installed ? '已装' : '装'} ${entry.displayName}`,
+      title: `装 ${entry.displayName}`,
       solves: entry.summary,
-      steps: installed
-        ? [
-            '打开侧边栏 → 插件，确认它处于「已启用」状态',
-            entry.repo ? `用法与配置见仓库：${entry.repo}` : '用法见插件自身说明',
-            `验证：${entry.verify}`,
-          ]
-        : buildSteps(pseudo, { id: 'C2', summary: '' }, ctx, { type: 'plugin', packageName: entry.package }),
+      steps: buildSteps(pseudo, { id: 'C2', summary: '' }, ctx, { type: 'plugin', packageName: entry.package }),
       packageName: entry.package,
       repo: entry.repo ?? null,
       install: entry.install ?? null,
-      current: installed ? '已安装' : '未安装',
-      suggested: installed ? '确认已启用' : '按需安装',
+      current: '未安装',
+      suggested: '按需安装',
       status: 'optional',
       note: null,
       capabilityTags: caps,
-      source: `${entry.package} · 核实于 ${entry.source?.verifiedAt}`,
+      origin: entry.origin ?? 'curated',
+      source: `${entry.package} · 核实于 ${entry.source?.verifiedAt ?? entry.source?.via ?? '—'}`,
       risk: entry.risk ?? null,
     });
   }

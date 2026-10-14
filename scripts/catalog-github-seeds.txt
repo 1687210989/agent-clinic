@@ -1,0 +1,21 @@
+# GitHub 插件候选清单（seed）
+#
+# 为什么需要这份文件：
+#   本机（以及不少受限网络）**无法访问 api.github.com / github.com/search**，
+#   但 `git` 协议与 codeload 是通的。所以 GitHub 方向的检索走两步：
+#     1. 联网检索（人工 / web_search）产出候选清单 → 写进本文件
+#     2. catalog-sync --source github 逐条用 `git ls-remote` **核实仓库真实存在**，
+#        再浅克隆读它的 package.json 取元数据
+#
+# 纪律：这里只是"候选"，不是"已核实"。是否有 dsh 元数据、能不能装，
+#       一律以核实结果为准（快照里会写明 verifiedVia 与 metadata 缺失情况）。
+#
+# 格式：owner/repo        # 可选注释
+#      owner/repo  <说明>
+
+qwert702/dsh-context-compressor        # DSH 上下文压缩插件
+MimicHunterZ/dsh-agent-compact         # agent 驱动的选区压缩（把选中区间压成模型自写的检查点），替代默认的头部锚定全量扫描
+wicm84266964/dsh-minimal-mode-compaction  # 为极简模式补自动上下文压缩 + /compact + /context + 模型主动压缩
+bvbhu/dsh-quilt-compact                # 替代 compaction-basic：用指定模型分块摘要再合并
+WODE25500/dsh-token-headroom           # 上下文压缩 skill：让 live prompt 变小但保留关键状态
+JoblessJoe/smart-compaction            # 模型择机压缩 + 真实用量（另有 npm 包，人工核实条目已收录）

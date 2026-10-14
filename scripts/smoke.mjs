@@ -880,6 +880,7 @@ process.stdout.write('\n12c) 同类型合并\n');
 process.stdout.write('\n12d) 插件目录（npm 同步 + 去重）\n');
 {
   const cat = await import('../src/catalog/index.mjs');
+  const syncMod = await import('../scripts/catalog-sync.mjs');
   const { analyze } = await import('../src/report.mjs');
   const fs = await import('node:fs');
   const os = await import('node:os');
@@ -980,6 +981,92 @@ process.stdout.write('\n12d) 插件目录（npm 同步 + 去重）\n');
     'catalog 带上目录来源信息（人工 N 条 + npm M 条）',
     data.catalog.sources && typeof data.catalog.sources.curated === 'number',
     JSON.stringify(data.catalog.sources),
+  );
+
+  // 用户要求 1：已经安装的就不再显示推荐
+  const installedNow = cat.scanInstalledPlugins().installed;
+  check(
+    '已安装的插件不再出现在推荐里',
+    recs.every(
+      (r) => !installedNow.includes(r.package) && !installedNow.includes(String(r.package).replace(/^@[^/]+\//, '')),
+    ),
+    recs.filter((r) => installedNow.includes(r.package)).map((r) => r.package).join(', ') ||
+      `已装 ${installedNow.length} 个，均未出现在 ${recs.length} 条推荐中`,
+  );
+  check(
+    '处方层同样不再推荐已安装插件',
+    !data.prescriptions.some((rx) => {
+      const pkg = rx.action?.packageName;
+      if (!pkg || rx.kind !== 'plugin') return false;
+      return installedNow.includes(pkg) || installedNow.includes(pkg.replace(/^@[^/]+\//, ''));
+    }),
+    data.prescriptions
+      .filter((rx) => rx.kind === 'plugin')
+      .map((rx) => rx.action?.packageName)
+      .join(', ') || '(无插件处方)',
+  );
+  check(
+    '省 token 开关清单里也不含已安装插件',
+    data.levers.every((lv) => !lv.packageName || !installedNow.includes(lv.packageName)),
+  );
+
+  // 用户要求 2：GitHub 方向的开源插件（种子清单 + git 核实）
+  check('GitHub 种子清单可读且格式正确', syncMod.readSeeds().length >= 5, `${syncMod.readSeeds().length} 条种子`);
+  check('种子清单只放 owner/repo 形式', syncMod.readSeeds().every((s) => /^[\w.-]+\/[\w.-]+$/.test(s)));
+  check(
+    'GitHub 能力推导规则能识别"上下文压缩/长会话"',
+    syncMod.deriveCapabilities('模型驱动的上下文压缩插件，解决长会话').map((c) => c.cap).join(',') ===
+      'token-saving,long-session',
+    JSON.stringify(syncMod.deriveCapabilities('模型驱动的上下文压缩插件，解决长会话')),
+  );
+  check(
+    '目录来源结构包含 github 计数',
+    data.catalog.sources && typeof data.catalog.sources.github === 'number',
+    `curated=${data.catalog.sources?.curated} registry=${data.catalog.sources?.registry} github=${data.catalog.sources?.github}`,
+  );
+  const ghEntry = {
+    id: 'gh:demo/gh-plugin',
+    package: 'demo-gh-plugin',
+    displayName: 'GH Demo',
+    summary: '模型驱动的上下文压缩插件，把长会话的 token 压下来',
+    capabilities: ['token-saving', 'long-session'],
+    capabilityEvidence: [
+      { cap: 'token-saving', matched: '上下文压缩' },
+      { cap: 'long-session', matched: '长会话' },
+    ],
+    keywords: [],
+    install: { gui: '按仓库 README', cli: 'git clone https://github.com/demo/gh-plugin.git' },
+    origin: 'github',
+  };
+  check(
+    'GitHub 条目能参与检索与推荐',
+    cat
+      .matchPlugins(
+        { id: 'C3', title: '长会话疲劳', summary: '单会话 257 条消息', category: 'C' },
+        { catalog: [ghEntry], installed: [] },
+      )
+      .some((h) => h.entry.id === 'gh:demo/gh-plugin'),
+  );
+  check(
+    'GitHub 条目与 npm 一样受"未审阅"门槛约束（单个泛能力不算数）',
+    cat.matchPlugins(
+      { id: 'C1', title: 'token 消耗过快', summary: 'output 是基线 7 倍', category: 'C' },
+      { catalog: [{ ...ghEntry, capabilities: ['token-saving'], capabilityEvidence: [] }], installed: [] },
+    ).length === 0,
+  );
+  check(
+    'GitHub 条目的风险提示写明"未审阅源码、需按 README 自行安装"',
+    (() => {
+      const f = pathMod.join(os.tmpdir(), `ac-cat-${Date.now()}.json`);
+      fs.writeFileSync(
+        f,
+        JSON.stringify({ entries: [{ ...ghEntry, risk: undefined }], fetchedAt: '2026-10-16', source: 'x' }),
+        'utf8',
+      );
+      const loaded = cat.loadRegistrySnapshot(f);
+      fs.unlinkSync(f);
+      return loaded.entries[0].origin === 'github' && /未审阅源码/.test(loaded.entries[0].risk);
+    })(),
   );
 }
 

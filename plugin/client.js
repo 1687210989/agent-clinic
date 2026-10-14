@@ -1084,7 +1084,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { marginTop: '10px' } },
-            '若提示服务不可用，说明宿主未挂载 webServer 服务；',
+            '若提示 404 或服务不可用，说明宿主进程还在跑**旧插件代码**，请完全退出并重启 Harness；',
             '此时仍可在会话里直接说「体检一下」，由模型调用工具产出报告。',
           ),
         );
@@ -1142,6 +1142,27 @@ window.__ModuleLoader__.load({
             h(Stat, { label: 'cacheRead', value: hd.cacheReadTokens.toLocaleString() }),
           ),
 
+          (() => {
+            // 术语图例：报告与面板里一直只有 C1/A3/E5 这样的编号，
+            // 用户看不懂就直接放弃。这里把本次出现的指标 id → 名称列全。
+            const terms = new Map();
+            for (const f of d.findings || []) terms.set(f.id, f.title);
+            for (const g of d.groups || []) terms.set(g.id, g.title);
+            for (const n of d.notDetected || []) terms.set(n.id, n.title);
+            if (!terms.size) return null;
+            return h(
+              'details',
+              { style: { marginTop: '10px', fontSize: '11px', color: V.text3 } },
+              h('summary', { style: { cursor: 'pointer' } }, '指标编号是什么意思？（展开图例）'),
+              h(
+                'div',
+                { style: { marginTop: '6px', lineHeight: '1.8' } },
+                [...terms.entries()].map(([id, title]) =>
+                  h('div', { key: id }, `${id} · ${title}`)),
+              ),
+            );
+          })(),
+
           liveBusy || live || liveErr
             ? h(
                 'div',
@@ -1193,6 +1214,31 @@ window.__ModuleLoader__.load({
                 h('div', { style: S.empty }, '（宿主未返回合并视图，请更新插件后重启以启用同类型合并）'),
               ),
 
+          d.prescriptions && d.prescriptions.length
+            ? h(
+                'div',
+                { style: { marginTop: '20px' } },
+                h(
+                  'h3',
+                  { style: S.sectionTitle },
+                  `处方：最该先做的 ${d.prescriptions.length} 条（唯一可执行产出，从各问题里挑出）`,
+                ),
+                configPath
+                  ? h(
+                      'div',
+                      { style: S.howTo },
+                      '配置类处方改的是：',
+                      h('code', { style: { fontFamily: V.mono } }, configPath),
+                      '（本工具只读它，不代你改）',
+                    )
+                  : null,
+                d.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
+                d.config && d.config.warnings && d.config.warnings.length
+                  ? h('div', { style: S.howTo }, `配置读取提示：${d.config.warnings.join('；')}`)
+                  : null,
+              )
+            : null,
+
           h('h3', { style: S.sectionTitle }, '未检测到异常的维度'),
           d.notDetected.length
             ? h(
@@ -1213,7 +1259,7 @@ window.__ModuleLoader__.load({
                 { style: { marginTop: '8px', fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
                 d.notDetected
                   .filter((d) => d.note)
-                  .map((d) => `${d.id} ${d.title}：${d.note}`)
+                  .map((d) => `说明 · ${d.id} ${d.title}：${d.note}`)
                   .join('；'),
               )
             : null,
@@ -1266,31 +1312,6 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                 ),
-              )
-            : null,
-
-          d.prescriptions && d.prescriptions.length
-            ? h(
-                'div',
-                { style: { marginTop: '20px' } },
-                h(
-                  'h3',
-                  { style: S.sectionTitle },
-                  `最该先做的 ${d.prescriptions.length} 条（从上面各问题里挑出）`,
-                ),
-                configPath
-                  ? h(
-                      'div',
-                      { style: S.howTo },
-                      '配置类处方改的是：',
-                      h('code', { style: { fontFamily: V.mono } }, configPath),
-                      '（本工具只读它，不代你改）',
-                    )
-                  : null,
-                d.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
-                d.config && d.config.warnings && d.config.warnings.length
-                  ? h('div', { style: S.howTo }, `配置读取提示：${d.config.warnings.join('；')}`)
-                  : null,
               )
             : null,
 

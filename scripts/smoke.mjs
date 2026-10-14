@@ -1801,6 +1801,231 @@ process.stdout.write('\n15) 第二轮评估整改护栏\n');
   );
 }
 
+// --- 16. 第三轮（待优化报告）整改护栏 ---
+//
+// 这一节守住"开采 DSH 实测数据源"与工程基建的成果。全部用合成样本，
+// 不依赖本机恰好有对应数据。
+process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
+{
+  const diagMod = await import('../src/diagnostics/index.mjs');
+  const { renderEvidence, parseRange } = await import('../src/evidence/index.mjs');
+  const run = (sessions) => diagMod.runDiagnostics({ scan: { sessions, errors: [] }, summary: { global: {} } });
+
+  // C5：压缩可观测性必须给出**实测**释放量（DSH 的 shadowedTokenCount）
+  const c5 = run([
+    {
+      sessionId: 'session-c5',
+      file: '/tmp/c5.zstd',
+      totalLines: 100,
+      events: [
+        ...Array.from({ length: 4 }, (_, i) => ({ kind: 'compaction', compaction_phase: 'start', compaction_id: `c${i}`, locator: `/tmp/c5.zstd#L${i + 1}` })),
+        { kind: 'compaction', compaction_phase: 'summary', shadowed_token_count: 53675, shadowed_end: 263, summary_chars: 4000, locator: '/tmp/c5.zstd#L20' },
+        { kind: 'compaction', compaction_phase: 'prune', shadowed_token_count: 2393, shadowed_end: 292, locator: '/tmp/c5.zstd#L21' },
+      ],
+    },
+  ]).findings.find((f) => f.id === 'C5');
+  check(
+    'C5：给出 DSH 实测释放量（不是估算），并标注了来源',
+    // 56,068 = 摘要 53,675 + 剪枝 2,393（两项都来自 shadowedTokenCount）
+    Boolean(c5) &&
+      /56,068/.test(c5.summary) &&
+      /实测/.test(c5.summary) &&
+      /shadowedTokenCount/.test(c5.summary) &&
+      /53,675/.test(c5.evidence?.[0]?.note ?? ''),
+    c5?.summary ?? '(未检出)',
+  );
+  check('C5：置信度高（数字是从日志抄的，不是推断的）', c5?.confidence >= 0.9, String(c5?.confidence));
+
+  // C3：压缩在起作用的会话不该被判"长会话疲劳"
+  const longMsgs = Array.from({ length: 250 }, (_, i) => ({
+    kind: i % 2 ? 'assistant_msg' : 'user_msg',
+    seq: i + 1,
+    locator: `/tmp/c3.zstd#L${i + 1}`,
+    ts: '2026-10-01T00:00:00.000Z',
+  }));
+  const mkC3 = (withCompaction) => [
+    {
+      sessionId: 'session-c3',
+      file: '/tmp/c3.zstd',
+      totalLines: 300,
+      events: withCompaction
+        ? [...longMsgs, { kind: 'compaction', compaction_phase: 'start', locator: '/tmp/c3.zstd#L260' }, { kind: 'compaction', compaction_phase: 'summary', shadowed_end: 230, shadowed_token_count: 40000, locator: '/tmp/c3.zstd#L261' }]
+        : longMsgs,
+    },
+  ];
+  const c3No = run(mkC3(false)).findings.filter((f) => f.id === 'C3');
+  const c3With = run(mkC3(true));
+  check('C3：没有压缩的长会话照报', c3No.length === 1, `报了 ${c3No.length} 条`);
+  check(
+    'C3：压缩之后未遮蔽消息已降到阈值以下 → 不报，并说明原因（旧版必报并建议 /compact）',
+    c3With.findings.filter((f) => f.id === 'C3').length === 0 &&
+      /压缩在起作用/.test(c3With.notDetected.find((x) => x.id === 'C3')?.note ?? ''),
+    c3With.notDetected.find((x) => x.id === 'C3')?.note ?? '(无说明)',
+  );
+
+  // C6：工具面成本（schema 字节 + 0 调用工具）
+  const c6 = run([
+    {
+      sessionId: 'session-c6',
+      file: '/tmp/c6.zstd',
+      totalLines: 10,
+      events: [
+        { kind: 'request_header', tool_count: 30, tool_names: ['read', 'edit', 't1', 't2', 't3', 't4', 't5'], tool_schema_bytes: 30000, request_reason: 'initial', locator: '/tmp/c6.zstd#L1' },
+        { kind: 'tool_call', tool_name: 'read', locator: '/tmp/c6.zstd#L2' },
+        { kind: 'tool_call', tool_name: 'edit', locator: '/tmp/c6.zstd#L3' },
+      ],
+    },
+  ]).findings.filter((f) => f.id === 'C6');
+  check(
+    'C6：量出工具 schema 成本（每请求重发）',
+    c6.some((f) => /30,000 字符/.test(f.summary) && /每个/.test(f.summary)),
+    c6.map((f) => f.summary).join(' | ') || '(未检出)',
+  );
+  check(
+    'C6：列出窗口内 0 次调用的工具',
+    c6.some((f) => /0 次调用/.test(f.summary) && /t1/.test(f.summary)),
+    c6.map((f) => f.summary).join(' | ') || '(未检出)',
+  );
+
+  // A5：辅助调用要给上界并明说"不计入概览"
+  const a5 = run([
+    {
+      sessionId: 'session-a5',
+      file: '/tmp/a5.zstd',
+      totalLines: 10,
+      events: Array.from({ length: 25 }, (_, i) => ({
+        kind: 'aux_request',
+        aux_source: 'web-search',
+        aux_model: 'deepseek-v4-flash',
+        aux_max_tokens: 4096,
+        locator: `/tmp/a5.zstd#L${i + 1}`,
+      })),
+    },
+  ]).findings.find((f) => f.id === 'A5');
+  check(
+    'A5：给出次数、模型与 maxTokens 上界，并标注是上界',
+    Boolean(a5) && /25 次/.test(a5.summary) && /102,400|102400/.test(a5.summary) && /上界/.test(a5.impact),
+    a5?.summary ?? '(未检出)',
+  );
+
+  // C7：上下文注入量
+  const c7 = run([
+    {
+      sessionId: 'session-c7',
+      file: '/tmp/c7.zstd',
+      totalLines: 10,
+      events: Array.from({ length: 30 }, (_, i) => ({
+        kind: 'inbox_splice',
+        splice_target: 'next-turn',
+        inserted_chars: 5000,
+        locator: `/tmp/c7.zstd#L${i + 1}`,
+      })),
+    },
+  ]).findings.find((f) => f.id === 'C7');
+  check(
+    'C7：报出注入次数与字符量（并换算估算 token）',
+    Boolean(c7) && /30 次/.test(c7.summary) && /150,000 字符/.test(c7.summary),
+    c7?.summary ?? '(未检出)',
+  );
+
+  // A2：窗口必须是**日历跨度**，且不足时说明"还差多久"
+  const a2Scan = {
+    sessions: [
+      {
+        sessionId: 'session-a2',
+        file: '/tmp/a2.zstd',
+        totalLines: 5,
+        events: [{ kind: 'user_msg', locator: '/tmp/a2.zstd#L1', ts: '2026-09-01T00:00:00.000Z' }],
+      },
+    ],
+    errors: [],
+  };
+  const soon = diagMod.runDiagnostics(
+    { scan: a2Scan, summary: { global: {} } },
+    { now: Date.parse('2026-09-05T00:00:00.000Z') }, // 首次会话后 4 天
+  );
+  check(
+    'A2：窗口按"今天 − 首次会话时间"算，不足时说明还差多少天生效',
+    /自首次会话算起/.test(soon.notDetected.find((x) => x.id === 'A2')?.note ?? '') &&
+      /再过约 26 天/.test(soon.notDetected.find((x) => x.id === 'A2')?.note ?? ''),
+    soon.notDetected.find((x) => x.id === 'A2')?.note ?? '(无说明)',
+  );
+  const later = diagMod.runDiagnostics(
+    { scan: a2Scan, summary: { global: {} } },
+    { now: Date.parse('2026-11-01T00:00:00.000Z') }, // 首次会话后 61 天
+  );
+  check(
+    'A2：窗口够 30 天后开始判定，并报告活跃天数',
+    !/样本不足/.test(later.notDetected.find((x) => x.id === 'A2')?.note ?? '窗口够') ||
+      later.findings.some((x) => x.id === 'A2') ||
+      /均有触发/.test(later.notDetected.find((x) => x.id === 'A2')?.note ?? ''),
+    later.notDetected.find((x) => x.id === 'A2')?.note ?? '(无说明)',
+  );
+
+  // 证据区间：-L<end> 必须真的展开到终点（旧版只打起点 ±2 行）
+  const firstSession = scan.sessions.find((s) => s.totalLines > 120);
+  if (firstSession) {
+    const loc = `${firstSession.file}#L100-L110`;
+    const pr = parseRange(loc);
+    check('证据：parseRange 能解析 #L<start>-L<end>', pr && pr.start === 100 && pr.end === 110);
+    const text = renderEvidence(loc, { context: 0 });
+    check(
+      '证据：区间终点被真的展开（旧版只展开起点）',
+      /目标区间 #L100-L110/.test(text) && /\n> *110 \|/.test(text) && /\n> *100 \|/.test(text),
+      text.split('\n').slice(0, 3).join(' / '),
+    );
+  }
+
+  // 工程基建：joinPath 跨平台、死代码已删、HTTP 工具已合并、CI 存在
+  const hostSrc2 = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
+  check(
+    '基建：joinPath 用 path.join（macOS/Linux 上文件监听曾全量失败）',
+    /function joinPath\(\.\.\.parts\) \{\s*\n\s*return path\.join\(\.\.\.parts\);/.test(hostSrc2),
+  );
+  check('基建：src/state.mjs 死模块已删除', !fs.existsSync(new URL('../src/state.mjs', import.meta.url)));
+  check(
+    '基建：fetchJson/mapLimit 只有一份（抽到 src/catalog/http.mjs）',
+    fs.existsSync(new URL('../src/catalog/http.mjs', import.meta.url)) &&
+      !/async function fetchJson\(/.test(fs.readFileSync(new URL('../scripts/catalog-sync.mjs', import.meta.url), 'utf8')) &&
+      !/async function fetchJson\(/.test(fs.readFileSync(new URL('../src/catalog/live.mjs', import.meta.url), 'utf8')),
+  );
+  const httpMod = await import('../src/catalog/http.mjs');
+  let misuseRejected = false;
+  try {
+    await httpMod.fetchJson('https://example.invalid/', 5000);
+  } catch (e) {
+    misuseRejected = e instanceof TypeError;
+  }
+  check('基建：fetchJson 拒绝旧的数字参数（迁移漏改时报错而不是静默忽略超时）', misuseRejected);
+  check(
+    '基建：CI 工作流存在且覆盖三平台',
+    /ubuntu-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')) &&
+      /macos-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')) &&
+      /windows-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')),
+  );
+  const installSrc = fs.readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
+  check(
+    '基建：install.sh 复制自身（否则装完无法就地重装）',
+    /for f in [^\n]*install\.sh/.test(installSrc),
+  );
+  check(
+    '基建：install.sh 未识别平台时 exit 1（此前 exit 0 误报成功）',
+    /未检测到已安装的平台[\s\S]{0,600}?exit 1/.test(installSrc),
+  );
+  check('基建：install.sh 的隐私措辞是"默认零外发"', /默认零外发/.test(installSrc) && !/零外部请求/.test(installSrc));
+
+  // 面板 IA：处方必须在"未检测到异常"之前出现（唯一可执行产出不该被压在四段后）
+  const clientSrc2 = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8');
+  const iRx = clientSrc2.indexOf('处方：最该先做的');
+  const iNd = clientSrc2.indexOf("'未检测到异常的维度'");
+  check('面板 IA：处方段排在"未检测到异常的维度"之前', iRx > 0 && iNd > 0 && iRx < iNd, `rx@${iRx} nd@${iNd}`);
+  check('面板 IA：有指标术语图例（C1/A3/E5 此前无释义）', /指标编号是什么意思？/.test(clientSrc2));
+  check(
+    '面板：404 的提示指向"完全退出并重启"（此前引向"未挂载 webServer"）',
+    /旧插件代码/.test(clientSrc2) && /完全退出并重启/.test(clientSrc2),
+  );
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

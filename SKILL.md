@@ -61,7 +61,7 @@ license: MIT
 ./run.sh catalog-sync            # 同步插件目录（npm + GitHub）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
-./scripts/smoke.sh               # 自检（203 项）
+./scripts/smoke.sh               # 自检（233 项）
 ```
 
 ### 发现问题后联网找方案（`report --live`）
@@ -85,6 +85,9 @@ license: MIT
 | C1 | token 消耗过快 | 会话单位请求 output 超主会话基线 2 倍（且总量 ≥2 万 token） |
 | C2 | 上下文膨胀 | 末轮/首轮 input 增长 >10x 且 cacheRead <30% |
 | C3 | 长会话疲劳 | 单会话消息数 >200 |
+| C5 | 压缩可观测性 | 单会话压缩 ≥3 次，给出 **DSH 实测**释放 token |
+| C6 | 工具面成本 | 工具 schema >20000 字符 + 窗口内 0 调用的工具 ≥5 个 |
+| C7 | 上下文注入量 | 上下文被注入 ≥20 次且 ≥100000 字符 |
 | E1 | 死循环 | 同工具 + 同参数 + 同错误，重复 ≥3 次 |
 | E2 | 反复失败 | 会话工具错误率 >30%（样本 ≥10 次调用） |
 | E3 | 工具结果过大 | 单条工具结果 >8192 字符且会话内 ≥5 条 |
@@ -97,6 +100,7 @@ license: MIT
 | A2 | skill 闲置 | 已装 skill 在 ≥30 天窗口内 0 次触发 |
 | A3 | 高频手动序列 | 非通用工具的两步序列 ≥5 次（去镜像、跨会话合并） |
 | A4 | 子代理开销 | 子委托会话 token 占比 >40% |
+| A5 | 辅助 LLM 开销 | 辅助模型调用 ≥20 次，给出 maxTokens 上界 |
 
 **1 项排期**：A1 MCP 闲置（本机未配置 MCP）。
 **2 项尚未实现**：K1/K2 跨会话失忆类 —— 原因**不是**平台没有数据，而是本工具按隐私约束

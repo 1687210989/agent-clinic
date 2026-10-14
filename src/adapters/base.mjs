@@ -17,6 +17,15 @@ export const KIND = {
   // 第二轮评估 F1：这三类数据一直在原始日志里，只是适配层没抽 —— 补上后
   // E3（工具结果过大）/ N3（审批摩擦）/ N4（API 重试）不再"不可实现"。
   RETRY: 'retry',
+  // 第三轮（待优化报告 Phase 1）：把 DSH 自己记的**实测值**接进来 ——
+  //   COMPACTION    压缩释放了多少 token（不再靠启发式估算）
+  //   REQUEST_HEADER 工具 schema 的体量（每个请求都要重发，此前从未计量）
+  //   INBOX_SPLICE   上下文注入量
+  //   AUX_REQUEST    辅助 LLM 请求（无 usage，但确实在花钱）
+  COMPACTION: 'compaction',
+  REQUEST_HEADER: 'request_header',
+  INBOX_SPLICE: 'inbox_splice',
+  AUX_REQUEST: 'aux_request',
   META: 'meta',
 };
 

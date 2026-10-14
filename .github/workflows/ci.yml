@@ -1,0 +1,63 @@
+name: CI
+
+# 为什么要有它：203+ 项自检此前没有任何自动化执行者 —— 靠人手跑，
+# 于是出现过"徽章是绿的、实跑是红的"（断言依赖宿主并发写入的状态）。
+# 这里在三个平台上跑同一套自检，顺带暴露 Mac/Linux 才有的缺陷
+# （例如曾经硬编码 `\` 的 joinPath 在 macOS 上让文件监听全量失败）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.os }} · node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.15.0', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 环境信息
+        run: node -v && npm -v
+
+      - name: 自检（scripts/smoke.mjs）
+        run: node scripts/smoke.mjs
+
+      # 报告要能在干净环境里跑出来（无会话数据时也应优雅降级，而不是崩）
+      - name: 空数据下跑一次报告
+        run: node src/cli.mjs report
+        env:
+          DSH_HOME: ${{ runner.temp }}/agent-clinic-empty-home
+
+      - name: 目录命令自检（不联网）
+        run: node src/cli.mjs catalog
+
+  # 只读与隐私承诺的机器检查：仓库里不该出现会话数据或本地路径
+  privacy:
+    name: 隐私与仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 生成物不得入库
+        run: |
+          set -e
+          bad=0
+          for f in agent-clinic-report.md .agent-clinic .tmp; do
+            if [ -e "$f" ]; then echo "::error::$f 不应存在于仓库"; bad=1; fi
+          done
+          if git ls-files | grep -E '\.(jsonl|zstd)$'; then
+            echo "::error::仓库里出现会话数据文件"; bad=1
+          fi
+          if git ls-files | grep -E '(^|/)(COMMIT_MSG|readme-msg|.*-msg)\.txt$'; then
+            echo "::error::提交消息临时文件被入库"; bad=1
+          fi
+          exit $bad

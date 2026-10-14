@@ -94,7 +94,3 @@ export function decodeFrames(buf) {
   return { frames: offsets.length, badFrames, text: parts.join(''), plain: false };
 }
 
-/** 便捷方法：直接从文件路径解码 */
-export function decodeFramesFromFile(file) {
-  return decodeFrames(fs.readFileSync(file));
-}

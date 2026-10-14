@@ -29,8 +29,6 @@ import path from 'node:path';
 // 随附默认值（出处：@deepseek-ai/dsh-base 的 cordis.patch.yml）
 // ---------------------------------------------------------------------------
 
-/** 随附 bundle 的标识，只用于在报告里标注来源，不做版本判定 */
-export const BUNDLE_SOURCE = '@deepseek-ai/dsh-base · cordis.patch.yml';
 
 /**
  * 我们真正会给处方的行。

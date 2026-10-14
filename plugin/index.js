@@ -18,6 +18,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
@@ -277,8 +278,16 @@ function startWatching(dshHome) {
   }
 }
 
+/**
+ * 跨平台路径拼接。
+ *
+ * ⚠️ 第三轮修复：这里原来是 `parts.join('\\')` —— 在 macOS/Linux 上拼出来的
+ * 路径全是错的，导致 fs.watch / readdirSync 全面失败，而失败又被下面的
+ * try/catch 静默吞掉（面板退化成"只有点刷新才有数据"）。
+ * 用 path.join 交给平台自己决定分隔符。
+ */
 function joinPath(...parts) {
-  return parts.join('\\');
+  return path.join(...parts);
 }
 
 // ---------------------------------------------------------------------------

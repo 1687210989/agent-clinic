@@ -23,6 +23,7 @@
  */
 
 import fs from 'node:fs';
+import { fetchJson, mapLimit, UA_SYNC } from '../src/catalog/http.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,40 +56,7 @@ const DETAIL_LIMIT = Number(argOf('--limit', 120)) || 120;
 const OUT = argOf('--out', DEFAULT_OUT);
 const SOURCE = argOf('--source', 'both'); // both | npm | github
 
-async function fetchJson(url, timeoutMs = 20000, extraHeaders = {}) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, {
-      signal: ac.signal,
-      headers: { accept: 'application/json', 'user-agent': 'agent-clinic-catalog-sync', ...extraHeaders },
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 /** 有限并发 */
-async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
-  let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (i < items.length) {
-        const idx = i++;
-        try {
-          out[idx] = await fn(items[idx], idx);
-        } catch (e) {
-          out[idx] = { error: e.message };
-        }
-      }
-    }),
-  );
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // 来源 1：npm registry
 // ---------------------------------------------------------------------------
@@ -288,15 +256,6 @@ function readSeeds(file = SEED_FILE) {
   }
 }
 
-/** git 是否可用（现在只是兜底通道；API 中继可用时不需要 git） */
-export function gitOk() {
-  try {
-    execFileSync('git', ['--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * GitHub API 中继。
@@ -320,7 +279,11 @@ async function ghFetch(pathWithQuery, timeoutMs = 25000) {
   for (const relay of relays) {
     const url = `${relay}https://api.github.com${pathWithQuery}`;
     try {
-      const d = await fetchJson(url, timeoutMs, { accept: 'application/vnd.github+json' });
+      const d = await fetchJson(url, {
+    timeoutMs,
+    headers: { accept: 'application/vnd.github+json' },
+    userAgent: UA_SYNC,
+  });
       if (_ghRelay !== relay) {
         _ghRelay = relay;
         process.stdout.write(`  GitHub API 通道：${relay || '直连'}\n`);

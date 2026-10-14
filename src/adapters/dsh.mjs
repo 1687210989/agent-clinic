@@ -19,14 +19,23 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { decodeFrames } from './zstd-frames.mjs';
+import { resolveDshHome as resolveEnvDshHome } from '../config/index.mjs';
 import { KIND, PLATFORM, makeLocator, makeEvent, stableStringify } from './base.mjs';
 
 /** 会话文件名匹配：session.v4.jsonl.zstd / session.v1.jsonl */
 const SESSION_FILE_RE = /^session\.v(\d+)\.jsonl(\.zstd)?$/;
 
 /** 解析 DSH_HOME：显式参数 > 环境变量 > ~/.dsh */
+/**
+ * 会话根目录所在（DSH_HOME）。
+ *
+ * ⚠️ 第三轮：这里原本自带一份回退逻辑，与 src/config/index.mjs 的
+ * resolveDshHome 已经分叉（那份会 trim 并回退 HOME/USERPROFILE）。
+ * 现在统一委托给 config 的那一份，只保留"显式路径优先"的包装。
+ */
 export function resolveDshHome(explicit) {
-  return explicit || process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  if (explicit) return explicit;
+  return resolveEnvDshHome(process.env) || path.join(os.homedir(), '.dsh');
 }
 
 /** 会话根目录 */
@@ -208,6 +217,22 @@ function sumTextLen(blocks, type) {
 }
 
 /**
+ * 结构化数据的**字节/字符体量** —— 只取长度，绝不保留内容。
+ *
+ * 用于 C6（工具 schema 体量）与 C7（上下文注入量）：这两个指标要的是"多大"，
+ * 不是"是什么"。用 JSON 序列化长度而不是递归数叶子，是为了让口径可复核
+ * （同一份数据任何时候算出同一个数）。
+ */
+function jsonLen(value) {
+  if (value === undefined || value === null) return 0;
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return 0; // 循环引用等异常输入：按 0 处理，不让单条脏数据毁掉整个会话解析
+  }
+}
+
+/**
  * 从工具参数里只取出**技能名**（A2 需要）。
  *
  * ⚠️ 第二轮评估 F13 的根因：DSH 的 skill 触发**不是**同名工具调用，
@@ -386,6 +411,105 @@ export function parseSession(file) {
           max_retries: Number.isFinite(data.maxRetries) ? data.maxRetries : null,
           delay_ms: Number.isFinite(data.delayMs) ? data.delayMs : null,
           failure_code: data.failure?.code ?? null,
+        });
+        break;
+
+      // ---------------------------------------------------------------------
+      // C5 压缩可观测性 —— DSH 自己记着"这次压缩实际释放了多少 token"：
+      //   compaction/summary 带 shadowedTokenCount + shadowedSeqs + provider/model
+      //   compaction/prune   带 shadowedTokenCount（只有剪枝，没有摘要）
+      // 旧版本完全不解析这四类事件，于是 C1/C3 只能靠启发式估算绕圈子。
+      // 只记数字与范围，**不记 summary / rawOutput 正文**。
+      // ---------------------------------------------------------------------
+      case 'compaction/start':
+      case 'compaction/end':
+        ev = makeEvent({ ...base, kind: KIND.COMPACTION }, {
+          compaction_phase: rec.type === 'compaction/start' ? 'start' : 'end',
+          compaction_id: data.compactionId ?? null,
+          turn: Number.isFinite(data.turn) ? data.turn : null,
+        });
+        break;
+
+      case 'compaction/summary':
+        ev = makeEvent({ ...base, kind: KIND.COMPACTION }, {
+          compaction_phase: 'summary',
+          compaction_id: data.compactionId ?? null,
+          shadowed_token_count: Number.isFinite(data.shadowedTokenCount) ? data.shadowedTokenCount : null,
+          shadowed_count: Array.isArray(data.shadowedSeqs) ? data.shadowedSeqs.length : null,
+          shadowed_start: Number.isFinite(data.shadowedRange?.start) ? data.shadowedRange.start : null,
+          shadowed_end: Number.isFinite(data.shadowedRange?.end) ? data.shadowedRange.end : null,
+          // 摘要本身的体量（与"释放了多少"对比，能看出压缩效率）
+          summary_chars: Array.isArray(data.summary) ? sumTextLen(data.summary, 'text') : null,
+          provider: data.provider ?? null,
+          model: data.model ?? null,
+        });
+        break;
+
+      case 'compaction/prune':
+        ev = makeEvent({ ...base, kind: KIND.COMPACTION }, {
+          compaction_phase: 'prune',
+          compaction_id: data.compactionId ?? null,
+          shadowed_token_count: Number.isFinite(data.shadowedTokenCount) ? data.shadowedTokenCount : null,
+          shadowed_count: Array.isArray(data.shadowedSeqs) ? data.shadowedSeqs.length : null,
+          shadowed_start: Number.isFinite(data.shadowedRange?.start) ? data.shadowedRange.start : null,
+          shadowed_end: Number.isFinite(data.shadowedRange?.end) ? data.shadowedRange.end : null,
+        });
+        break;
+
+      // ---------------------------------------------------------------------
+      // C6 工具面成本 —— request/header 里有**完整的工具 schema**（实测 27 个工具）。
+      // 工具 schema 每个请求都要重发，但此前从未被计量过。
+      // 记工具名（它们是指令标识符，不是用户内容）+ schema 字节数与 maxTokens。
+      // ---------------------------------------------------------------------
+      case 'request/header': {
+        const header = data.header ?? {};
+        const tools = Array.isArray(header.tools) ? header.tools : [];
+        ev = makeEvent({ ...base, kind: KIND.REQUEST_HEADER }, {
+          request_reason: typeof data.reason === 'string' ? data.reason : null,
+          tool_count: tools.length,
+          tool_names: tools.map((t) => (typeof t?.name === 'string' ? t.name : null)).filter(Boolean),
+          tool_schema_bytes: jsonLen(tools),
+          max_tokens: Number.isFinite(header.config?.maxTokens)
+            ? header.config.maxTokens
+            : Number.isFinite(header.adapterDefaults?.maxTokens)
+              ? header.adapterDefaults.maxTokens
+              : null,
+        });
+        break;
+      }
+
+      // C7 上下文注入量 —— inbox 被 splice 的痕迹（塞了什么进去、多大）。
+      // 只记体积与目标，不记插入内容。
+      case 'agent/inbox/spliced':
+        ev = makeEvent({ ...base, kind: KIND.INBOX_SPLICE }, {
+          splice_target: typeof data.target === 'string' ? data.target : null,
+          splice_start: Number.isFinite(data.start) ? data.start : null,
+          inserted_count: Array.isArray(data.inserted) ? data.inserted.length : null,
+          inserted_chars: jsonLen(data.inserted),
+        });
+        break;
+
+      // ---------------------------------------------------------------------
+      // A5 辅助 LLM 开销 —— 这两类请求**没有 usage 记录**，但它们确实在花钱：
+      //   web/deepseek-search-llm-request（联网检索，实测 max_tokens=4096）
+      //   session/title-llm-request（会话标题，maxTokens=64）
+      // 只记次数、模型与 token 上限（据此给上界估算），不记请求体正文。
+      // ---------------------------------------------------------------------
+      case 'web/deepseek-search-llm-request':
+        ev = makeEvent({ ...base, kind: KIND.AUX_REQUEST }, {
+          aux_source: 'web-search',
+          aux_model: data.body?.model ?? null,
+          aux_max_tokens: Number.isFinite(data.body?.max_tokens) ? data.body.max_tokens : null,
+          aux_input_chars: jsonLen(data.body?.messages),
+        });
+        break;
+
+      case 'session/title-llm-request':
+        ev = makeEvent({ ...base, kind: KIND.AUX_REQUEST }, {
+          aux_source: 'session-title',
+          aux_model: data.route?.model ?? null,
+          aux_max_tokens: Number.isFinite(data.maxTokens) ? data.maxTokens : null,
+          aux_input_chars: jsonLen(data.messages),
         });
         break;
 

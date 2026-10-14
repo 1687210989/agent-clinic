@@ -218,15 +218,38 @@ export function buildPrescription(remedy, finding, ctx = {}) {
           ? '随附默认值（你的 profile 未覆盖这一行）'
           : '未能读到该行（profile 未找到）';
 
-    const snippet = remedy.row ? toPatchSnippet(remedy.row.id, remedy.suggest, remedy.row.name) : null;
+    // ⚠️ 第二轮评估 F17：profile patch 按 id 定位、**整体替换**该行 config。
+    //    所以只写 reasoningEffort 的片段会把同一行的 provider/model **抹掉**——
+    //    实测 remedies 里曾经硬编码 provider: deepseek-account，official 用户
+    //    整段粘贴就会被静默改成 account。
+    //    现在：这类处方声明 preserveKeys，片段里把当前行的这些键原样带上
+    //    （读不到当前行时退化为随附默认值，并在 note 里说明来源）。
+    const preserve = Array.isArray(remedy.preserveKeys) ? remedy.preserveKeys : [];
+    const carried = {};
+    const carriedNote = [];
+    for (const k of preserve) {
+      const v = row?.config?.[k];
+      if (v !== undefined && v !== null) {
+        carried[k] = v;
+        carriedNote.push(`${k}=${fmt(v)}（沿用你当前的值）`);
+      } else if (remedy.shippedConfig?.[k] !== undefined) {
+        carried[k] = remedy.shippedConfig[k];
+        carriedNote.push(`${k}=${fmt(remedy.shippedConfig[k])}（随附默认，未读到你当前的值）`);
+      }
+    }
+    const nextConfig = { ...carried, ...remedy.suggest };
+
+    const snippet = remedy.row ? toPatchSnippet(remedy.row.id, nextConfig, remedy.row.name) : null;
     const action = {
       type: 'config',
       file: snap?.patchPath ?? '~/.dsh/profiles/<profile>/cordis.patch.yml',
       rowId: remedy.row.id,
       packageName: remedy.row.name,
-      config: remedy.suggest,
+      config: nextConfig,
       snippet,
-      note: 'profile patch 按 id 定位、**整体替换**该行的 config，所以片段里要把这一行需要的键写全',
+      note:
+        'profile patch 按 id 定位、**整体替换**该行的 config，所以片段里要把这一行需要的键写全' +
+        (carriedNote.length ? `。已带上：${carriedNote.join('、')}` : ''),
     };
     return {
       ...base,
@@ -236,6 +259,7 @@ export function buildPrescription(remedy, finding, ctx = {}) {
         `${remedy.solves}。\n` +
         `当前：${current.join(' · ')}（${origin}）\n` +
         `建议：${suggest.join(' · ')}` +
+        (carriedNote.length ? `\n片段里同时带上：${carriedNote.join('、')}` : '') +
         (evidence ? `\n为什么是你：${evidence}` : ''),
       command: snippet,
       because: `它解决「${remedy.solves}」，正好对上检测到的 ${finding.id}（${finding.summary}）`,

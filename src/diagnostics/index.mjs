@@ -124,6 +124,269 @@ function median(arr) {
 }
 
 /**
+ * C5 压缩可观测性 —— **第三轮（待优化报告 Phase 1）新增**
+ *
+ * 为什么它比 C1 更可信：C1 用"单位请求 output vs 基线"**推**浪费，
+ * 而 DSH 自己把**实测释放量**写进了日志：
+ *   compaction/summary → shadowedTokenCount（这次摘要替代了多少 token）
+ *   compaction/prune   → shadowedTokenCount（这次剪枝释放了多少 token）
+ * 两者都是白给的交叉验证信号，此前完全没采。
+ *
+ * 判定：单会话压缩次数 ≥ 3 次（说明上下文反复触顶），报告实测释放量、
+ * prune 与 summary 的比例、摘要正文与释放量的比（压缩效率）。
+ * 数据全是数字，**零隐私代价**。
+ */
+function detectC5(ctx, opts) {
+  const minCompactions = opts.c5MinCompactions ?? 3;
+  const findings = [];
+  let totalFreed = 0;
+  let totalCount = 0;
+
+  for (const s of ctx.scan.sessions) {
+    const comps = s.events.filter((e) => e.kind === KIND.COMPACTION);
+    if (!comps.length) continue;
+    const starts = comps.filter((e) => e.compaction_phase === 'start').length;
+    const summaries = comps.filter((e) => e.compaction_phase === 'summary');
+    const prunes = comps.filter((e) => e.compaction_phase === 'prune');
+    const freed =
+      [...summaries, ...prunes].reduce((n, e) => n + (e.shadowed_token_count ?? 0), 0);
+    const summaryChars = summaries.reduce((n, e) => n + (e.summary_chars ?? 0), 0);
+    const count = starts || summaries.length + prunes.length;
+    totalFreed += freed;
+    totalCount += count;
+    if (count < minCompactions) continue;
+
+    const first = summaries[0] ?? prunes[0] ?? comps[0];
+    // 压缩效率：摘要正文换成 token（4 字符≈1 token），除以释放量就是"回吐比例"
+    const summaryTokens = Math.round(summaryChars / 4);
+    const ratio = freed > 0 ? summaryTokens / freed : 0;
+    const parts = [
+      `本会话压缩 ${count} 次（摘要 ${summaries.length} / 剪枝 ${prunes.length}）`,
+      `**实测**释放 ${num(freed)} token（DSH 日志的 shadowedTokenCount，非估算）`,
+    ];
+    if (freed > 0) parts.push(`摘要自身约 ${num(summaryTokens)} token，回吐比例 ${(ratio * 100).toFixed(0)}%`);
+
+    findings.push({
+      id: 'C5',
+      title: '压缩可观测性',
+      category: 'C',
+      severity: count >= minCompactions * 3 ? SEVERITY.MID : SEVERITY.LOW,
+      scope: s.sessionId,
+      summary: parts.join('，'),
+      evidence: [
+        { locator: first.locator, note: `首次压缩（实测释放 ${num(first.shadowed_token_count ?? 0)} token）` },
+      ],
+      impact:
+        `反复触发压缩说明上下文一次又一次顶到上限（每次压缩还会让该点之后的 KV cache 失效）。` +
+        `实测释放 ${num(freed)} token 是**DSH 自报的数字**，可以直接和 C1/C2 的估算互相验证`,
+      confidence: 0.95, // 数字是日志里抄的，不是推断的
+    });
+  }
+
+  if (!findings.length) {
+    return {
+      findings,
+      note:
+        totalCount > 0
+          ? `窗口内共压缩 ${totalCount} 次，实测释放 ${num(totalFreed)} token —— 没有会话达到 ${minCompactions} 次阈值`
+          : '窗口内没有 compaction 事件（本机尚未触发过自动压缩）',
+    };
+  }
+  return findings;
+}
+
+/**
+ * C6 工具面成本 —— **第三轮新增**
+ *
+ * `request/header` 里有**完整的工具 schema**（实测 27 个工具、约 29.8 KB），
+ * 而它每个请求都要重发一次 —— 这块成本此前从未被计量。
+ * 同时能回答："注册了但整个窗口 0 次调用"的工具有几个（白付的 schema）。
+ *
+ * 只记工具名（指令标识符，不是用户内容）与字节数。
+ */
+function detectC6(ctx, opts) {
+  const minSchemaChars = opts.c6SchemaChars ?? 20000;
+  const minDeadTools = opts.c6MinDeadTools ?? 5;
+
+  const headers = [];
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) if (e.kind === KIND.REQUEST_HEADER) headers.push({ ev: e, session: s });
+  }
+  if (!headers.length) {
+    return { findings: [], note: '窗口内没有 request/header 事件，无法计量工具面成本' };
+  }
+
+  const registered = new Set();
+  for (const h of headers) for (const n of h.ev.tool_names ?? []) registered.add(n);
+  const used = new Set();
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) if (e.kind === KIND.TOOL_CALL && e.tool_name) used.add(e.tool_name);
+  }
+  const dead = [...registered].filter((n) => !used.has(n)).sort();
+
+  const bytes = headers.map((h) => h.ev.tool_schema_bytes ?? 0).sort((a, b) => a - b);
+  const medianBytes = bytes[bytes.length >> 1] ?? 0;
+  const maxBytes = bytes[bytes.length - 1] ?? 0;
+  const findings = [];
+  const anchor = headers[0].ev;
+
+  if (medianBytes >= minSchemaChars) {
+    // 4 字符≈1 token 是工具自己的口径（token-meter 的启发式），这里沿用并标注
+    const perRequestTokens = Math.round(medianBytes / 4);
+    findings.push({
+      id: 'C6',
+      title: '工具面成本',
+      category: 'C',
+      severity: perRequestTokens >= 6000 ? SEVERITY.MID : SEVERITY.LOW,
+      scope: `窗口 ${headers.length} 个请求头`,
+      summary:
+        `工具 schema ${num(medianBytes)} 字符（约 ${num(perRequestTokens)} token，按 4 字符/token 估算）` +
+        `随**每个**请求重发；窗口内注册工具 ${registered.size} 个`,
+      evidence: [{ locator: anchor.locator, note: `request/header（${anchor.request_reason ?? '未知原因'}，${anchor.tool_count ?? '?'} 个工具）` }],
+      impact:
+        `按 4 字符/token 估算，这一项每个请求都要付约 ${num(perRequestTokens)} token 的固定输入成本；` +
+        `与工具数量成正比 —— 少注册一个用不到的工具就少付一份`,
+      confidence: 0.8,
+    });
+  }
+
+  if (dead.length >= minDeadTools) {
+    findings.push({
+      id: 'C6',
+      title: '工具面成本',
+      category: 'C',
+      severity: SEVERITY.LOW,
+      scope: '窗口内 0 调用的工具',
+      summary: `注册了 ${registered.size} 个工具，其中 ${dead.length} 个在整个窗口内 0 次调用：${dead.join('、')}`,
+      evidence: [{ locator: anchor.locator, note: '工具清单来自 request/header 的 tools 数组' }],
+      impact:
+        '这些工具的 schema 仍然每个请求都要重发 —— 插件类的可以考虑卸载或用不到就禁用；' +
+        '内置类（如 create_goal / workflow）是本机用不到的能力，留着不影响，但知道成本在哪',
+      confidence: 0.85,
+    });
+  }
+
+  if (!findings.length) {
+    return {
+      findings,
+      note: `工具 schema 中位 ${num(medianBytes)} 字符（低于 ${num(minSchemaChars)} 阈值），注册 ${registered.size} 个工具、窗口内未调用 ${dead.length} 个（低于 ${minDeadTools} 阈值）`,
+    };
+  }
+  return findings;
+}
+
+/**
+ * C7 上下文注入量 —— **第三轮新增**
+ *
+ * `agent/inbox/spliced` 是上下文被拼接/替换的痕迹（DSH 往对话里塞东西）。
+ * 塞进去的每一个字符都会随后的请求重复计费，所以它算成本。
+ * 只记体积与目标，**不记插入内容**。
+ */
+function detectC7(ctx, opts) {
+  const minSplices = opts.c7MinSplices ?? 20;
+  const minChars = opts.c7MinChars ?? 100000;
+
+  const splices = [];
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) if (e.kind === KIND.INBOX_SPLICE) splices.push({ ev: e, session: s });
+  }
+  const chars = splices.reduce((n, x) => n + (x.ev.inserted_chars ?? 0), 0);
+  if (splices.length < minSplices || chars < minChars) {
+    return {
+      findings: [],
+      note:
+        splices.length === 0
+          ? '窗口内没有上下文注入事件'
+          : `窗口内注入 ${splices.length} 次、共 ${num(chars)} 字符 —— 低于阈值（${minSplices} 次 / ${num(minChars)} 字符）`,
+    };
+  }
+
+  const byTarget = new Map();
+  for (const x of splices) {
+    const k = x.ev.splice_target ?? '(未知)';
+    byTarget.set(k, (byTarget.get(k) ?? 0) + 1);
+  }
+  const biggest = splices.reduce((a, b) => ((b.ev.inserted_chars ?? 0) > (a.ev.inserted_chars ?? 0) ? b : a), splices[0]);
+
+  return [
+    {
+      id: 'C7',
+      title: '上下文注入量',
+      category: 'C',
+      severity: chars >= minChars * 3 ? SEVERITY.MID : SEVERITY.LOW,
+      scope: '窗口',
+      summary:
+        `上下文被注入 ${splices.length} 次、共 ${num(chars)} 字符` +
+        `（约 ${num(Math.round(chars / 4))} token，按 4 字符/token 估算）；` +
+        `目标分布：${[...byTarget].map(([k, n]) => `${k}(${n})`).join('、')}`,
+      evidence: [{ locator: biggest.ev.locator, note: `单次注入最大（${num(biggest.ev.inserted_chars ?? 0)} 字符）` }],
+      impact:
+        '注入的内容会留在历史里，被后续每个请求重复计费；' +
+        '把反复粘贴的长内容（约定、文档、术语表）落到项目文件、让 Agent 按需读取，可以省掉这部分',
+      confidence: 0.7,
+    },
+  ];
+}
+
+/**
+ * A5 辅助 LLM 开销 —— **第三轮新增**
+ *
+ * 联网检索（`web/*-llm-request`）与会话标题（`session/title-llm-request`）
+ * 都是**独立的模型调用**，日志里没有 usage —— 但它们确实在花钱。
+ * 这里用 次数 × max_tokens 给**上界**，并明确标注是上界而不是实测。
+ */
+function detectA5(ctx, opts) {
+  const minRequests = opts.a5MinRequests ?? 20;
+
+  const aux = [];
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) if (e.kind === KIND.AUX_REQUEST) aux.push({ ev: e, session: s });
+  }
+  if (aux.length < minRequests) {
+    return {
+      findings: [],
+      note:
+        aux.length === 0
+          ? '窗口内没有辅助 LLM 请求'
+          : `窗口内辅助 LLM 请求 ${aux.length} 次（需 ${minRequests} 次）—— 低于阈值`,
+    };
+  }
+
+  const bySource = new Map();
+  let bound = 0;
+  const models = new Set();
+  for (const x of aux) {
+    bySource.set(x.ev.aux_source, (bySource.get(x.ev.aux_source) ?? 0) + 1);
+    bound += x.ev.aux_max_tokens ?? 0;
+    if (x.ev.aux_model) models.add(x.ev.aux_model);
+  }
+  const top = [...bySource].sort((a, b) => b[1] - a[1]);
+
+  return [
+    {
+      id: 'A5',
+      title: '辅助 LLM 开销',
+      category: 'A',
+      severity: aux.length >= minRequests * 3 ? SEVERITY.MID : SEVERITY.LOW,
+      scope: '窗口',
+      summary:
+        `主对话之外还有 ${aux.length} 次辅助模型调用：` +
+        `${top.map(([k, n]) => `${k === 'web-search' ? '联网检索' : '会话标题'} ${n} 次`).join('、')}；` +
+        `按各自的 maxTokens 上限估算，最多 ${num(bound)} token（模型：${[...models].join('、') || '未标注'}）`,
+      evidence: aux.slice(0, 3).map((x) => ({
+        locator: x.ev.locator,
+        note: `${x.ev.aux_source} · ${x.ev.aux_model ?? '?'} · maxTokens ${num(x.ev.aux_max_tokens ?? 0)}`,
+      })),
+      impact:
+        `**这些调用不计入报告的 token 概览**（DSH 没给它们记 usage），所以真实开销比概览数字更高。` +
+        `${num(bound)} 是上界（每次都跑满 maxTokens 才会达到），实际通常远低于它 —— 但次数本身是可优化的：` +
+        '先 grep 本地已有结论、少做重复联网检索',
+      confidence: 0.9,
+    },
+  ];
+}
+
+/**
  * C1 token 消耗过快 —— **第二轮评估 F12 重写**
  *
  * 旧判据（"单会话 output 总量 > 全会话总量中位数 × 1.5"）有三处硬伤，
@@ -233,31 +496,68 @@ function detectC2(ctx, opts) {
 }
 
 /**
- * C3 长会话疲劳
- * 单会话消息数 > 200 且无 compact
+ * C3 长会话疲劳 —— **第三轮接线 compaction**
+ *
+ * 旧实现的注释写着"且无 compact"，代码却只数消息条数：实测有一个会话被报
+ * "长会话疲劳"，而它**实际压缩过 19 次**（每次释放几万 token）。长期靠
+ * `/compact` 续命的用户会被反复建议 `/compact` —— 而压缩早就在发生了。
+ *
+ * 现在：只数**最后一次压缩之后**还"活着"的消息（compaction 的 shadowedRange.end
+ * 之后的部分），因为被压缩遮蔽的历史已经不再占用上下文。
+ *   - 活消息 > 200 → 真的在疲劳（压缩没跟上）
+ *   - 总消息 > 200 但活消息 ≤ 200 → 不报，并在 notDetected 里说明"压缩正在起作用"
  */
 function detectC3(ctx, opts) {
   const limit = opts.c3MessageLimit ?? 200;
   const findings = [];
+  let relieved = 0;
 
   for (const s of ctx.scan.sessions) {
-    const count = s.events.filter(
-      (e) => e.kind === KIND.USER_MSG || e.kind === KIND.ASSISTANT_MSG,
-    ).length;
-    if (count <= limit) continue;
+    const msgs = s.events.filter((e) => e.kind === KIND.USER_MSG || e.kind === KIND.ASSISTANT_MSG);
+    if (msgs.length <= limit) continue;
+
+    // 压缩遮蔽到哪里为止（取所有 compaction 事件里最大的 shadowed_end）
+    const comps = s.events.filter((e) => e.kind === KIND.COMPACTION);
+    const shadowedUpTo = comps.reduce(
+      (m, e) => (Number.isFinite(e.shadowed_end) ? Math.max(m, e.shadowed_end) : m),
+      0,
+    );
+    const liveMsgs = msgs.filter((e) => (Number.isFinite(e.seq) ? e.seq > shadowedUpTo : true));
+    const freed = comps.reduce((n, e) => n + (e.shadowed_token_count ?? 0), 0);
+
+    if (shadowedUpTo > 0 && liveMsgs.length <= limit) {
+      relieved += 1; // 压缩在起作用，不该报"疲劳"
+      continue;
+    }
+
     const ev = s.events.find((e) => e.kind === KIND.USER_MSG) ?? s.events[0];
     if (!ev) continue;
+    const compNote =
+      shadowedUpTo > 0
+        ? `；已压缩 ${comps.filter((c) => c.compaction_phase === 'start').length} 次、实测释放 ${num(freed)} token，` +
+          `但压缩后仍有 ${liveMsgs.length} 条未遮蔽消息`
+        : '；会话内**没有发生任何压缩**';
     findings.push({
       id: 'C3',
       title: '长会话疲劳',
       category: 'C',
       severity: SEVERITY.MID,
       scope: s.sessionId,
-      summary: `单会话 ${count} 条消息，超过 ${limit} 条阈值`,
-      evidence: [{ locator: ev.locator, note: `会话共 ${count} 条消息` }],
+      summary: `单会话共 ${msgs.length} 条消息，超过 ${limit} 条阈值${compNote}`,
+      evidence: [{ locator: ev.locator, note: `会话共 ${msgs.length} 条消息（活消息 ${liveMsgs.length} 条）` }],
       impact: '长会话更容易跑偏、重复劳动，建议拆分任务或开新会话',
       confidence: 0.7,
     });
+  }
+
+  if (!findings.length) {
+    return {
+      findings,
+      note:
+        relieved > 0
+          ? `${relieved} 个会话消息数超 ${limit} 条，但压缩在起作用（最后一次压缩之后再无 ${limit} 条以上的未遮蔽消息）—— 不判为疲劳`
+          : null,
+    };
   }
   return findings;
 }
@@ -817,22 +1117,44 @@ function detectA4(ctx, opts) {
 function detectAssetIdle(ctx, opts) {
   const minDays = opts.assetMinDays ?? 30;
 
-  // 扫描窗口：用事件时间跨度估算
+  // ⚠️ 第三轮（待优化报告 2.1）：这里原来用的是**事件时间跨度**
+  //    （max(时间) - min(时间)），不是日历跨度。反例：用户 60 天前集中用了一次、
+  //    昨天又用了一次 → 跨度 ≈60 天就过门槛，于是"这个 skill 闲置 60 天"，
+  //    可中间 59 天他根本没用过 Agent，这不代表 skill 闲置。
+  //    现在改成两个都算，并把"活跃天数"作为置信度参考：
+  //      calendarDays = 今天 - 首次会话时间（这才是"观察窗口有多长"）
+  //      activeDays   = 有事件的不同日历天数（这才是"实际用了多少天"）
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const times = ctx.scan.sessions
-    .map((s) => {
-      const t = s.events[0]?.ts ? Date.parse(s.events[0].ts) : NaN;
-      return Number.isFinite(t) ? t : NaN;
-    })
-    .filter((n) => Number.isFinite(n));
-  const spanDays =
-    times.length >= 2 ? (Math.max(...times) - Math.min(...times)) / 86400000 : 0;
+    .flatMap((s) => s.events)
+    .map((e) => (e.ts ? Date.parse(e.ts) : NaN))
+    .filter((t) => Number.isFinite(t));
+  if (!times.length) {
+    return { findings: [], note: '窗口内没有带时间戳的事件，无法判断资产闲置' };
+  }
+  const firstMs = Math.min(...times);
+  const lastMs = Math.max(...times);
+  const calendarDays = Math.max(0, (now - firstMs) / 86400000);
+  const historyDays = (lastMs - firstMs) / 86400000;
+  const activeDays = new Set(
+    ctx.scan.sessions
+      .flatMap((s) => s.events)
+      .map((e) => (e.ts ? new Date(e.ts).toISOString().slice(0, 10) : null))
+      .filter(Boolean),
+  ).size;
 
   const findings = [];
+  const dayWord = (d) => `${d.toFixed(1)} 天`;
 
-  if (spanDays < minDays) {
+  if (calendarDays < minDays) {
+    // 报告 2.1 的第二个点：DSH 发布于 2026-08-13，新用户短期内永远够不到 30 天。
+    // 如实说明"还差多久"，而不是让用户以为 A2 坏了。
+    const needDays = Math.ceil(minDays - calendarDays);
     return {
       findings,
-      note: `扫描窗口仅 ${spanDays.toFixed(1)} 天（需 ${minDays} 天）—— 样本不足，无法判定资产闲置；这不是"已确认无异常"`,
+      note:
+        `观察窗口只有 ${dayWord(calendarDays)}（自首次会话算起，需 ${minDays} 天）—— ` +
+        `样本不足，无法判定资产闲置；这不是"已确认无异常"，再过约 ${needDays} 天本项才会开始生效`,
     };
   }
 
@@ -847,11 +1169,13 @@ function detectAssetIdle(ctx, opts) {
     ),
   );
   // 证据：拿窗口内最早的一条事件作为"扫描范围"的复核锚点（旧版本这里是 []）
-  const windowStart = ctx.scan.sessions
+  const firstEv = ctx.scan.sessions
     .flatMap((s) => s.events)
     .filter((e) => e.ts)
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))[0];
-  const windowNote = `扫描窗口 ${Math.floor(spanDays)} 天，起点 ${windowStart?.ts ?? '未知'}`;
+  const windowNote =
+    `观察窗口 ${dayWord(calendarDays)}（首次会话起算）· 活跃 ${activeDays} 天 · ` +
+    `历史跨度 ${dayWord(historyDays)} · 起点 ${firstEv?.ts ?? '未知'}`;
 
   for (const name of skills) {
     if (usedSkills.has(name)) continue;
@@ -860,17 +1184,16 @@ function detectAssetIdle(ctx, opts) {
       title: 'skill 闲置',
       category: 'A',
       severity: SEVERITY.MID,
-      scope: `窗口 ${Math.floor(spanDays)} 天`,
-      summary: `已装 skill「${name}」在 ${Math.floor(spanDays)} 天窗口内 0 次触发`,
-      evidence: windowStart
-        ? [{ locator: windowStart.locator, note: `窗口起点（${windowNote}）` }]
-        : [],
+      // 活跃天数少 → 结论更弱，置信度如实下调
+      scope: `窗口 ${Math.floor(calendarDays)} 天（活跃 ${activeDays} 天）`,
+      summary: `已装 skill「${name}」在 ${Math.floor(calendarDays)} 天观察窗口内 0 次触发`,
+      evidence: firstEv ? [{ locator: firstEv.locator, note: `窗口起点（${windowNote}）` }] : [],
       impact: '卸载可省启动时间与维护成本',
-      confidence: windowStart ? 0.7 : 0.5,
+      confidence: activeDays >= 5 ? 0.7 : 0.5,
     });
   }
   if (findings.length === 0) {
-    return { findings, note: `已装 skill 共 ${skills.length} 个，窗口内均有触发` };
+    return { findings, note: `已装 skill 共 ${skills.length} 个，窗口内均有触发（${windowNote}）` };
   }
   return { findings };
 }
@@ -926,6 +1249,34 @@ export const REGISTRY = [
     implemented: true,
     desc: '单会话消息数 > 200',
     detect: detectC3,
+  },
+  // --- 第三轮（待优化报告 Phase 1）：把 DSH 自己记的实测值接进来 ---
+  {
+    id: 'C5',
+    title: '压缩可观测性',
+    category: 'C',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '单会话压缩 ≥3 次，报告 DSH 实测释放量（shadowedTokenCount，非估算）',
+    detect: detectC5,
+  },
+  {
+    id: 'C6',
+    title: '工具面成本',
+    category: 'C',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '工具 schema >20000 字符（每请求重发）+ 窗口内 0 调用的工具 ≥5 个',
+    detect: detectC6,
+  },
+  {
+    id: 'C7',
+    title: '上下文注入量',
+    category: 'C',
+    severity: SEVERITY.LOW,
+    implemented: true,
+    desc: 'agent/inbox/spliced 注入 ≥20 次且 ≥100000 字符',
+    detect: detectC7,
   },
   // --- E 类：效率 ---
   {
@@ -1037,6 +1388,15 @@ export const REGISTRY = [
     implemented: true,
     desc: 'delegationDepth>0 会话 token 占比 >40%',
     detect: detectA4,
+  },
+  {
+    id: 'A5',
+    title: '辅助 LLM 开销',
+    category: 'A',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '窗口内辅助模型调用（联网检索 / 会话标题）≥20 次，给出 maxTokens 上界估算',
+    detect: detectA5,
   },
   // --- M2+ 预留 ---
   { id: 'A1', title: 'MCP 闲置', category: 'A', severity: SEVERITY.MID, implemented: false, desc: '已配置 MCP 30 天 0 调用（本机未配置 MCP，暂无数据源）', detect: () => [] },

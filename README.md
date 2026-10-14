@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-203%2F203-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-233%2F233-brightgreen)]()
 
 ---
 
@@ -42,13 +42,16 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 
 ## 诊断维度
 
-**15 项已实现**
+**19 项已实现**
 
 | ID | 名称 | 判定 | 严重度 |
 |---|---|---|---|
 | C1 | token 消耗过快 | 会话**单位请求** output 超主会话基线 2 倍（且总量 ≥2 万） | 高 |
 | C2 | 上下文膨胀 | 末轮/首轮 input 增长 >10x 且 cacheRead <30% | 高 |
 | C3 | 长会话疲劳 | 单会话消息数 >200 | 中 |
+| C5 | 压缩可观测性 | 单会话压缩 ≥3 次，给出 **DSH 实测**释放 token（非估算） | 中 |
+| C6 | 工具面成本 | 工具 schema >20000 字符（每请求重发）+ 窗口内 0 调用的工具 ≥5 个 | 中 |
+| C7 | 上下文注入量 | 上下文被注入 ≥20 次且 ≥100000 字符 | 低 |
 | E1 | 死循环 | 同工具 + 同参数 + 同错误，≥3 次 | 高 |
 | E2 | 反复失败 | 会话工具错误率 >30% | 中 |
 | E3 | 工具结果过大 | 单条工具结果 >8192 字符，会话内 ≥5 条 | 中 |
@@ -58,9 +61,17 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | N2 | 高风险操作 | 命令执行类工具命中 `rm -rf` / `--force` / `reset --hard` 等 | 高 |
 | N3 | 权限审批摩擦 | 审批请求 ≥5 次（给出等待时长与被拒比例） | 中 |
 | N4 | API 重试频繁 | 模型请求重试 ≥3 次（给出失败码与累计退避） | 中 |
-| A2 | skill 闲置 | 已装 skill 在窗口内 0 次触发（需 ≥30 天窗口） | 中 |
+| A2 | skill 闲置 | 已装 skill 在 ≥30 天**日历窗口**内 0 次触发 | 中 |
 | A3 | 高频手动序列 | **非通用工具**的两步序列 ≥5 次（去镜像、跨会话合并） | 低 |
 | A4 | 子代理开销 | `delegationDepth>0` 会话 token 占比 >40% | 中 |
+| A5 | 辅助 LLM 开销 | 辅助模型调用（联网检索 / 会话标题）≥20 次，给出 maxTokens 上界 | 中 |
+
+> **C5/C6/C7/A5 是第三轮新增的"实测数据源"**（依据 `agent-clinic-待优化报告-DSH单平台.md`）：
+> C1/C2 是**推断**浪费，而 DSH 自己就把**实测值**写进了日志 ——
+> 压缩释放了多少 token（`shadowedTokenCount`）、工具 schema 多大、上下文注入多少、
+> 辅助请求跑了几次。这四项**零隐私代价**（只记数字），
+> 本机实测：压缩释放 **638,171** token、工具 schema **29,779** 字符/请求、
+> 注入 **158,393** 字符、辅助调用 **96** 次。定义与阈值见 [docs/diagnostics.md](docs/diagnostics.md)。
 
 **1 项排期中**：A1 MCP 闲置（本机未配置 MCP，暂无数据源）
 
@@ -88,7 +99,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | 统一事件模型 | ✅ 可用 |
 | 聚合统计 | ✅ 可用 |
 | 证据层 `show` | ✅ 可用 |
-| **诊断指标 15 项** | ✅ **可用**（见上表） |
+| **诊断指标 19 项** | ✅ **可用**（见上表） |
 | **处方层（可执行：配置片段 / 命令 / 插件 / 设置 / 行为）** | ✅ **可用**（读本机真实配置，给出「当前值 → 建议值」；被撤掉的处方会写明原因） |
 | **体检报告 `report`** | ✅ **可用** |
 | **DSH 插件（侧边栏入口 + 报告面板 + 准实时角标）** | ✅ **可用** |
@@ -96,7 +107,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **203/203 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **233/233 通过**。
 
 ````bash
 $ ./run.sh report
@@ -330,7 +341,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog     # 看插件目录（来源、能力标签、热度、中文简介覆盖情况）
 ./run.sh catalog-sync            # 联网同步插件目录（唯一会写盘 + 联网的只读工具命令）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
-./scripts/smoke.sh   # 自检（203 项）
+./scripts/smoke.sh   # 自检（233 项）
 ```
 
 > **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm / volta / fnm / Program Files）。
@@ -391,30 +402,30 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 
 - **只支持 DSH v4 会话格式**；v3 / 无压缩格式兼容待验证
 - 需要 Node ≥ 22.15（低版本会明确报错，不会静默跳过数据）；node 不在 PATH 上也没关系，会自动定位
-- **15 项诊断指标已实现**，1 项排期（A1 MCP 闲置），2 项尚未实现（K1/K2，报告会写明原因 —— 是隐私取舍而非平台做不到）
+- **19 项诊断指标已实现**，1 项排期（A1 MCP 闲置），2 项尚未实现（K1/K2，报告会写明原因 —— 是隐私取舍而非平台做不到）
 - 处方里的「随附默认值」是一份**抄录表**（出处 `@deepseek-ai/dsh-base` 的 `cordis.patch.yml`），
   升级 DSH 后若随附默认值变了，需要同步这份表；用户 profile 的真实覆盖值一律现读，不靠猜
 - 配置层只解析 `cordis.patch.yml` 里用到的那个 YAML 子集（顶层 `- id/name/config` + 标量与列表），
   更深的嵌套结构会被忽略并在 `warnings` 里说明
 - 需要 `~/.agents/skills/` 目录存在（`install.sh` 会自动创建）
-- `package.json` 的 `version` 落后于 git tag（`0.1.0` vs `v0.1.1`），`install.sh` 装完也不打印版本 ——
-  升级时以 tag 为准（该问题记录在评估报告的 P2 清单里）
+- 版本以 git tag 为准；`install.sh` 现在会在装完后打印版本与安装位置（此前不打印）
+- **C3 已接线 compaction**：只数"最后一次压缩之后仍活着"的消息 ——
+  被压缩遮蔽的历史不再占用上下文，所以"靠 `/compact` 续命的长会话"不会被误报疲劳
 
-### 已知缺陷（已记录、尚未修，第二轮评估发现）
+### 已知缺陷（已记录、尚未修）
 
-这些**不影响结论的正确性**，但会让报告的可复核性打折，明细见 [docs/evaluation-2026-10-14.md](docs/evaluation-2026-10-14.md)：
+第二轮评估发现的问题已在 2026-10-14/15 两轮整改中修掉大部分
+（C1 基线、A2 判定与窗口、A3 噪声、E3/N3/N4 落地、静默降级、撤销处方可见性、
+证据区间展开、复核命令跨平台、`reasoning-effort` 改写 provider、C3 接线 compaction、
+文档漂移 —— 详见 [docs/evaluation-2026-10-14.md](docs/evaluation-2026-10-14.md) 的"整改情况"）。
+**下面这些仍未修**：
 
 | 缺陷 | 影响 |
 |---|---|
-| **C3 不看 compaction** | 判定只数消息条数，"压过 15 次的长会话"仍会被报"长会话疲劳"并建议 `/compact` |
-| **`reasoning-effort` 处方硬编码 provider** | 因 profile patch 语义是"整行替换 config"，`deepseek-official` 用户整段粘贴会被**静默改成** `deepseek-account`（本机因 `reasoningEffort` 已是 low 被 `skipIf` 掩盖） |
-| **证据区间只展开起点** | 报告会给出 `#L1733-L2688` 这种跨度，`show` 只打起点 ±2 行，终点看不到 |
-| **复核命令是 bash-only** | 报告写 `./run.sh show "…"`，Windows/pwsh 环境下应改用 `node src/cli.mjs show "…"` |
 | **部分配置旋钮未接线** | `maxSessions` / `minRepeatCount` 在插件 Config 里声明了但没传到诊断层，改了不起作用；`contextLines` 只对 report 生效，CLI 的 `show` 固定 2 行 |
-| **`install.sh` 不自带自身 / 未识别平台 exit 0** | 安装目录里没有 `install.sh`，无法就地重装；不支持的环境里仍报成功 |
-| **无 CI** | 203 项自检没有自动化执行者，"徽章是绿的但实跑红"只能靠人手跑发现（本轮已修掉两条不稳定断言） |
-| **死代码与重复实现** | `src/state.mjs` 整模块零引用；`resolveDshHome` / `fetchJson` / `mapLimit` / 定位符解析各有两份且已分叉 |
-| **跨平台路径拼接** | `plugin/index.js` 的 `joinPath` 硬编码 `\`，macOS/Linux 上文件监听会全部失败（失败被静默吞掉） |
+| **定位符解析仍有两份** | `src/adapters/base.mjs` 的 `parseLocator`（不支持区间）与 `src/evidence/index.mjs` 的 `parseRange`（支持区间）—— 调用方要自己选对那个 |
+| **`show` 的区间展开有 200 行上限** | 超长区间会截断并提示，需要看别处得用 offset/limit 分段复核 |
+| **A3 的通用工具清单是硬编码** | 插件生态新增的通用工具不在清单里时，A3 可能重新变吵（阈值可用 `opts` 覆盖，但清单本身要先改代码） |
 
 ### ⚠️ 关于 DSH 数据格式
 
@@ -427,11 +438,19 @@ DSH 会话文件是**多帧 zstd 拼接**（单个文件实测含 60~233 个帧�
 ## 路线图
 
 - **M1** ✅ DSH 解码 + E1/E2/E5 诊断 + 证据层 + 体检报告（最小闭环已打通）
-- M2 ✅ 扩展 C1/C2/C3/E4/N1/N2/A2/A3/A4（当时 12 项，现共 15 项）
+- M2 ✅ 扩展 C1/C2/C3/E4/N1/N2/A2/A3/A4（当时 12 项，现共 19 项）
 - M3 ✅ 处方层重写：读本机真实配置 + 可执行处方（配置片段 / 命令 / 插件 / 设置 / 行为）+ 省 token 开关清单
 - **M3.6 ✅ 第二轮评估整改**（[docs/evaluation-2026-10-14.md](docs/evaluation-2026-10-14.md)）：
   修 C1 基线 / A2 判定前提 / A3 噪声；E3、N3、N4 从"不可实现"变为已实现（15 项）；
   去掉"读不到伪装成没有数据"的静默降级；被否决的处方显式列出；文档与代码加一致性断言
+- **M3.7 ✅ 第三轮：开采 DSH 实测数据源**（依据 `agent-clinic-待优化报告-DSH单平台.md`）：
+  C5 压缩可观测性（实测释放 638,171 token）/ C6 工具面成本（schema 29,779 字符每请求）/
+  C7 上下文注入量 / A5 辅助 LLM 开销（96 次调用此前完全不可见）→ 19 项；
+  C3 接线 compaction；A2 窗口改日历跨度；报告 token 口径声明 + 辅助调用上界；
+  证据区间展开 `-L<end>`；复核命令跨平台；`reasoning-effort` 不再改写 provider
+- **M3.8 ✅ 第三轮工程基建**：CI（三平台 × node 22/24）、`joinPath` 跨平台、
+  `install.sh` 三处修复、版本与 tag 对齐、CHANGELOG、删死代码 `src/state.mjs` 等 6 处、
+  合并已分叉的 `resolveDshHome` / `fetchJson` / `mapLimit`
 - M3.5 ⏳ 处方四重过滤 + 反馈闭环（记住已拒绝 / 感兴趣）
 - M4 体检报告卡片（可分享）
 - M5 ✅ 开源发布（SKILL.md / install.sh / 文档）

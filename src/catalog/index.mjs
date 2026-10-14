@@ -674,9 +674,3 @@ export function searchCatalog(findings, opts = {}) {
   };
 }
 
-/**
- * 把一批 finding 做插件检索并**按插件去重**（旧的分组视图仅供兼容）。
- *
- * @deprecated 使用 searchCatalog()，它同时返回 matches 与 recommendations
- */
-

@@ -159,6 +159,8 @@ else
 fi
 
 if [ "${#TARGETS[@]}" -eq 0 ]; then
+  # 第三轮修复：这里原来是 exit 0 —— 在不支持的环境里也打印"成功"，
+  # 用户会以为装好了。没有安装目标就是**失败**，要能让脚本调用方感知到。
   warn "未检测到已安装的平台（既没有 ~/.dsh / ~/.agents 也没有 ~/.workbuddy）。"
   say ""
   say "  可显式指定安装目录："
@@ -167,7 +169,8 @@ if [ "${#TARGETS[@]}" -eq 0 ]; then
   say "  或直接以 CLI 形态使用（无需安装）："
   say "    ./run.sh scan"
   say ""
-  exit 0
+  say "  退出码：1（未安装任何内容）"
+  exit 1
 fi
 
 say ""
@@ -181,7 +184,10 @@ say ""
 copy_payload() {
   local dest="$1"
   mkdir -p "$dest"
-  for f in SKILL.md package.json README.md LICENSE cordis.patch.yml run.sh; do
+  # 第三轮修复：install.sh 也要复制自己 —— 否则安装目录里没有它，
+  # 下面那句 chmod +x "$target/install.sh" 会静默失败（|| true），
+  # 用户也没法在安装目录里就地重装/更新。
+  for f in SKILL.md package.json README.md LICENSE cordis.patch.yml run.sh install.sh; do
     [ -f "$SRC_DIR/$f" ] && cp "$SRC_DIR/$f" "$dest/" 2>/dev/null || true
   done
   # 完整拷贝目录，保证「安装 = 仓库完整副本」（冒烟测试可自检通过）
@@ -209,7 +215,13 @@ for target in "${TARGETS[@]}"; do
   fi
 
   copy_payload "$target"
-  chmod +x "$target/run.sh" "$target/install.sh" 2>/dev/null || true
+  for xf in run.sh install.sh; do
+    if [ -f "$target/$xf" ]; then
+      chmod +x "$target/$xf" 2>/dev/null || warn "无法给 $xf 加执行位（不影响使用）"
+    else
+      warn "缺少 $xf（安装不完整，请重跑安装脚本）"
+    fi
+  done
   chmod +x "$target"/scripts/*.sh 2>/dev/null || true
   ok "已安装"
 done
@@ -221,9 +233,27 @@ say ""
 say "隐私声明"
 say "--------"
 say "  · 诊断全流程在本地完成，会话文件只读，绝不修改"
-say "  · 零外部请求，不发送任何会话内容"
+say "  · 默认零外发：体检本体不发起任何网络请求，不发送任何会话内容"
+say "    （联网只有两个显式动作：run.sh catalog-sync 与 report --live）"
 say "  · 无遥测、无崩溃上报"
 say "  · 状态文件只存「日期 + 一句话摘要」，删除即重置"
 say ""
 say "使用：对 Agent 说「体检一下」，或运行 ./run.sh scan"
 say ""
+
+# ---------------------------------------------------------------------------
+# 版本与结果
+# ---------------------------------------------------------------------------
+VERSION="$(node -e "try{process.stdout.write(require('./package.json').version)}catch(e){process.stdout.write('unknown')}" 2>/dev/null || echo unknown)"
+if [ "$DRY_RUN" -eq 0 ]; then
+  say "已安装版本：v$VERSION"
+  say "安装位置："
+  for target in "${TARGETS[@]}"; do
+    case "$target" in "~"*) target="${HOME_DIR}${target#\~}" ;; esac
+    say "  - $target"
+  done
+  say ""
+  say "下一步：对 Agent 说「体检一下」（Skill 路径无需重启；插件路径必须完全退出并重启 Harness）"
+  say ""
+fi
+

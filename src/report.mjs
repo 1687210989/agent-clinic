@@ -18,6 +18,7 @@
  */
 
 import { runDiagnostics } from './diagnostics/index.mjs';
+import { KIND } from './adapters/base.mjs';
 import { prescribe, prescribeOne, skippedFor, tokenInventory, KIND_LABEL } from './prescriber/index.mjs';
 import { readEffectiveConfig } from './config/index.mjs';
 import { activeCatalog, applyTranslation, searchCatalog } from './catalog/index.mjs';
@@ -203,6 +204,33 @@ function sumImpact(list) {
  * @param {Object} [opts]
  * @returns {Object} 结构化结果
  */
+/**
+ * 辅助 LLM 调用的口径汇总（第三轮 F3）。
+ *
+ * 这些调用（联网检索 / 会话标题）**没有 usage 记录**，所以它们不会出现在
+ * `token：input … output …` 里。用户看到的那个数字比真实开销更低 ——
+ * 这里给出次数与 maxTokens 上界，并明确标注是上界。
+ */
+function auxSummary(scan) {
+  const bySource = new Map();
+  let bound = 0;
+  const models = new Set();
+  for (const s of scan.sessions ?? []) {
+    for (const e of s.events ?? []) {
+      if (e.kind !== KIND.AUX_REQUEST) continue;
+      bySource.set(e.aux_source, (bySource.get(e.aux_source) ?? 0) + 1);
+      bound += e.aux_max_tokens ?? 0;
+      if (e.aux_model) models.add(e.aux_model);
+    }
+  }
+  return {
+    count: [...bySource.values()].reduce((a, b) => a + b, 0),
+    bySource: Object.fromEntries(bySource),
+    maxTokensBound: bound,
+    models: [...models],
+  };
+}
+
 export function analyze(ctx, opts = {}) {
   const g = ctx.summary.global;
   const { findings, notDetected, notImplemented, unimplementable } = runDiagnostics(ctx, opts);
@@ -314,6 +342,17 @@ export function analyze(ctx, opts = {}) {
       cacheWriteTokens: g.cacheWriteTokens ?? 0,
       badFrames: g.badFrames ?? 0,
       badLines: g.badLines ?? 0,
+      // 第三轮 F3：token 概览只统计 assistant/message 的 usage，必须写明口径；
+      // 辅助调用（联网检索 / 会话标题）**没有 usage 记录**，单独给上界估算。
+      tokenScope: 'assistant/message 的 usage',
+      aux: auxSummary(ctx.scan),
+      // 第二轮评估 F4/L7：解析失败与会话目录读不了都要能看见，
+      // 否则报告的分母可能少算会话而读者不自知
+      scanErrors: (ctx.scan.errors ?? []).map((e) => ({
+        kind: e.kind ?? 'parse',
+        file: e.file,
+        message: e.message,
+      })),
     },
     findings: findings.map((f) => ({
       id: f.id,
@@ -477,10 +516,36 @@ export function renderReport(data) {
     `扫描概览：${h.sessions} 会话 / ${h.lines} 行 / ${h.toolCalls} 次工具调用 / 错误率 ${pct(h.errorRate)}`,
   );
   push(
-    `token：input ${num(h.inputTokens)} · output ${num(h.outputTokens)} · cacheRead ${num(h.cacheReadTokens)}`,
+    `token（**仅主对话**：${h.tokenScope ?? 'assistant/message 的 usage'}）：` +
+      `input ${num(h.inputTokens)} · output ${num(h.outputTokens)} · cacheRead ${num(h.cacheReadTokens)}`,
   );
+  // 第三轮 F3：把"没算进去的那部分"如实说出来，否则读者会以为这就是全部开销
+  if (h.aux && h.aux.count > 0) {
+    const srcText = Object.entries(h.aux.bySource ?? {})
+      .map(([k, n]) => `${k === 'web-search' ? '联网检索' : k === 'session-title' ? '会话标题' : k} ${n} 次`)
+      .join(' · ');
+    push(
+      `辅助调用（**不计入上者**，DSH 未给它们记 usage）：${srcText}，` +
+        `按各自 maxTokens 上界估算 ≤${num(h.aux.maxTokensBound)} token` +
+        `${h.aux.models?.length ? `（模型 ${h.aux.models.join('、')}）` : ''}`,
+    );
+  }
   if (h.badFrames || h.badLines) {
     push(`⚠ 数据完整性：坏帧 ${h.badFrames} / 坏行 ${h.badLines}`);
+  }
+  // 第二轮评估 L7：解析失败的会话原先只在 `scan` 里显示，报告的分母会静默少算
+  const scanErrs = h.scanErrors ?? [];
+  if (scanErrs.length) {
+    const readErrs = scanErrs.filter((e) => e.kind === 'read');
+    const parseErrs = scanErrs.filter((e) => e.kind !== 'read');
+    if (readErrs.length) {
+      push(`⚠ 有 ${readErrs.length} 个目录读不了（这部分数据没被统计到）：`);
+      for (const e of readErrs) push(`  - ${e.file}：${e.message}`);
+    }
+    if (parseErrs.length) {
+      push(`⚠ 有 ${parseErrs.length} 个会话解析失败（下面的分母少了它们）：`);
+      for (const e of parseErrs) push(`  - ${e.message}`);
+    }
   }
   push();
 
@@ -508,7 +573,9 @@ export function renderReport(data) {
         push(`  ${i + 1}. 会话 ${sess}：${inst.summary}`);
         if (loc) {
           push(`     - 证据定位：${loc}`);
-          push(`     - 复核命令：./run.sh show "${loc}"`);
+          // 第二轮评估 F18：原命令是 ./run.sh show（bash-only），在 Windows/pwsh 上
+          // 用户照着粘会直接失败。给跨平台的 node 形式，run.sh 留作说明。
+          push(`     - 复核命令：node src/cli.mjs show "${loc}"   （等同 ./run.sh show）`);
         }
       }
       push();

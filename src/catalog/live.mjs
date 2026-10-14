@@ -21,6 +21,7 @@
  *   // live.entries 与快照条目同构，可直接喂给 searchCatalog({ catalog: entries })
  */
 
+import { fetchJson, mapLimit, UA_LIVE } from './http.mjs';
 import {
   CAPABILITY_TERMS,
   deriveCapabilities,
@@ -117,39 +118,6 @@ function makeBudget(totalMs) {
   };
 }
 
-async function fetchJson(url, timeoutMs) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, {
-      signal: ac.signal,
-      headers: { accept: 'application/json', 'user-agent': 'agent-clinic-live-search' },
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
-  let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-      while (i < items.length) {
-        const idx = i++;
-        try {
-          out[idx] = await fn(items[idx], idx);
-        } catch (e) {
-          out[idx] = { error: e.message };
-        }
-      }
-    }),
-  );
-  return out;
-}
-
 /** GitHub API 中继：直连优先，失败逐个试公共镜像，并记住能用的那个 */
 function makeGhClient(relays, perRequestMs) {
   let good = null;
@@ -162,7 +130,10 @@ function makeGhClient(relays, perRequestMs) {
       let lastErr = null;
       for (const relay of order) {
         try {
-          const doc = await fetchJson(`${relay}https://api.github.com${pathWithQuery}`, perRequestMs);
+          const doc = await fetchJson(`${relay}https://api.github.com${pathWithQuery}`, {
+            timeoutMs: perRequestMs,
+            userAgent: UA_LIVE,
+          });
           good = relay;
           return doc;
         } catch (e) {
@@ -281,7 +252,10 @@ async function liveNpm(queries, o, budget, errors, sink) {
     const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q)}&size=${o.npmSize}`;
     let doc;
     try {
-      doc = await fetchJson(url, Math.min(o.perRequestMs, Math.max(1000, budget.left())));
+      doc = await fetchJson(url, {
+        timeoutMs: Math.min(o.perRequestMs, Math.max(1000, budget.left())),
+        userAgent: UA_LIVE,
+      });
     } catch (e) {
       errors.push(`npm 检索「${q}」失败：${e.message}`);
       continue;
@@ -318,7 +292,10 @@ async function liveNpm(queries, o, budget, errors, sink) {
     try {
       doc = await fetchJson(
         `https://registry.npmjs.org/${encodeURIComponent(p.name).replace('%40', '@')}`,
-        Math.min(o.perRequestMs, Math.max(1000, budget.left())),
+        {
+          timeoutMs: Math.min(o.perRequestMs, Math.max(1000, budget.left())),
+          userAgent: UA_LIVE,
+        },
       );
     } catch (e) {
       // aborted = 预算到点被掐断，不算异常；真实 HTTP 错误才记录

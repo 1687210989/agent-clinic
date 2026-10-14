@@ -65,7 +65,7 @@ export const REMEDIES = [
     priority: 10,
     // E3 与 C2 是同一根因的两面：C2 量"末轮 input 涨了多少"，E3 直接点出
     // "哪些工具结果本身太大了"。两者都指向同一个开关，不该各写一遍。
-    targets: ['C2', 'E3'],
+    targets: ['C2', 'E3', 'C5'],
     title: '收紧工具结果的 spill 预算（最能省 input 的一档）',
     solves: '超过预算的工具结果落到磁盘，内联只留首尾与文件路径，直接砍掉最大块的 input',
     row: { id: 'spill-policy', name: '@deepseek-ai/dsh-spill-policy' },
@@ -107,7 +107,7 @@ export const REMEDIES = [
     id: 'pruner-tighten',
     kind: REMEDY_KIND.CONFIG,
     priority: 20,
-    targets: ['C2', 'E3'],
+    targets: ['C2', 'E3', 'C5'],
     title: '收紧历史工具结果的剪枝阈值',
     solves: '压缩触发时把超大工具结果剪成"头 + 尾"，中段不再重复占用后续每一轮的 input',
     row: { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner' },
@@ -134,7 +134,7 @@ export const REMEDIES = [
     id: 'compact-now',
     kind: REMEDY_KIND.COMMAND,
     priority: 30,
-    targets: ['C3', 'C2'],
+    targets: ['C3', 'C2', 'C5'],
     title: '长会话里手动 /compact',
     solves: '把最旧的一段历史换成一份摘要，立刻缩小后续每一步的 input',
     command: '/compact',
@@ -201,7 +201,13 @@ export const REMEDIES = [
     title: '调低默认推理强度',
     solves: '推理强度直接决定每次回复的思考长度，是 output token 最大的单点杠杆',
     row: { id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model' },
-    suggest: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'low' },
+    // ⚠️ 第二轮评估 F17：只建议 reasoningEffort。
+    //    旧版本把 provider/model 一起写死成 deepseek-account + deepseek-flash，
+    //    而 profile patch 是"整行替换 config"——official 用户整段粘贴就会被静默改路由。
+    //    provider/model 交给 preserveKeys 从**当前行**原样带过来。
+    suggest: { reasoningEffort: 'low' },
+    preserveKeys: ['provider', 'model'],
+    shippedConfig: { provider: 'deepseek-official', model: 'deepseek-flash' },
     source: {
       type: 'first-party',
       package: '@deepseek-ai/dsh-agent-default-model',
@@ -270,7 +276,7 @@ export const REMEDIES = [
     kind: REMEDY_KIND.BEHAVIOR,
     source: BEHAVIOR_SOURCE,
     priority: 91,
-    targets: ['C2'],
+    targets: ['C2', 'C7'],
     title: '别把长驻内容每轮重贴一遍',
     solves: '同样的上下文被反复重新计费，是 input 膨胀最常见的来源',
     build: (f) => ({
@@ -435,6 +441,41 @@ export const REMEDIES = [
   }),
 
   P({
+    id: 'behavior-tool-surface',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 86,
+    // 第三轮：C6 从 request/header 的 tools 数组量出了工具面成本
+    targets: ['C6'],
+    title: '盘点工具面：用不到的工具就是每个请求的固定成本',
+    solves: '工具 schema 每个请求都要重发，少一个工具就少付一份固定输入 token',
+    build: (f) => ({
+      detail:
+        `${f.summary}。工具 schema 是**每个请求**都要重发的固定成本（4 字符≈1 token）——` +
+        '注意内置工具（create_goal / workflow / read_image 等）是 DSH 自带的，你不需要为它们做任何事；' +
+        '真正能省的是**插件类**工具：不再用的插件卸载掉，它的 schema 就跟着消失。',
+      because: '工具清单与 schema 字节数都来自日志里的 request/header，可逐条复核。',
+    }),
+  }),
+
+  P({
+    id: 'behavior-aux-cost',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 86,
+    targets: ['A5'],
+    title: '减少辅助模型调用（联网检索 / 会话标题）',
+    solves: '辅助调用独立计费且不进 token 概览，次数是最容易优化的那一项',
+    build: (f) => ({
+      detail:
+        `${f.summary}。这些调用**不计入报告的 token 概览**（DSH 没给它们记 usage），` +
+        '所以你的真实开销比概览数字更高。可优化的部分：联网检索前先 grep/read 本地已有结论、' +
+        '把"查过的东西"写进项目文件复用，而不是每次重新联网；会话标题只有首次生效，不必反复触发。',
+      because: '次数与每次的 maxTokens 上限都能在证据里复核（上界 ≠ 实际用量，见影响说明）。',
+    }),
+  }),
+
+  P({
     id: 'behavior-subagent-budget',
     kind: REMEDY_KIND.BEHAVIOR,
     source: BEHAVIOR_SOURCE,
@@ -500,6 +541,14 @@ const BEHAVIOR_META = {
   'behavior-danger-confirm': {
     risk: '增加确认会拖慢高频安全操作；只对真正高危的模式加。',
     verify: '重跑 ./run.sh report，N2 应显示新的高危调用已被逐条确认（无新增未确认记录）。',
+  },
+  'behavior-tool-surface': {
+    risk: '卸载插件会一并失去它的能力；先确认那个工具在窗口内确实没用过，并且你不打算用。',
+    verify: '重跑 ./run.sh report，看 C6 的工具 schema 字节数是否下降。',
+  },
+  'behavior-aux-cost': {
+    risk: '少联网可能拿不到最新信息；只对"本地已有答案"的检索做裁剪。',
+    verify: '重跑 ./run.sh report，看 A5 的辅助调用次数是否下降。',
   },
   'behavior-approval-preset': {
     risk: '放宽权限意味着这些工具以后不再问你 —— 只把低频危险之外的常用工具放进去，别整个放开。',
@@ -572,6 +621,17 @@ const EXPLICIT_STEPS = {
     '按错误类型处理：权限不足 → 授权或换目录；命令不存在 → 换等价命令；网络 → 检查代理',
     '确认走不通时直接告诉 Agent：「这条路已验证不通，换方案，不要再重试同样的命令」',
   ],
+  'behavior-tool-surface': [
+    '打开 ./run.sh report，看 C6 列出的"注册了多少工具 / 哪些窗口内 0 调用"',
+    '把 0 调用清单分成两类：内置工具（DSH 自带，不动）与插件提供的工具',
+    '对插件类：确认不再需要后卸载该插件（侧边栏 → 插件 → 卸载），它的工具 schema 就没了',
+    '重启 Harness 后重跑 report，看 C6 的 schema 字节数是否下降',
+  ],
+  'behavior-aux-cost': [
+    '打开 ./run.sh report，看 A5 的"联网检索 N 次 / 会话标题 M 次"与上界估算',
+    '在项目 AGENTS.md 里加一条约定：联网搜索前先 grep/read 本地已有结论，避免重复联网',
+    '把查过的重要结论写进项目文件（例如 docs/RESEARCH.md），后续直接读文件而非重新检索',
+  ],
   'behavior-approval-preset': [
     '打开 ./run.sh report，看 N3 给出的"审批集中在哪些工具"（证据定位可逐条复核）',
     '侧边栏 → 插件 → 找到权限/审批设置（Host 的 permission/preset 一类入口）',
@@ -634,9 +694,5 @@ function topTool(ctx) {
   return sorted.length ? sorted[0] : [null, 0];
 }
 
-/** 按指标取候选处方（保持目录顺序） */
-export function remediesFor(findingId) {
-  return REMEDIES.filter((r) => r.targets.includes(findingId));
-}
 
 export { toPatchSnippet };

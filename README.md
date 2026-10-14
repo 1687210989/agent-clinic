@@ -1,10 +1,16 @@
 # agent-clinic · Agent 体检诊所
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
+```
+
+**一条命令装完** —— 无需克隆、无需选位置、无需回答任何提问。脚本会自己拉源码、定位 Node、自动检测平台并部署。
+
 > **你的 Agent 体检诊所。** 只读扫描本地 Agent 会话，用**可逐条复核的证据**诊断真实发生的使用体验问题（token 浪费、死循环、跨会话失忆、资产闲置），并为每个问题开出可执行的处方。
 
-[![status](https://img.shields.io/badge/status-M1%20skeleton-yellow)]()
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
+[![smoke](https://img.shields.io/badge/smoke-70%2F70-brightgreen)]()
 
 ---
 
@@ -30,13 +36,14 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | 聚合统计 | ✅ 可用 |
 | 证据层 `show` | ✅ 可用 |
 | **诊断指标 E1 / E2 / E5** | ✅ **可用** |
+| **处方层** | ✅ **可用**（无对症插件时给基于证据的行为建议） |
 | **体检报告 `report`** | ✅ **可用** |
-| DSH 插件脚手架 | 🚧 契约已验证，待真实 DSH 加载 |
-| 处方匹配 | ⏳ 待实现 |
+| **DSH 插件（侧边栏入口 + 报告面板 + 准实时角标）** | ✅ **可用** |
+| **处方反馈闭环**（记住已拒绝 / 感兴趣） | ⏳ 待实现 |
 | C1 / C2 / A1 / A2 等指标 | ⏳ 待实现 |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 最小闭环已打通**：`./run.sh report` 可产出带可复核证据的体检报告；冒烟测试 **33/33 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 处方的体检报告；DSH 插件有侧边栏入口与面板；冒烟测试 **70/70 通过**。
 
 ```
 $ ./run.sh report

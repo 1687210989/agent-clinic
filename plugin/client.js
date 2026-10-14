@@ -1098,7 +1098,11 @@ window.__ModuleLoader__.load({
         // 「联网现搜」返回的是**完整的一份分析结果**（含按现搜目录重算的处方），
         // 所以拿到后整体替换展示数据，而不是只往里塞几条插件 ——
         // 否则"问题卡上的处方"和"插件列表"会来自两次不同的分析，对不上。
-        const d = state.live && state.live.data ? state.live.data : state.data;
+        // ⚠️ 这里读的是**组件内的 `live` state**（本文件 line 1005），
+        //    而不是 state 对象上那个并不存在的 live 字段 —— 写成后者会让三元
+        //    恒取 state.data：按钮看起来"没生效"（只有状态行变了，卡片还是旧数据）。
+        //    冒烟里有断言守住这一点。
+        const d = live && live.data ? live.data : state.data;
         const hd = d.header;
         const configPath = (d.config && d.config.patchPath) || null;
         const stale = state.version !== CLIENT_VERSION;

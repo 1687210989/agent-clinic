@@ -441,10 +441,17 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
     '路由响应携带 version',
     /version:\s*API_VERSION/.test(fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8')),
   );
+  // 回归护栏：面板渲染必须读组件内的 live state。
+  // 曾经写成 state.live（state 里从无该字段），三元恒取 state.data，
+  // 用户点「联网现搜」后卡片仍是旧数据 —— 按钮看起来没生效。
+  check(
+    '面板现搜结果真的替换展示数据（不读不存在的 state.live）',
+    /const d = live && live\.data \? live\.data : state\.data;/.test(clientSrcForVer) &&
+      !/state\.live/.test(clientSrcForVer),
+  );
 
   // 实时监测：/watch 轻量端点 + 签名机制
-  const hostSrc = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
-  check('注册了 /api/agent-clinic/watch 路由', hostSrc.includes("'/api/agent-clinic/watch'") || hostSrc.includes('"/api/agent-clinic/watch"'));
+  const hostSrc = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');  check('注册了 /api/agent-clinic/watch 路由', hostSrc.includes("'/api/agent-clinic/watch'") || hostSrc.includes('"/api/agent-clinic/watch"'));
   check('宿主实现了 fs.watch 监听', /fs\.watch\(/.test(hostSrc));
   check('宿主有防抖（避免一次写入触发多次重扫）', /WATCH_DEBOUNCE_MS/.test(hostSrc));
 

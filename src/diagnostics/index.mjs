@@ -148,8 +148,12 @@ function detectC5(ctx, opts) {
     const starts = comps.filter((e) => e.compaction_phase === 'start').length;
     const summaries = comps.filter((e) => e.compaction_phase === 'summary');
     const prunes = comps.filter((e) => e.compaction_phase === 'prune');
-    const freed =
-      [...summaries, ...prunes].reduce((n, e) => n + (e.shadowed_token_count ?? 0), 0);
+    // ⚠️ 待优化报告 §4.3：释放量必须**分开算**。
+    //    旧版 freed = summary + prune，却拿只统计 summary 的 summaryChars 去除它 ——
+    //    prune 多的会话里"回吐比例"会被系统性低估（分母被 prune 撑大了）。
+    const freedBySummary = summaries.reduce((n, e) => n + (e.shadowed_token_count ?? 0), 0);
+    const freedByPrune = prunes.reduce((n, e) => n + (e.shadowed_token_count ?? 0), 0);
+    const freed = freedBySummary + freedByPrune;
     const summaryChars = summaries.reduce((n, e) => n + (e.summary_chars ?? 0), 0);
     const count = starts || summaries.length + prunes.length;
     totalFreed += freed;
@@ -157,14 +161,19 @@ function detectC5(ctx, opts) {
     if (count < minCompactions) continue;
 
     const first = summaries[0] ?? prunes[0] ?? comps[0];
-    // 压缩效率：摘要正文换成 token（4 字符≈1 token），除以释放量就是"回吐比例"
+    // 压缩效率：摘要正文换成 token（4 字符≈1 token）÷ **摘要自己**的释放量
     const summaryTokens = Math.round(summaryChars / 4);
-    const ratio = freed > 0 ? summaryTokens / freed : 0;
+    const ratio = freedBySummary > 0 ? summaryTokens / freedBySummary : 0;
     const parts = [
       `本会话压缩 ${count} 次（摘要 ${summaries.length} / 剪枝 ${prunes.length}）`,
       `**实测**释放 ${num(freed)} token（DSH 日志的 shadowedTokenCount，非估算）`,
     ];
-    if (freed > 0) parts.push(`摘要自身约 ${num(summaryTokens)} token，回吐比例 ${(ratio * 100).toFixed(0)}%`);
+    if (freedBySummary || freedByPrune) {
+      parts.push(`其中摘要释放 ${num(freedBySummary)}、剪枝释放 ${num(freedByPrune)}`);
+    }
+    if (freedBySummary > 0) {
+      parts.push(`摘要自身约 ${num(summaryTokens)} token，相对**摘要释放量**回吐 ${(ratio * 100).toFixed(0)}%`);
+    }
 
     findings.push({
       id: 'C5',
@@ -256,13 +265,19 @@ function detectC6(ctx, opts) {
       title: '工具面成本',
       category: 'C',
       severity: SEVERITY.LOW,
-      scope: '窗口内 0 调用的工具',
-      summary: `注册了 ${registered.size} 个工具，其中 ${dead.length} 个在整个窗口内 0 次调用：${dead.join('、')}`,
+      scope: '本窗口未观察到调用的工具',
+      // ⚠️ 待优化报告 §4.1：旧措辞"整个窗口内 0 次调用"会被读成"这工具没用/该卸"。
+      //    但注册是**所有会话的并集**，而单个会话只用自己的预设 ——
+      //    低频插件（如只在做某类任务时才用的工具）仅仅是因为窗口里没遇到那类任务。
+      summary:
+        `注册了 ${registered.size} 个工具，其中 ${dead.length} 个在**本窗口内未观察到调用**：${dead.join('、')}`,
       evidence: [{ locator: anchor.locator, note: '工具清单来自 request/header 的 tools 数组' }],
       impact:
-        '这些工具的 schema 仍然每个请求都要重发 —— 插件类的可以考虑卸载或用不到就禁用；' +
-        '内置类（如 create_goal / workflow）是本机用不到的能力，留着不影响，但知道成本在哪',
-      confidence: 0.85,
+        '这些工具的 schema 仍然每个请求都要重发。**注意：未被调用 ≠ 不需要** —— ' +
+        '窗口内恰好没遇到需要它的任务，同样会出现在这张清单里；' +
+        '请按自己的使用习惯判断，插件的价值不该由一次窗口统计决定。' +
+        '内置工具（create_goal / workflow / read_image 等）是 DSH 自带的，不必处理。',
+      confidence: 0.7, // 从 0.85 下调：这个判据本身带着"窗口没覆盖到"的不确定性
     });
   }
 

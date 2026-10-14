@@ -29,8 +29,13 @@ import * as reportMod from '../src/report.mjs';
 let pass = 0;
 let fail = 0;
 const failures = [];
+// 记录**实际执行过**的断言名：用于最后那条"没有断言静默消失"的自检。
+// 起因：曾有断言写在 `if (有会话) { … }` 里，环境不满足时它一句话不说就没了 ——
+// 报告里数出 239 项、实跑只有 233 项，正是这类静默跳过。
+const executed = [];
 
 function check(name, cond, detail = '') {
+  executed.push(name);
   if (cond) {
     pass += 1;
     process.stdout.write(`  ✓ ${name}${detail ? `  ${detail}` : ''}\n`);
@@ -190,11 +195,16 @@ check('非 zstd 输入不抛异常（按明文处理）', noThrow);
 // --- 8. DSH 插件契约 ---
 process.stdout.write('\n8) DSH 插件契约\n');
 let pkg = null;
+let pkgErr = null;
 try {
   pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 } catch (e) {
-  check('package.json 可解析', false, e.message);
+  pkgErr = e.message;
 }
+// 这条（以及下面的"客户端入口可执行"）原来是"只在出错时才执行"的断言 ——
+// 正常运行时它们在自检里一次都不出现，于是第 18 段的完整性检查把它们标了出来。
+// 改成总是执行、出错才红。
+check('package.json 可解析', pkg !== null, pkgErr ?? '');
 if (pkg) {
   check('package.json 声明 dsh.bundle.patch', pkg.dsh?.bundle?.patch === './cordis.patch.yml');
   check('package.json 声明 main', typeof pkg.main === 'string' && pkg.main.length > 0, pkg.main);
@@ -335,11 +345,13 @@ process.stdout.write('\n10) 客户端 UI 契约\n');
   globalThis.window.__ModuleLoader__ = { load: (m) => captured.push(m) };
 
   // 用 new Function 执行入口文件，捕获 window.__ModuleLoader__.load 的参数
+  let entryErr = null;
   try {
     new Function(src)(); // eslint-disable-line no-new-func
   } catch (e) {
-    check('客户端入口可执行', false, e.message);
+    entryErr = e.message;
   }
+  check('客户端入口可执行', entryErr === null, entryErr ?? '');
 
   check('客户端入口调用 __ModuleLoader__.load', captured.length === 1, `捕获 ${captured.length} 个模块`);
   check('模块 id 与包名一致', captured[0] && captured[0].id === 'agent-clinic', captured[0]?.id);
@@ -1882,8 +1894,9 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     c6.map((f) => f.summary).join(' | ') || '(未检出)',
   );
   check(
-    'C6：列出窗口内 0 次调用的工具',
-    c6.some((f) => /0 次调用/.test(f.summary) && /t1/.test(f.summary)),
+    'C6：列出"本窗口未观察到调用"的工具，并说明未被调用≠不需要',
+    c6.some((f) => /未观察到调用/.test(f.summary) && /t1/.test(f.summary)) &&
+      c6.some((f) => /未被调用 ≠ 不需要|未被调用 ≠/.test(f.impact)),
     c6.map((f) => f.summary).join(' | ') || '(未检出)',
   );
 
@@ -2023,6 +2036,232 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
   check(
     '面板：404 的提示指向"完全退出并重启"（此前引向"未挂载 webServer"）',
     /旧插件代码/.test(clientSrc2) && /完全退出并重启/.test(clientSrc2),
+  );
+}
+
+// --- 17. 插件层功能测试（待优化报告 §4.5：1915 行插件代码此前零功能测试） ---
+//
+// 前几轮的护栏都是"源码字符串断言"，这条是**真的把插件跑起来**：
+// 用假的 ctx 调用 apply()，把注册的工具与路由抓下来，然后按配置驱动它们 ——
+// 这样"参数有没有往下传"这类 bug 会在自检里直接暴露（而不是等用户发现旋钮没效果）。
+process.stdout.write('\n17) 插件层功能测试（apply → 工具 → 路由）\n');
+{
+  const { apply, API_VERSION } = await import('../plugin/index.js');
+
+  const tools = new Map();
+  const routes = new Map();
+  const slots = new Map();
+  // 插件用 ctx.inject(['tools'|'webServer'], fn) 拿子上下文 —— 假 ctx 要提供同一形状
+  const fakeCtx = {
+    logger: { info() {}, warn() {}, error() {} },
+    inject(deps, fn) {
+      // 子上下文同时提供属性与 get()：插件里两种写法都用到了
+      // （tools 用 toolCtx.tools，webServer 用 wsCtx.get('webServer')）
+      const toolsApi = {
+        defineTool: (def) => def,
+        register(tool) {
+          tools.set(tool.name, tool);
+        },
+      };
+      const wsApi = {
+        register(route) {
+          routes.set(route.path, route);
+        },
+      };
+      const child = {
+        tools: toolsApi,
+        webServer: wsApi,
+        get(name) {
+          if (name === 'tools') return toolsApi;
+          if (name === 'webServer') return wsApi;
+          return null;
+        },
+        register() {},
+      };
+      try {
+        fn(child);
+      } catch (e) {
+        // 子上下文缺能力时插件会自己降级；这里记录但不让自检失败
+        fakeCtx._injectErrors = [...(fakeCtx._injectErrors ?? []), String(e?.message ?? e)];
+      }
+    },
+    slots: {
+      inject(_names, fn) {
+        fn({ register() {} }, _names);
+      },
+      declare() {
+        return false; // 模拟"插槽未声明"（无宿主的纯 Node 环境）
+      },
+    },
+    on() {},
+    effect(fn) {
+      fn();
+    },
+  };
+
+  // 插件配置：把两个旋钮拧到与非默认值不同，验证它们真的传到了诊断层
+  const pluginConfig = {
+    maxSessions: 1,
+    minRepeatCount: 20,
+    contextLines: 1,
+  };
+
+  let applied = true;
+  try {
+    apply(fakeCtx, pluginConfig);
+  } catch (e) {
+    applied = false;
+    check('插件 apply() 在最小 ctx 下不抛异常', false, String(e?.message ?? e));
+  }
+  if (applied) {
+    check('插件 apply() 在最小 ctx 下不抛异常', true);
+    check(
+      '插件注册了 3 个模型可见工具',
+      tools.size === 3 && tools.has('agent_clinic_scan') && tools.has('agent_clinic_show') && tools.has('agent_clinic_report'),
+      [...tools.keys()].join(', ') || '(无)',
+    );
+
+    // ---- 核心：maxSessions 必须真的生效（这正是上一轮的硬伤） ----
+    const reportTool = tools.get('agent_clinic_report');
+    if (reportTool) {
+      const text = await reportTool.execute({});
+      const sessionsLine = /扫描概览：(\d+) 会话/.exec(String(text));
+      const kept = sessionsLine ? Number(sessionsLine[1]) : null;
+      check(
+        '插件层功能：maxSessions=1 时报告只统计 1 个会话（旋钮真的接上了）',
+        kept === 1,
+        `报告里的会话数=${kept}`,
+      );
+      check(
+        '插件层功能：分母被裁剪时报告如实说明（不能悄悄少算）',
+        /只扫描了最近修改的 1 个会话/.test(String(text)),
+        String(text).split('\n').slice(0, 6).join(' / '),
+      );
+    }
+
+    // ---- minRepeatCount 必须真的传到诊断层 ----
+    const analyzeTool = tools.get('agent_clinic_report');
+    if (analyzeTool) {
+      const cfgLow = { ...pluginConfig, minRepeatCount: 3 };
+      apply(fakeCtx, cfgLow); // 重新挂一遍，读默认阈值下的报告
+      const textLow = String(await tools.get('agent_clinic_report').execute({}));
+      const e5Low = (textLow.match(/E5 冗余重复调用/g) ?? []).length;
+      apply(fakeCtx, pluginConfig);
+      const textHigh = String(await tools.get('agent_clinic_report').execute({}));
+      const e5High = (textHigh.match(/E5 冗余重复调用/g) ?? []).length;
+      check(
+        '插件层功能：minRepeatCount 影响 E5 判定（20 比 3 更不容易命中）',
+        e5High <= e5Low,
+        `minRepeat=3 → ${e5Low} 处 ; minRepeat=20 → ${e5High} 处`,
+      );
+    }
+
+    // ---- contextLines 透传（插件侧） ----
+    const showTool = tools.get('agent_clinic_show');
+    if (showTool && scan.sessions.length) {
+      const s0 = scan.sessions.find((x) => x.totalLines > 120) ?? scan.sessions[0];
+      const loc = `${s0.file}#L100-L102`;
+      const out = String(await showTool.execute({ locator: loc }));
+      // contextLines=1 → 区间两端各多 1 行
+      check(
+        '插件层功能：contextLines=1 生效（证据前后各多 1 行）',
+        /\n> *100 \|/.test(out) && / 99 \|/.test(out) && !/ 98 \|/.test(out),
+        out.split('\n').slice(0, 4).join(' / '),
+      );
+    }
+
+    // ---- 路由层：/report 与 /watch 也要带 config ----
+    check(
+      '插件注册了 /report 与 /watch 路由',
+      [...routes.keys()].some((p) => p.endsWith('/report')) && [...routes.keys()].some((p) => p.endsWith('/watch')),
+      [...routes.keys()].join(', ') || '(无)',
+    );
+    const reportRoute = routes.get('/api/agent-clinic/report');
+    if (reportRoute) {
+      const res = {
+        code: null,
+        body: '',
+        writeHead(code) { this.code = code; },
+        end(body) { this.body = body; },
+      };
+      await reportRoute.handler({ url: '/api/agent-clinic/report' }, res);
+      let parsed = null;
+      try { parsed = JSON.parse(res.body); } catch { /* 保留原样 */ }
+      check(
+        '/report 路由返回 JSON 且数据里遵守 maxSessions（路由与工具同一口径）',
+        parsed?.ok === true && parsed?.data?.header?.sessions === 1,
+        `code=${res.code} sessions=${parsed?.data?.header?.sessions}`,
+      );
+    }
+  }
+
+  // 护栏：runAnalyze 必须把 opts 传给 analyze（防止再次断链）
+  const pluginSrc = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
+  check(
+    '护栏：runAnalyze / runReport 把 opts 传给 analyze / buildReport',
+    /analyze\(\{\s*scan,\s*summary\s*\},\s*analyzeOptsFromConfig\(config\)\)/.test(pluginSrc) &&
+      /buildReport\(\{\s*scan,\s*summary\s*\},\s*analyzeOptsFromConfig\(config\)\)/.test(pluginSrc),
+  );
+  check(
+    '护栏：/live 路由也带旋钮（同一面板不能两种口径）',
+    /analyzeLive\(\{\s*scan,\s*summary\s*\},\s*\{\s*\.\.\.analyzeOptsFromConfig\(config\)/.test(pluginSrc),
+  );
+  check(
+    '护栏：/report 路由也应用 maxSessions（这个漏传是插件层功能测试抓出来的）',
+    /path: '\/api\/agent-clinic\/report'[\s\S]{0,900}?limitSessions\(scanSessions/.test(pluginSrc),
+  );
+
+  // minRepeatCount 的确定性验收：合成"同参数无错误重复 5 次"的会话，
+  // 阈值 3 必须命中、阈值 20 必须不命中 —— 不依赖本机刚好有多少数据
+  const diagMod2 = await import('../src/diagnostics/index.mjs');
+  const mkE5 = () => [
+    {
+      sessionId: 'session-e5',
+      file: '/tmp/e5.zstd',
+      totalLines: 20,
+      events: Array.from({ length: 5 }, (_, i) => [
+        { kind: 'tool_call', tool_name: 'list_agents', tool_args_hash: 'h1', tool_call_id: `c${i}`, locator: `/tmp/e5.zstd#L${i * 2 + 1}` },
+        { kind: 'tool_result', tool_call_id: `c${i}`, is_error: false, locator: `/tmp/e5.zstd#L${i * 2 + 2}` },
+      ]).flat(),
+    },
+  ];
+  const e5at = (n) =>
+    diagMod2
+      .runDiagnostics({ scan: { sessions: mkE5(), errors: [] }, summary: { global: {} } }, { minRepeatCount: n })
+      .findings.filter((f) => f.id === 'E5').length;
+  check(
+    '护栏：minRepeatCount 真的改变判定（3 → 命中 1 处，20 → 0 处）',
+    e5at(3) === 1 && e5at(20) === 0,
+    `3→${e5at(3)} 处 / 20→${e5at(20)} 处`,
+  );
+}
+
+// --- 18. 自检自身的完整性（没有断言静默消失） ---
+//
+// 上一轮报告数出 239 项、实跑只有 233 项：有断言写在条件分支里，
+// 环境不满足时它一句话不说就不执行了 —— 那等于没有这条护栏。
+// 这里把"源码里写了的断言名"与"实际执行过的断言名"对齐。
+process.stdout.write('\n18) 自检自身完整性\n');
+{
+  const selfSrc = fs.readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8');
+  // 用拼接构造正则，避免匹配到本行自己
+  const re1 = new RegExp('\\b' + 'check' + '\\(\\s*\'((?:[^\'\\\\]|\\\\.)*)\'', 'g');
+  const re2 = new RegExp('\\b' + 'check' + '\\(\\s*`([^`$]*)`', 'g');
+  const declared = new Set();
+  for (const m of selfSrc.matchAll(re1)) declared.add(m[1]);
+  for (const m of selfSrc.matchAll(re2)) declared.add(m[1]);
+  const ran = new Set(executed);
+  // 排除自检自身这两条：它们在比对之后才登记进 executed
+  const missing = [...declared].filter((n) => !ran.has(n) && !n.startsWith('自检：'));
+  check(
+    '自检：源码里声明的断言全部真的执行过（没有条件分支把护栏吞掉）',
+    missing.length === 0,
+    missing.length ? `未执行：${missing.join(' / ')}` : `声明 ${declared.size} 个 · 全部执行`,
+  );
+  check(
+    '自检：执行数为正且与通过+失败一致',
+    executed.length === pass + fail,
+    `执行 ${executed.length} = 通过 ${pass} + 失败 ${fail}`,
   );
 }
 

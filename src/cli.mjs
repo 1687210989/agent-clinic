@@ -23,6 +23,7 @@ import { hasZstdSupport } from './adapters/zstd-frames.mjs';
 import { renderEvidence } from './evidence/index.mjs';
 import { runDiagnostics } from './diagnostics/index.mjs';
 import { buildReport, buildReportLive } from './report.mjs';
+import { readEffectiveConfig } from './config/index.mjs';
 import * as catalogMod from './catalog/index.mjs';
 
 const argv = process.argv.slice(2);
@@ -125,9 +126,22 @@ function doScan() {
 function doShow() {
   envCheck();
   const locator = argv[1];
-  if (!locator) fail('用法：agent-clinic show "<file>#L<n>"');
+  if (!locator) fail('用法：agent-clinic show "<file>#L<n>" [--context N]');
+  // 待优化报告 §5-1：插件侧按 contextLines 展开，CLI 却固定 2 行 —— 同一工具两种行为。
+  // 现在优先用 --context，其次读 profile patch 里本插件那一行的 contextLines，最后才是 2。
+  let context = Number(argOf('--context', NaN));
+  if (!Number.isFinite(context)) {
+    try {
+      const cfg = readEffectiveConfig();
+      const row = cfg?.rows?.['agent-clinic'];
+      const v = Number(row?.config?.contextLines);
+      context = Number.isFinite(v) ? v : 2;
+    } catch {
+      context = 2;
+    }
+  }
   try {
-    process.stdout.write(`${renderEvidence(locator)}\n`);
+    process.stdout.write(`${renderEvidence(locator, { context })}\n`);
   } catch (e) {
     fail(`无法展开证据：${e.message}`);
   }

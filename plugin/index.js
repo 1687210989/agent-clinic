@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
+import { scanSessions, resolveSessionsRoot, limitSessions } from '../src/adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { renderEvidence } from '../src/evidence/index.mjs';
@@ -130,23 +130,49 @@ function runShow(locator, context = 2) {
   }
 }
 
-function runReport(opts = {}) {
+/**
+ * 把插件 Config 里的旋钮翻译成诊断层的 opts。
+ *
+ * ⚠️ 第三轮验收（待优化报告 §3）：这三个旋钮此前**完全没接线** ——
+ *    schema 声明了 `maxSessions` / `minRepeatCount`，用户在面板里改了、
+ *    值也存下来了，但 `runAnalyze` 调 `analyze({scan, summary})` 时**没传 opts**，
+ *    所以诊断层永远收到 undefined，改了不起任何作用、也没有任何提示。
+ *    这恰恰是本工具的 C1 指标专门诊断的那类问题（"旋钮改了没效果"）。
+ *
+ * 这里的映射关系写明白，避免以后再断链：
+ *   maxSessions     → 会话扫描上限（在 limitSessions 里生效）
+ *   minRepeatCount  → E1/E5 的重复阈值（diagnostics 的 opts.minRepeatCount）
+ *   contextLines    → 证据展开行数（CLI/插件两侧一致）
+ */
+function analyzeOptsFromConfig(config = {}) {
+  const opts = {};
+  if (Number.isFinite(config.maxSessions) && config.maxSessions > 0) {
+    opts.maxSessions = config.maxSessions;
+  }
+  if (Number.isFinite(config.minRepeatCount) && config.minRepeatCount > 0) {
+    opts.minRepeatCount = config.minRepeatCount;
+  }
+  return opts;
+}
+
+function runReport(opts = {}, config = {}) {
   if (!hasZstdSupport()) {
     return `运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）。`;
   }
-  const scan = scanSessions({ dshHome: opts.dshHome });
+  const scan = limitSessions(scanSessions({ dshHome: opts.dshHome }), config.maxSessions);
   const summary = summarize(scan);
-  return buildReport({ scan, summary });
+  return buildReport({ scan, summary }, analyzeOptsFromConfig(config));
 }
 
 /** 结构化体检结果（供客户端面板渲染卡片式 UI，避免解析 markdown 文本） */
-function runAnalyze(opts = {}) {
+function runAnalyze(opts = {}, config = {}) {
   if (!hasZstdSupport()) {
     throw new Error(`运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）`);
   }
-  const scan = scanSessions({ dshHome: opts.dshHome });
+  const scan = limitSessions(scanSessions({ dshHome: opts.dshHome }), config.maxSessions);
   const summary = summarize(scan);
-  return analyze({ scan, summary });
+  // opts 必须传下去：否则 maxSessions / minRepeatCount 就是"改了没效果"的旋钮
+  return analyze({ scan, summary }, analyzeOptsFromConfig(config));
 }
 
 // ---------------------------------------------------------------------------
@@ -185,8 +211,8 @@ function signatureOf(data) {
     .join(',')}|${data.header.sessions}|${data.header.toolCalls}`;
 }
 
-function refreshState(dshHome) {
-  const data = runAnalyze({ dshHome });
+function refreshState(dshHome, config = {}) {
+  const data = runAnalyze({ dshHome }, config);
   watchState.signature = signatureOf(data);
   watchState.count = data.findings.length;
   watchState.ids = data.findings.map((f) => f.id);
@@ -195,9 +221,9 @@ function refreshState(dshHome) {
 }
 
 /** 轻量状态：签名变了客户端才去拉全量报告，所以要保证它足够便宜 */
-function currentState(dshHome) {
+function currentState(dshHome, config = {}) {
   if (watchState.dirty || watchState.signature === '') {
-    refreshState(dshHome);
+    refreshState(dshHome, config);
     watchState.dirty = false;
   }
   return {
@@ -382,7 +408,7 @@ export function apply(ctx, config = {}) {
         },
         output: TEXT_OUTPUT,
         execute(args) {
-          return Promise.resolve(runReport({ dshHome: args?.dsh_home ?? config.dshHome }));
+          return Promise.resolve(runReport({ dshHome: args?.dsh_home ?? config.dshHome }, config));
         },
       }),
     );
@@ -421,7 +447,9 @@ export function apply(ctx, config = {}) {
             res.end(body);
           };
           try {
-            const scan = scanSessions({ dshHome: config.dshHome });
+            // 旋钮同样要生效：面板路由与模型工具必须同一口径
+            // （待优化报告 §3：这里是最后一处漏传 opts 的地方）
+            const scan = limitSessions(scanSessions({ dshHome: config.dshHome }), config.maxSessions);
             const summary = summarize(scan);
             const ctxReport = { scan, summary };
             send(200, {
@@ -429,7 +457,7 @@ export function apply(ctx, config = {}) {
               version: API_VERSION,
               generatedAt: new Date().toISOString(),
               report: buildReport(ctxReport),
-              data: analyze(ctxReport),
+              data: analyze(ctxReport, analyzeOptsFromConfig(config)),
             });
           } catch (e) {
             send(500, { ok: false, error: String(e?.message ?? e) });
@@ -455,9 +483,11 @@ export function apply(ctx, config = {}) {
             res.end(body);
           };
           try {
-            const scan = scanSessions({ dshHome: config.dshHome });
+            const scan = limitSessions(scanSessions({ dshHome: config.dshHome }), config.maxSessions);
             const summary = summarize(scan);
+            // 现搜也要带上旋钮：否则"点联网后阈值又变回默认"——同一面板两种口径
             const { data, live } = await analyzeLive({ scan, summary }, {
+              ...analyzeOptsFromConfig(config),
               liveOptions: { budgetMs: LIVE_BUDGET_MS },
             });
             send(200, {
@@ -486,7 +516,7 @@ export function apply(ctx, config = {}) {
             res.end(body);
           };
           try {
-            send(200, currentState(config.dshHome));
+            send(200, currentState(config.dshHome, config));
           } catch (e) {
             send(500, { ok: false, error: String(e?.message ?? e) });
           }

@@ -550,6 +550,41 @@ export function parseSession(file) {
   };
 }
 
+/**
+ * 按上限裁剪会话集合（`maxSessions` 旋钮的实现）。
+ *
+ * 第三轮验收（待优化报告 §3）：插件 Config 声明了 `maxSessions`，但从来没有
+ * 传到扫描侧 —— 用户改了没效果，也没有提示。这个函数是那个旋钮的唯一实现，
+ * 插件侧（report / analyze / live / watch 四条路径）都经过它。
+ *
+ * 语义：保留**最近修改**的 N 个会话（按 mtime 降序）。
+ * 不按路径排序取前 N 个 —— 目录名按项目名排，取前几个会拿到最老的那批，
+ * 与"体检当下状态"的意图相反。
+ *
+ * @param {{sessions:Array}} scan
+ * @param {number} [maxSessions] 省略/非正数则原样返回
+ */
+export function limitSessions(scan, maxSessions) {
+  if (!Number.isFinite(maxSessions) || maxSessions <= 0) return scan;
+  if (!Array.isArray(scan?.sessions) || scan.sessions.length <= maxSessions) return scan;
+  const withTime = scan.sessions.map((s) => {
+    let mtime = 0;
+    try {
+      mtime = fs.statSync(s.file).mtimeMs;
+    } catch {
+      /* 读不到 mtime 的排到最后，而不是丢弃 */
+    }
+    return { s, mtime };
+  });
+  withTime.sort((a, b) => b.mtime - a.mtime);
+  return {
+    ...scan,
+    sessions: withTime.slice(0, maxSessions).map((x) => x.s),
+    // 让"报告分母被裁过"这件事可复核（只报 N 个会话时读者要知道为什么）
+    limitedFrom: scan.sessions.length,
+  };
+}
+
 /** 扫描根目录下全部会话 */
 export function scanSessions(opts = {}) {
   const root = resolveSessionsRoot(opts);

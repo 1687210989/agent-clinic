@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-233%2F233-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-249%2F249-brightgreen)]()
 
 ---
 
@@ -107,7 +107,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **233/233 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **249/249 通过**。
 
 ````bash
 $ ./run.sh report
@@ -341,7 +341,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog     # 看插件目录（来源、能力标签、热度、中文简介覆盖情况）
 ./run.sh catalog-sync            # 联网同步插件目录（唯一会写盘 + 联网的只读工具命令）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
-./scripts/smoke.sh   # 自检（233 项）
+./scripts/smoke.sh   # 自检（249 项）
 ```
 
 > **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm / volta / fnm / Program Files）。
@@ -422,7 +422,7 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 
 | 缺陷 | 影响 |
 |---|---|
-| **部分配置旋钮未接线** | `maxSessions` / `minRepeatCount` 在插件 Config 里声明了但没传到诊断层，改了不起作用；`contextLines` 只对 report 生效，CLI 的 `show` 固定 2 行 |
+| ~~配置旋钮未接线~~ | ✅ 第三轮验收时修掉：`maxSessions` / `minRepeatCount` / `contextLines` 现在都真的生效（插件四条路径 + CLI `show --context`），并且**有功能测试守着** |
 | **定位符解析仍有两份** | `src/adapters/base.mjs` 的 `parseLocator`（不支持区间）与 `src/evidence/index.mjs` 的 `parseRange`（支持区间）—— 调用方要自己选对那个 |
 | **`show` 的区间展开有 200 行上限** | 超长区间会截断并提示，需要看别处得用 offset/limit 分段复核 |
 | **A3 的通用工具清单是硬编码** | 插件生态新增的通用工具不在清单里时，A3 可能重新变吵（阈值可用 `opts` 覆盖，但清单本身要先改代码） |

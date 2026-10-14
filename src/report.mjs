@@ -345,6 +345,10 @@ export function analyze(ctx, opts = {}) {
       // 第三轮 F3：token 概览只统计 assistant/message 的 usage，必须写明口径；
       // 辅助调用（联网检索 / 会话标题）**没有 usage 记录**，单独给上界估算。
       tokenScope: 'assistant/message 的 usage',
+      // 待优化报告 §3：maxSessions 接线后，报告分母会被裁 —— 必须让读者知道
+      sessionLimit: Number.isFinite(ctx.scan?.limitedFrom)
+        ? { kept: ctx.scan.sessions.length, total: ctx.scan.limitedFrom }
+        : null,
       aux: auxSummary(ctx.scan),
       // 第二轮评估 F4/L7：解析失败与会话目录读不了都要能看见，
       // 否则报告的分母可能少算会话而读者不自知
@@ -379,7 +383,15 @@ export function analyze(ctx, opts = {}) {
     // 同类型合并后的分组视图（面板与报告都用它，避免一处一张卡）
     groups,
     notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
-    notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
+    notImplemented: notImplemented.map((d) => ({
+      id: d.id,
+      title: d.title,
+      // 待优化报告 §5-6：不能只写"排期中"就完事，要说明本机为什么还判不了
+      note:
+        d.id === 'A1'
+          ? '本机未检测到 MCP 配置 —— 不是"MCP 都闲置"，而是没有可判定的数据源'
+          : null,
+    })),
     unimplementable: unimplementable.map((d) => ({ id: d.id, title: d.title, reason: d.reason })),
     // 处方：每条都可执行（配置片段 / 命令 / 插件入口 / 设置路径 / 具体动作）
     prescriptions,
@@ -530,6 +542,13 @@ export function renderReport(data) {
         `${h.aux.models?.length ? `（模型 ${h.aux.models.join('、')}）` : ''}`,
     );
   }
+  // 分母被裁过就说出来（否则读者以为本机只有这么几个会话）
+  if (h.sessionLimit) {
+    push(
+      `> ⚠ 本次只扫描了最近修改的 ${h.sessionLimit.kept} 个会话（共 ${h.sessionLimit.total} 个）` +
+        ` —— 由插件配置 \`maxSessions\` 控制`,
+    );
+  }
   if (h.badFrames || h.badLines) {
     push(`⚠ 数据完整性：坏帧 ${h.badFrames} / 坏行 ${h.badLines}`);
   }
@@ -582,16 +601,6 @@ export function renderReport(data) {
     }
   }
 
-  push('### 未检测到异常的维度');
-  if (data.notDetected.length === 0) {
-    push('（无）');
-  } else {
-    for (const d of data.notDetected) {
-      push(d.note ? `- ${d.id} ${d.title} —— ${d.note}` : `- ${d.id} ${d.title}`);
-    }
-  }
-  push();
-
   if (data.prescriptions.length > 0) {
     push(`### 处方（${data.prescriptions.length} 条 · 每条都有可执行动作）`);
     push();
@@ -620,6 +629,16 @@ export function renderReport(data) {
       push();
     }
   }
+
+  push('### 未检测到异常的维度');
+  if (data.notDetected.length === 0) {
+    push('（无）');
+  } else {
+    for (const d of data.notDetected) {
+      push(d.note ? `- ${d.id} ${d.title} —— ${d.note}` : `- ${d.id} ${d.title}`);
+    }
+  }
+  push();
 
   if (data.levers?.length) {
     push('### 省 token 开关清单（本机真实存在，供按需调整）');
@@ -724,7 +743,10 @@ export function renderReport(data) {
 
   if (data.notImplemented.length) {
     push('### 未实现的维度（排期中）');
-    for (const d of data.notImplemented) push(`- ${d.id} ${d.title}`);
+    for (const d of data.notImplemented) {
+      // 待优化报告 §5-6：不能只写"排期中"就完事 —— 要说明**本机为什么还判不了**
+      push(`- ${d.id} ${d.title}${d.note ? ` —— ${d.note}` : ''}`);
+    }
     push();
   }
 
@@ -756,9 +778,34 @@ export function renderReport(data) {
     push();
   }
 
+  // 待优化报告 §4.2 / §4.4：同一个报告里混着三种口径（日志实测 / usage 实测 /
+  // 字符估算），不标清楚容易被当成同一可信度。这里逐项写明来源。
+  push('### 口径说明（哪项是日志实测、哪项是估算）');
+  push();
+  push('| 数据 | 口径 |');
+  push('|---|---|');
+  push('| `token：input / output / cacheRead` | **日志实测** —— `assistant/message` 的 usage，但**不含辅助调用** |');
+  push('| 辅助调用「按 maxTokens 上界估算 ≤N」 | **上界估算** —— 次数是真数，token 量是上限（每次跑满才会达到，实际通常远低于它） |');
+  push('| C5 压缩释放量 | **日志实测** —— `compaction/*` 的 `shadowedTokenCount`，DSH 自己记的 |');
+  push('| C6 工具 schema、C7 注入量的**字符数** | **日志实测**（JSON 序列化长度） |');
+  push('| 字符 → token 的换算 | **估算** —— 按 4 字符 ≈ 1 token，已在结论里逐处标注 |');
+  push('| 其余指标（次数 / 比例 / 重复次数） | **日志实测** —— 由事件计数直接得出 |');
+  push('');
+
+  // 待优化报告 §5-3：19 个指标了，只写 C1/A3/E5 用户看不懂 —— 报告也要有图例
+  const legend = new Map();
+  for (const g of data.groups ?? []) legend.set(g.id, g.title);
+  for (const n of data.notDetected ?? []) legend.set(n.id, n.title);
+  for (const f of data.findings ?? []) legend.set(f.id, f.title);
+  if (legend.size) {
+    push('### 指标图例');
+    push();
+    for (const [id, title] of [...legend.entries()].sort()) push(`- ${id} · ${title}`);
+    push();
+  }
+
   push('---');
   push(data.footer);
-
   return `${out.join('\n')}\n`;
 }
 

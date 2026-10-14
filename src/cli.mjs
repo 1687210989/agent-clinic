@@ -14,6 +14,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { scanSessions, resolveSessionsRoot } from './adapters/dsh.mjs';
 import { summarize, topTools, num, pct } from './summary.mjs';
@@ -21,6 +23,7 @@ import { hasZstdSupport } from './adapters/zstd-frames.mjs';
 import { renderEvidence } from './evidence/index.mjs';
 import { runDiagnostics } from './diagnostics/index.mjs';
 import { buildReport } from './report.mjs';
+import * as catalogMod from './catalog/index.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? 'help';
@@ -146,6 +149,35 @@ function doReport() {
   }
 }
 
+/**
+ * 插件目录同步：**唯一会联网的命令**，且只在用户显式执行时运行。
+ *
+ * 体检本体（scan / diagnose / report / 面板）依然零外发 —— 它们只读快照。
+ */
+function doCatalogSync() {
+  const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'catalog-sync.mjs');
+  const r = spawnSync(process.execPath, [script, ...argv.slice(1)], { stdio: 'inherit' });
+  process.exit(r.status ?? 1);
+}
+
+function doCatalog() {
+  const { activeCatalog, SNAPSHOT_PATH: snapPath } = catalogMod;
+  const a = activeCatalog();
+  process.stdout.write('插件目录\n');
+  process.stdout.write(`  总条目：${a.entries.length}\n`);
+  process.stdout.write(`  人工核实：${a.sources.curated} 条\n`);
+  process.stdout.write(`  npm 同步：${a.sources.registry} 条` +
+    (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) + '\n');
+  const byOrigin = a.entries.filter((e) => e.origin === 'npm-registry');
+  if (byOrigin.length) {
+    process.stdout.write('\n  npm 同步条目（前 20）:\n');
+    for (const e of byOrigin.slice(0, 20)) {
+      process.stdout.write(`    ${e.package}${e.version ? ` v${e.version}` : ''} — ${(e.capabilities ?? []).join('/') || '(未标注能力)'}\n`);
+    }
+    process.stdout.write('\n  提示：./run.sh catalog-sync 可更新这份清单\n');
+  }
+}
+
 function doHelp() {
   process.stdout.write(
     [
@@ -154,10 +186,12 @@ function doHelp() {
       '用法：',
       '  agent-clinic scan                 扫描 DSH 会话并输出概览',
       '  agent-clinic show "<file>#L<n>"   展开证据（复核用）',
-      '  agent-clinic diagnose             运行诊断（骨架阶段）',
-      '  agent-clinic report               输出体检报告（待实现）',
+      '  agent-clinic diagnose             只跑诊断',
+      '  agent-clinic report               输出体检报告',
+      '  agent-clinic catalog              查看插件目录（人工核实 + npm 同步）',
+      '  agent-clinic catalog-sync         从 npm registry 同步插件目录（唯一联网命令）',
       '',
-      '只读 · 零依赖 · 零外发',
+      '只读 · 零依赖 · 体检本体零外发（只有 catalog-sync 联网）',
     ].join('\n') + '\n',
   );
 }
@@ -176,6 +210,12 @@ switch (cmd) {
     break;
   case 'report':
     doReport();
+    break;
+  case 'catalog':
+    doCatalog();
+    break;
+  case 'catalog-sync':
+    doCatalogSync();
     break;
   case 'help':
   case '--help':

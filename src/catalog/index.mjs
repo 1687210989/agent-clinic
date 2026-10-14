@@ -14,21 +14,34 @@
  *   2. **能力标签 + 关键词检索**（entry.capabilities / entry.keywords × finding 文本）：
  *      泛化匹配，并且**必须说明为什么匹配**（matchedOn），不做黑盒推荐
  *
+ * ⚠️ 2026-10-16 用户追问：「billion-context 是你告诉我的，还是真正从插件目录检索出来的？」
+ *    当时的诚实回答是：**目录是人工写死的白名单**，billion-context 来自用户点名 + 我事后核实。
+ *    现在目录有**两个来源**，每条都标出处：
+ *      - `curated`：人工核实并写进本文件的条目（数量少，但每条都读过文档）
+ *      - `npm-registry`：`./run.sh catalog-sync` 从 npm registry 按
+ *        `keywords:dsh-plugin` 同步下来的真实插件清单（快照存在
+ *        ~/.agent-clinic/catalog.snapshot.json，用户显式执行才联网）
+ *    内置条目优先（同包名时覆盖 registry 条目，因为人工读过它的文档）。
+ *
  * 硬性纪律（继承 2026-10-14 的事故教训）：
  *   - 目录里只放**核实过的包**（随附插件给出包内文档出处，社区插件给出 npm 复核方式）
  *   - 检索不到就诚实说"没有对症插件"，绝不为了有话说而编一条
  *   - 已安装的插件不推"安装"，改为提示"确认已启用 / 检查配置"
  *
- * 本模块**零外发**：只读本地 profile 与 node_modules，不联网。
+ * 本模块**零外发**：只读本地 profile、node_modules 与同步快照，自己不联网。
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { resolveProfileDir } from '../config/index.mjs';
 
 /** 目录版本（人工核实日），报告里会显示，便于判断推荐是否过期 */
 export const CATALOG_VERSION = '2026-10-16';
+
+/** npm 同步快照的默认落盘位置（由 `./run.sh catalog-sync` 生成） */
+export const SNAPSHOT_PATH = path.join(os.homedir(), '.agent-clinic', 'catalog.snapshot.json');
 
 /**
  * 指标 → 能力标签。
@@ -182,6 +195,64 @@ export const PLUGIN_CATALOG = [
 ];
 
 // ---------------------------------------------------------------------------
+// 目录来源：内置已核实条目 + npm 同步快照
+// ---------------------------------------------------------------------------
+
+/** 给内置条目补上 origin 标记 */
+const CURATED = PLUGIN_CATALOG.map((e) => ({ ...e, origin: 'curated' }));
+
+/**
+ * 读取 npm 同步快照（不存在或损坏都返回 null，绝不抛）。
+ * @returns {{entries:Array, fetchedAt:string, source:string}|null}
+ */
+export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
+  try {
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const entries = Array.isArray(doc.entries) ? doc.entries : [];
+    return {
+      entries: entries.map((e) => ({
+        ...e,
+        origin: 'npm-registry',
+        // registry 条目没有人工读过的 targets，只靠能力与关键词命中
+        targets: e.targets ?? [],
+        risk:
+          e.risk ??
+          `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
+            `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`,
+        verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
+      })),
+      fetchedAt: doc.fetchedAt ?? null,
+      source: doc.source ?? 'npm registry',
+      file,
+    };
+    /* eslint-disable-next-line no-unreachable */
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 生效目录 = 快照条目 + 内置已核实条目（同包名时内置优先）。
+ *
+ * @returns {{entries:Array, sources:Object}}
+ */
+export function activeCatalog(opts = {}) {
+  const snap = opts.snapshot === null ? null : loadRegistrySnapshot(opts.snapshotPath ?? SNAPSHOT_PATH);
+  const curatedNames = new Set(CURATED.map((e) => e.package));
+  const fromRegistry = (snap?.entries ?? []).filter((e) => !curatedNames.has(e.package));
+  return {
+    entries: [...CURATED, ...fromRegistry],
+    sources: {
+      curated: CURATED.length,
+      registry: fromRegistry.length,
+      snapshotAt: snap?.fetchedAt ?? null,
+      snapshotSource: snap?.source ?? null,
+      snapshotPath: snap?.file ?? (opts.snapshotPath ?? SNAPSHOT_PATH),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 本地插件目录（只读扫描）
 // ---------------------------------------------------------------------------
 
@@ -280,10 +351,9 @@ function findingText(finding) {
  * @returns {Array<{entry:Object, score:number, reasons:string[], installed:boolean}>}
  */
 export function matchPlugins(finding, opts = {}) {
-  const catalog = opts.catalog ?? PLUGIN_CATALOG;
+  const catalog = opts.catalog ?? activeCatalog(opts).entries;
   const installedList = opts.installed ?? [];
-  const minScore = opts.minScore ?? 3;
-  const limit = opts.limit ?? 2;
+  const limit = opts.limit ?? 3;
   const text = findingText(finding);
 
   const wanted = [
@@ -293,6 +363,10 @@ export function matchPlugins(finding, opts = {}) {
 
   const hits = [];
   for (const entry of catalog) {
+    // npm 同步进来的条目没有人工读过文档，门槛更高：单个泛能力标签不算数。
+    // （踩过的坑：某会话分支插件因描述里出现一次 "retry" 被当作循环防护推给 E5）
+    const isRegistry = (entry.origin ?? 'curated') === 'npm-registry';
+    const minScore = opts.minScore ?? (isRegistry ? 5 : 3);
     let score = 0;
     const reasons = [];
 
@@ -303,8 +377,16 @@ export function matchPlugins(finding, opts = {}) {
 
     const capHits = (entry.capabilities ?? []).filter((c) => wanted.includes(c));
     if (capHits.length) {
-      score += 3;
-      reasons.push(`能力标签 ${capHits.map((c) => `「${c}」`).join('、')} 对上 ${finding.id} 需要的能力`);
+      // 命中多个能力标签才算强信号（每个 +3，最多计 2 个）
+      score += Math.min(capHits.length, 2) * 3;
+      const evidence = (entry.capabilityEvidence ?? [])
+        .filter((e) => capHits.includes(e.cap))
+        .map((e) => `「${e.matched}」`)
+        .join('、');
+      reasons.push(
+        `能力标签 ${capHits.map((c) => `「${c}」`).join('、')} 对上 ${finding.id} 需要的能力` +
+          (evidence ? `（依据目录里的描述命中 ${evidence}）` : ''),
+      );
     }
 
     const kwHits = [];
@@ -318,7 +400,13 @@ export function matchPlugins(finding, opts = {}) {
     }
 
     if (score < minScore) continue;
-    hits.push({ entry, score, reasons, installed: isInstalled(entry.package, installedList) });
+    hits.push({
+      entry,
+      score,
+      reasons,
+      installed: isInstalled(entry.package, installedList),
+      origin: entry.origin ?? 'curated',
+    });
   }
 
   return hits
@@ -327,17 +415,74 @@ export function matchPlugins(finding, opts = {}) {
 }
 
 /**
- * 为一批 finding 做插件检索，返回 { findingId -> matches } 与统计信息。
+ * 为一批 finding 做插件检索。
  *
- * @returns {{matches:Object, installed:Object, catalogSize:number, catalogVersion:string}}
+ * 返回两套视图：
+ *   - `matches`：按 finding 分组（用于"这个问题命中什么"）
+ *   - `recommendations`：**按插件去重**（同一个插件只出现一次，列出它命中的
+ *     所有指标）—— 修掉"billion-context 出现三次"的重复展示
  */
 export function searchCatalog(findings, opts = {}) {
   const scan = opts.scan ?? scanInstalledPlugins(opts.env ?? process.env);
-  const catalog = opts.catalog ?? PLUGIN_CATALOG;
+  const active = opts.catalog ? { entries: opts.catalog, sources: null } : activeCatalog(opts);
+  const catalog = active.entries;
   const matches = {};
+  const byPackage = new Map();
+
   for (const f of findings) {
     const hits = matchPlugins(f, { catalog, installed: scan.installed, ...opts });
-    if (hits.length) matches[f.id] = hits;
+    if (!hits.length) continue;
+    matches[f.id] = hits;
+    for (const h of hits) {
+      const key = h.entry.package;
+      if (!byPackage.has(key)) {
+        byPackage.set(key, {
+          id: h.entry.id,
+          package: h.entry.package,
+          displayName: h.entry.displayName,
+          summary: h.entry.summary,
+          capabilities: h.entry.capabilities ?? [],
+          capabilityEvidence: h.entry.capabilityEvidence ?? [],
+          repo: h.entry.repo ?? null,
+          version: h.entry.version ?? null,
+          install: h.entry.install ?? null,
+          risk: h.entry.risk ?? null,
+          origin: h.origin,
+          hasDshBundlePatch: h.entry.hasDshBundlePatch ?? null,
+          verifiedAt: h.entry.source?.verifiedAt ?? null,
+          sourceVia: h.entry.source?.via ?? null,
+          installed: h.installed,
+          score: h.score,
+          // 同一个插件命中多个指标时，在这里一次性列全
+          findingIds: [f.id],
+          reasons: [...h.reasons],
+        });
+      } else {
+        const rec = byPackage.get(key);
+        if (!rec.findingIds.includes(f.id)) rec.findingIds.push(f.id);
+        rec.score = Math.max(rec.score, h.score);
+        for (const r of h.reasons) {
+          if (!rec.reasons.includes(r)) rec.reasons.push(r);
+        }
+      }
+    }
   }
-  return { matches, installed: scan, catalogSize: catalog.length, catalogVersion: CATALOG_VERSION };
+
+  const recommendations = [...byPackage.values()].sort((a, b) => b.score - a.score);
+
+  return {
+    matches,
+    recommendations,
+    installed: scan,
+    catalogSize: catalog.length,
+    catalogVersion: CATALOG_VERSION,
+    sources: active.sources,
+  };
 }
+
+/**
+ * 把一批 finding 做插件检索并**按插件去重**（旧的分组视图仅供兼容）。
+ *
+ * @deprecated 使用 searchCatalog()，它同时返回 matches 与 recommendations
+ */
+

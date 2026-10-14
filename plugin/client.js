@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '9';
+    const CLIENT_VERSION = '10';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -841,6 +841,24 @@ window.__ModuleLoader__.load({
           ),
           h('span', { style: { fontSize: '12px', fontWeight: 500 } }, hit.displayName),
           h('span', { style: S.cardScope }, hit.package),
+          hit.findingIds && hit.findingIds.length
+            ? h(
+                'span',
+                {
+                  style: {
+                    fontSize: '10px',
+                    color: V.text3,
+                    border: `0.5px solid ${V.border || 'rgba(127,127,127,0.3)'}`,
+                    borderRadius: '999px',
+                    padding: '0 6px',
+                  },
+                },
+                `→ ${hit.findingIds.join(' / ')}`,
+              )
+            : null,
+          hit.origin === 'npm-registry'
+            ? h('span', { style: { fontSize: '10px', color: V.text3 } }, 'npm 同步')
+            : null,
           h('span', { style: { flex: '1 1 auto' } }),
           h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
@@ -861,6 +879,14 @@ window.__ModuleLoader__.load({
                 '命中原因：',
                 (hit.reasons || []).join('；'),
               ),
+              hit.capabilityEvidence && hit.capabilityEvidence.length
+                ? h(
+                    'div',
+                    { style: { marginTop: '2px', fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
+                    '能力依据（目录描述里命中的词）：',
+                    hit.capabilityEvidence.map((e) => `${e.cap}←「${e.matched}」`).join('、'),
+                  )
+                : null,
               !hit.installed && hit.install && hit.install.gui
                 ? h('div', { style: S.howTo }, '安装：', hit.install.gui)
                 : null,
@@ -1149,7 +1175,7 @@ window.__ModuleLoader__.load({
               )
             : null,
 
-          state.data.catalog && state.data.catalog.matches && state.data.catalog.matches.length
+          state.data.catalog && state.data.catalog.recommendations && state.data.catalog.recommendations.length
             ? h(
                 'div',
                 { style: { marginTop: '20px' } },
@@ -1158,23 +1184,24 @@ window.__ModuleLoader__.load({
                   { style: S.sectionTitle },
                   `插件目录检索（目录 ${state.data.catalog.size} 条 · 本地已装 ${state.data.catalog.installedCount} 个）`,
                 ),
+                state.data.catalog.sources
+                  ? h(
+                      'div',
+                      { style: S.howTo },
+                      `目录来源：人工核实 ${state.data.catalog.sources.curated} 条` +
+                        (state.data.catalog.sources.registry
+                          ? ` + npm registry 同步 ${state.data.catalog.sources.registry} 条（同步于 ${String(
+                              state.data.catalog.sources.snapshotAt,
+                            ).slice(0, 10)}）`
+                          : '（npm 快照未同步；可跑 ./run.sh catalog-sync 更新）'),
+                    )
+                  : null,
                 h(
                   'div',
                   { style: S.howTo },
-                  '按「能力标签 + 关键词」从已核实的插件目录里检索出的相关插件，每条都说明为什么命中。',
+                  '按「能力标签 + 关键词」检索出来的插件 —— 同一个插件只列一次，并说明为什么命中。',
                 ),
-                state.data.catalog.matches.map((m) =>
-                  h(
-                    'div',
-                    { key: m.findingId, style: { marginTop: '8px' } },
-                    h(
-                      'div',
-                      { style: { fontSize: '11px', fontWeight: 500, color: V.text2, marginBottom: '4px' } },
-                      `针对 ${m.findingId}`,
-                    ),
-                    m.hits.map((hit, i) => h(CatalogRow, { key: hit.id || i, hit })),
-                  ),
-                ),
+                state.data.catalog.recommendations.map((hit, i) => h(CatalogRow, { key: hit.id || i, hit })),
               )
             : null,
 

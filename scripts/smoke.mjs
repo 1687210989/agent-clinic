@@ -876,6 +876,113 @@ process.stdout.write('\n12c) 同类型合并\n');
   );
 }
 
+// --- 12d. 插件目录：真实来源与去重展示 ---
+process.stdout.write('\n12d) 插件目录（npm 同步 + 去重）\n');
+{
+  const cat = await import('../src/catalog/index.mjs');
+  const { analyze } = await import('../src/report.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+
+  const active = cat.activeCatalog({ snapshot: null });
+  check('没有 npm 快照时退回内置已核实目录', active.entries.length === 5, `${active.entries.length} 条`);
+  check('每条内置条目都标了来源 origin=curated', active.entries.every((e) => e.origin === 'curated'));
+
+  // 用临时快照验证"真的会读 npm 同步下来的插件"
+  const tmp = pathMod.join(os.tmpdir(), `ac-catalog-${Date.now()}.json`);
+  fs.writeFileSync(
+    tmp,
+    JSON.stringify({
+      version: 1,
+      source: 'https://registry.npmjs.org/-/v1/search?text=keywords:dsh-plugin',
+      fetchedAt: '2026-10-16T00:00:00.000Z',
+      entries: [
+        {
+          id: 'npm:dsh-cost-meter',
+          package: 'dsh-cost-meter',
+          displayName: 'DSH Cost Meter',
+          summary: '会话费用统计插件：本会话成本、当日费用与官方价格同步',
+          version: '1.8.26',
+          repo: 'https://example.invalid/dsh-cost-meter',
+          capabilities: ['cost', 'token-saving'],
+          capabilityEvidence: [
+            { cap: 'cost', matched: '费用' },
+            { cap: 'token-saving', matched: '压缩' },
+          ],
+          keywords: ['dsh-plugin'],
+          install: { gui: '侧边栏 → 插件 → 添加插件 → 粘贴 dsh-cost-meter', cli: 'dsh plugin add dsh-cost-meter' },
+          origin: 'npm-registry',
+        },
+        {
+          id: 'npm:session-branch',
+          package: '@morlay/session-branch',
+          displayName: 'session-branch',
+          summary: 'Contract layer for branch-based session editing (rewind / forkFrom)',
+          capabilities: ['loop-guard'],
+          capabilityEvidence: [{ cap: 'loop-guard', matched: 'retry' }],
+          keywords: [],
+          install: { gui: 'x', cli: 'y' },
+          origin: 'npm-registry',
+        },
+      ],
+    }),
+    'utf8',
+  );
+  const withSnap = cat.activeCatalog({ snapshotPath: tmp });
+  check(
+    '能读 npm 同步快照并与内置目录合并',
+    withSnap.entries.length === 7 && withSnap.sources.registry === 2,
+    `${withSnap.entries.length} 条（人工 ${withSnap.sources.curated} + npm ${withSnap.sources.registry}）`,
+  );
+  check(
+    '快照条目都标记为 npm-registry',
+    withSnap.entries.filter((e) => e.origin === 'npm-registry').length === 2,
+  );
+
+  const c1 = { id: 'C1', title: 'token 消耗过快', summary: '本会话 output 是自身基线的 7 倍', category: 'C' };
+  const hits = cat.matchPlugins(c1, { catalog: withSnap.entries, installed: [], limit: 5 });
+  check(
+    'npm 同步的条目能被召回（不再只有白名单）',
+    hits.some((h) => h.entry.package === 'dsh-cost-meter'),
+    hits.map((h) => h.entry.package).join(', '),
+  );
+  check(
+    '单个泛能力标签的 npm 条目不会被硬推（session-branch 不得出现在 C1/E5）',
+    !hits.some((h) => h.entry.package === '@morlay/session-branch') &&
+      !cat
+        .matchPlugins(
+          { id: 'E5', title: '冗余重复调用', summary: '同参数调用 4 次', category: 'E' },
+          { catalog: withSnap.entries, installed: [] },
+        )
+        .some((h) => h.entry.package === '@morlay/session-branch'),
+  );
+  fs.unlinkSync(tmp);
+
+  // 去重展示：同一个插件只能出现一次
+  const data = analyze({ scan, summary: summarize(scan) });
+  const recs = data.catalog?.recommendations ?? [];
+  check(
+    '插件推荐按插件去重（billion-context 不再出现三次）',
+    new Set(recs.map((r) => r.package)).size === recs.length,
+    recs.map((r) => `${r.package}→${(r.findingIds || []).join('/')}`).join(' · ') || '(无)',
+  );
+  check(
+    '去重后的条目会列出它命中的全部指标',
+    recs.every((r) => Array.isArray(r.findingIds) && r.findingIds.length >= 1),
+  );
+  check(
+    '全局处方列表也按处方去重（同一 targetId 只出现一次）',
+    new Set(data.prescriptions.map((r) => r.targetId)).size === data.prescriptions.length,
+    data.prescriptions.map((r) => r.targetId).join(', '),
+  );
+  check(
+    'catalog 带上目录来源信息（人工 N 条 + npm M 条）',
+    data.catalog.sources && typeof data.catalog.sources.curated === 'number',
+    JSON.stringify(data.catalog.sources),
+  );
+}
+
 // --- 13. 全维度覆盖与误报防护 ---
 process.stdout.write('\n13) 全维度覆盖与误报防护\n');
 {

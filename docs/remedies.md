@@ -157,25 +157,44 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 用户反馈：「还要能够检索插件目录进行针对性推荐，例如 billion-context 可以压缩
 上下文省 token，就可以建议出来」。
 
-旧做法是每条处方在 `remedies.mjs` 里硬绑 `targets` —— 插件只能出现在它被显式绑定的
-那个指标上。一旦某个指标没有绑定（例如 C1 的 output 侧），即使用户的问题描述里明摆着
-写着"token / 上下文"，也不会有任何插件被推荐出来。
+后来又追问了一句更要紧的：**「billion-context 是你告诉我的，还是真正从插件目录
+检索出来的？」**
 
-现在插件推荐改由 `src/catalog/index.mjs` 负责，分三层打分：
+当时的诚实回答是：**目录是人工写死的白名单** —— billion-context 来自用户点名，
+我事后用 npm registry 核实（v0.2.27、有 `dsh.bundle.patch`、README 自述测试版）
+才写进 `src/catalog/index.mjs`。检索逻辑是真的，目录是手工维护的。
 
-1. **指标靶子**（`entry.targets`）：确定对症，权重 +5
-2. **能力标签**（`entry.capabilities` × `CAPABILITY_BY_METRIC`）：权重 +3
-3. **关键词**（`entry.keywords` 出现在问题文本里，最多计 3 个）：每个 +2
+现在目录有**两个来源**，每条都标出处：
 
-得分 ≥3 才会推荐，最多 2 条/问题，并且**每条都必须给出 `matchedOn`（为什么命中）** ——
-不做黑盒推荐。命中原因会同时出现在报告与面板里，例如：
+| 来源 | 怎么来的 | 本机实测 | 说明 |
+|---|---|---|---|
+| `curated` | 人工核实并写进 `src/catalog/index.mjs` | 5 条 | 读过包文档，带 `targets` 与风险说明 |
+| `npm-registry` | `./run.sh catalog-sync` 同步 npm registry | 59 条 | 只有从描述/关键词推导的能力标签，标"未逐行审阅源码" |
 
-```
-针对 C1
-- Billion Context（ACP 上下文压缩）（billion-context-dsh，未安装）
-  - 能力标签：context-compaction / long-session / token-saving
-  - 命中原因：能力标签「token-saving」对上 C1 需要的能力；你的问题描述里出现了「token」「消耗」
-```
+同步脚本 `scripts/catalog-sync.mjs`：
+
+1. 检索 `https://registry.npmjs.org/-/v1/search?text=keywords:dsh-plugin&size=250`
+2. 拉取前 N 个包的 packument（含 `dshhub` 元数据与 `dsh.bundle.patch` 声明）
+3. 用 `CAPABILITY_RULES` 从"包名 + 描述 + 关键词 + dshhub 摘要/分类/能力"推导能力标签，
+   **并记下是哪个词命中的**（`capabilityEvidence`）
+4. 落盘 `~/.agent-clinic/catalog.snapshot.json`
+
+体检本体（`report` / 面板）**不联网**，只读这份快照；同包名时人工条目优先。
+
+### 打分与去重
+
+三层打分：指标靶子 +5、能力标签每个 +3（最多计 2 个）、问题文本关键词每个 +2。
+`npm-registry` 条目门槛更高（≥5）：它们没有人工读过的 `targets`，
+**单个泛能力标签不算数**。
+
+> 踩过的坑：`loop-guard` 规则一开始写了裸词 `retry|loop|重试`，结果
+> `@morlay/session-branch`（会话分支编辑）因为描述里出现一次 "retry" 被标成
+> "循环防护"，进而被推给 E5 冗余重复调用 —— 纯噪音。现在规则全部改成指向明确的
+> 说法（`死循环|重复调用|循环检测|repeat(ed)? tool`），并有断言守住。
+
+**去重**：同一个插件只列一次，`findingIds` 列出它命中的全部指标
+（billion-context 同时命中 C1 与 C3 → 一行 `→ C1 / C3`，不再出现三次）。
+全局处方列表也按 `targetId` 去重。
 
 ### 本地插件目录（只读扫描）
 
@@ -184,15 +203,13 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 - `$DSH_HOME/profiles/<profile>/package.json` 的 `dsh.profile.bundles` + `dependencies`
 - 同目录 `node_modules` 的顶层包名（跳过 `.pnpm` / `.bin` 等点开头目录）
 
-用途有两个：报告里显示「本地已装 N 个」，以及**已安装的插件不再推"安装"**，
-改推"确认已启用 / 核对配置"。
+用途：报告里显示「本地已装 N 个」；**已安装的插件不再推"安装"**，改推"确认已启用"。
 
 ### 纪律
 
-- 目录里只放**核实过的包**，每条都带 `source.verifiedAt`、`source.via` 与 `repo`；
-  新增条目必须先核实（这是 2026-10-14 "编插件"事故换来的规矩）
+- 目录条目必须标出处（人工核实 / npm 同步 + 同步时间），不允许匿名条目
 - 检索不到就诚实说"没有对症插件"，不硬凑
-- **不联网**：目录内置在仓库里，扫描只读本地 —— 保持"零外发"
+- **体检本体零外发**；`catalog-sync` 是唯一联网命令，且只在用户显式执行时运行
 
 ---
 

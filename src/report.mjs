@@ -283,27 +283,43 @@ export function analyze(ctx, opts = {}) {
     prescriptions,
     // 省 token 开关清单（陈列本机真实存在的旋钮，不是诊断结论）
     levers,
-    // 插件目录检索：本地已装清单 + 每个问题命中到的插件（含"为什么命中"）
+    // 插件目录检索：本地已装清单 + 命中到的插件（**按插件去重**，列全命中的指标）
     catalog: {
       version: catalog.catalogVersion,
       size: catalog.catalogSize,
+      sources: catalog.sources ?? null,
       installedCount: (catalog.installed.installed ?? []).length,
       installed: catalog.installed.installed ?? [],
       installedDir: catalog.installed.profileDir ?? null,
       error: catalog.installed.error ?? null,
+      // 去重后的推荐清单：同一个插件只出现一次，findingIds 列出它命中的全部指标
+      recommendations: (catalog.recommendations ?? []).map((r) => ({
+        id: r.id,
+        package: r.package,
+        displayName: r.displayName,
+        summary: r.summary,
+        capabilities: r.capabilities,
+        capabilityEvidence: r.capabilityEvidence,
+        repo: r.repo,
+        version: r.version,
+        install: r.install,
+        risk: r.risk,
+        origin: r.origin,
+        hasDshBundlePatch: r.hasDshBundlePatch,
+        verifiedAt: r.verifiedAt,
+        sourceVia: r.sourceVia,
+        installed: r.installed,
+        score: r.score,
+        findingIds: r.findingIds,
+        reasons: r.reasons,
+      })),
+      // 按 finding 分组的视图（面板里"这个问题命中什么"仍可用）
       matches: Object.entries(catalog.matches ?? {}).map(([id, hits]) => ({
         findingId: id,
         hits: hits.map((h) => ({
           id: h.entry.id,
           package: h.entry.package,
           displayName: h.entry.displayName,
-          summary: h.entry.summary,
-          capabilities: h.entry.capabilities,
-          repo: h.entry.repo,
-          install: h.entry.install,
-          risk: h.entry.risk,
-          verifiedAt: h.entry.source?.verifiedAt,
-          score: h.score,
           installed: h.installed,
           reasons: h.reasons,
         })),
@@ -455,25 +471,37 @@ export function buildReport(ctx, opts = {}) {
     push();
   }
 
-  if (data.catalog?.matches?.length) {
-    push(`### 插件目录检索（目录 ${data.catalog.size} 条 · 本地已装 ${data.catalog.installedCount} 个）`);
+  if (data.catalog?.recommendations?.length) {
+    const src = data.catalog.sources;
+    push(
+      `### 插件目录检索（目录 ${data.catalog.size} 条 · 本地已装 ${data.catalog.installedCount} 个）`,
+    );
     push();
-    push('> 按「能力标签 + 关键词」从已核实的插件目录里检索出来的相关插件 —— 每条都说明**为什么命中**。');
-    push();
-    for (const m of data.catalog.matches) {
-      push(`**针对 ${m.findingId}**`);
-      for (const h of m.hits) {
-        push(`- **${h.displayName}**（\`${h.package}\`，${h.installed ? '本地已安装' : '未安装'}）`);
-        push(`  - 能力：${(h.capabilities ?? []).join(' / ')}`);
-        push(`  - 作用：${h.summary}`);
-        for (const r of h.reasons) push(`  - 命中原因：${r}`);
-        if (!h.installed && h.install?.gui) push(`  - 安装：${h.install.gui}`);
-        if (h.install?.cli) push(`  - 命令行：\`${h.install.cli}\``);
-        if (h.risk) push(`  - 风险：${h.risk}`);
-        push(`  - 核实：${h.verifiedAt}${h.repo ? ` · ${h.repo}` : ''}`);
-      }
-      push();
+    if (src) {
+      push(
+        `> 目录来源：**人工核实 ${src.curated} 条**` +
+          (src.registry
+            ? ` + **npm registry 同步 ${src.registry} 条**（同步于 ${String(src.snapshotAt).slice(0, 10)}，\`./run.sh catalog-sync\` 可更新）`
+            : ` + npm 快照未同步（可选：\`./run.sh catalog-sync\`）`),
+      );
     }
+    push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，并说明**为什么命中**。');
+    push();
+    for (const h of data.catalog.recommendations) {
+      push(
+        `- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}，` +
+          `${h.installed ? '本地已安装' : '未安装'}${h.origin === 'npm-registry' ? ' · 来自 npm 同步' : ' · 人工核实'}）`,
+      );
+      push(`  - 命中指标：${(h.findingIds ?? []).join(' / ')}`);
+      push(`  - 能力：${(h.capabilities ?? []).join(' / ') || '(目录未标注)'}`);
+      push(`  - 作用：${h.summary}`);
+      for (const r of h.reasons) push(`  - 命中原因：${r}`);
+      if (!h.installed && h.install?.gui) push(`  - 安装：${h.install.gui}`);
+      if (h.install?.cli) push(`  - 命令行：\`${h.install.cli}\``);
+      if (h.risk) push(`  - 风险：${h.risk}`);
+      if (h.repo) push(`  - 仓库：${h.repo}`);
+    }
+    push();
   }
 
   if (data.notImplemented.length) {

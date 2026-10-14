@@ -491,8 +491,10 @@ export function matchPrescriptions(problem, opts = {}) {
       const all = prescribeOne(f, { ...opts, ctx });
       const pick = all[round];
       if (!pick) continue;
-      if (seen.has(pick.targetId + '@' + pick.findingId)) continue;
-      seen.add(pick.targetId + '@' + pick.findingId);
+      // 按**处方本身**去重：同一个插件 / 同一条配置建议只出现一次。
+      // 否则 billion-context-dsh 会因为同时命中 C1 与 C3 而被重复列出。
+      if (seen.has(pick.targetId)) continue;
+      seen.add(pick.targetId);
       out.push(pick);
     }
   }

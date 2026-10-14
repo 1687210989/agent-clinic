@@ -15,6 +15,7 @@
  */
 
 import { runDiagnostics } from './diagnostics/index.mjs';
+import { prescribe } from './prescriber/index.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
@@ -51,6 +52,10 @@ export function analyze(ctx, opts = {}) {
       scope: f.scope ?? null,
       confidence: f.confidence,
       impact: f.impact ?? null,
+      // 保留这两个字段：处方层要据此生成具体建议（工具名、重复次数），
+      // 丢掉它们会让行为建议退化成无信息量的通用文案
+      tool: f.tool ?? null,
+      repeatCount: f.repeatCount ?? null,
       evidence: (f.evidence ?? []).map((e) => ({
         locator: e.locator,
         note: e.note ?? null,
@@ -58,6 +63,8 @@ export function analyze(ctx, opts = {}) {
     })),
     notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
     notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
+    // 处方：宁精勿滥，最多 2 条；没有对症插件时给行为建议
+    prescriptions: prescribe(findings),
     footer: '证据可复核 · 全程本地 · 零外发',
   };
 }
@@ -114,6 +121,18 @@ export function buildReport(ctx, opts = {}) {
   push('### 未检测到异常的维度');
   push(data.notDetected.length ? data.notDetected.map((d) => `${d.id} ${d.title}`).join('、') : '（无）');
   push();
+
+  if (data.prescriptions.length > 0) {
+    push(`### 处方（${data.prescriptions.length} 条，宁精勿滥）`);
+    push();
+    for (const [i, rx] of data.prescriptions.entries()) {
+      push(`${i + 1}. **${rx.title}**`);
+      push(`   - 怎么做：${rx.detail}`);
+      if (rx.command) push(`   - 命令：\`${rx.command}\``);
+      push(`   - 依据：${rx.because}`);
+      push();
+    }
+  }
 
   if (data.notImplemented.length) {
     push('### 未实现的维度（骨架阶段）');

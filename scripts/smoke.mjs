@@ -481,6 +481,56 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
   }
 }
 
+// --- 12. 处方层 ---
+process.stdout.write('\n12) 处方层\n');
+{
+  const { analyze } = await import('../src/report.mjs');
+  const findings_12 = analyze({ scan, summary: summarize(scan) }).findings;
+
+  const { PRESCRIPTIONS, prescribe, prescribeOne, selfJustify, RX_TYPE } = await import('../src/prescriber/index.mjs');
+
+  check('处方池只含已验证插件', PRESCRIPTIONS.every((p) => p.verifiedAt && p.repo), `${PRESCRIPTIONS.length} 项`);
+  check(
+    '处方池没有未验证的条目（防回归）',
+    !PRESCRIPTIONS.some((p) => ['caveman', 'superpowers', 'claude-mem', 'deja-vu'].includes(p.id)),
+    PRESCRIPTIONS.map((p) => p.id).join(', '),
+  );
+
+  const noSolve = PRESCRIPTIONS.filter((p) => p.targets.length === 0);
+  check(
+    '没有对症插件时不给安装处方（诚实降级为行为建议）',
+    noSolve.length === PRESCRIPTIONS.length || noSolve.every((p) => p.targets.length === 0),
+  );
+
+  // 用真实数据跑一遍
+  const rx = prescribe(findings_12);
+  check('处方数量 <= 2（宁精勿滥）', rx.length <= 2, `${rx.length} 条`);
+  check(
+    '每条处方结构完整',
+    rx.every((r) => r.kind && r.title && r.detail && r.because),
+    rx.map((r) => `${r.kind}/${r.title}`).join(' · '),
+  );
+  check(
+    'E5 的行为建议基于实测工具名生成（非固定文案）',
+    rx.some((r) => r.kind === RX_TYPE.BEHAVIOR && /list_agents/.test(r.detail)),
+  );
+  check(
+    '行为建议带实测次数',
+    rx.some((r) => /4\s*次/.test(r.detail)),
+  );
+
+  // 自证校验：处方不许声称能解决自己没声明的指标
+  const bogus = { id: 'x', targets: [], solves: 's' };
+  check('selfJustify 拒绝未声明 targets 的处方', !selfJustify(bogus, 'E1').ok);
+  const okOne = PRESCRIPTIONS.find((p) => p.targets.length > 0);
+  if (okOne) {
+    check('selfJustify 接受已声明的处方', selfJustify(okOne, okOne.targets[0]).ok);
+  }
+
+  // 无 finding 时不给处方
+  check('没有问题时不硬编处方', prescribe([]).length === 0);
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

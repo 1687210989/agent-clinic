@@ -26,6 +26,8 @@ export const SEVERITY = { HIGH: '高', MID: '中', LOW: '低' };
  * @property {string} [impact]    影响估算
  * @property {number} confidence  0~1
  * @property {string} [scope]     会话标识（用于报告分组）
+ * @property {string} [tool]      涉及的工具名（E1/E5）
+ * @property {number} [repeatCount] 重复次数（E1/E5）
  */
 
 // ---------------------------------------------------------------------------
@@ -89,6 +91,8 @@ function detectE1(ctx, opts) {
         category: 'E',
         severity: SEVERITY.HIGH,
         scope: s.sessionId,
+        tool: toolName,
+        repeatCount: errored.length,
         summary: `${toolName} 用相同参数连续失败 ${errored.length} 次`,
         evidence: [
           {
@@ -177,6 +181,8 @@ function detectE5(ctx, opts) {
         category: 'E',
         severity: SEVERITY.MID,
         scope: s.sessionId,
+        tool: toolName,
+        repeatCount: list.length,
         summary: `${toolName} 用完全相同的参数成功调用了 ${list.length} 次（可省 ${redundant} 次）`,
         evidence: [
           {

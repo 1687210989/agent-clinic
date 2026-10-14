@@ -480,6 +480,56 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function RxCard({ rx }) {
+      const isPlugin = rx.kind === 'install';
+      return h(
+        'div',
+        {
+          style: {
+            border: `0.5px solid ${isPlugin ? 'rgba(24,95,165,0.4)' : 'rgba(99,153,34,0.4)'}`,
+            background: isPlugin ? 'rgba(24,95,165,0.06)' : 'rgba(99,153,34,0.06)',
+            borderRadius: '10px',
+            padding: '12px 14px',
+            marginBottom: '10px',
+          },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' } },
+          h(
+            'span',
+            {
+              style: {
+                fontSize: '11px',
+                fontWeight: 500,
+                padding: '2px 8px',
+                borderRadius: '999px',
+                color: isPlugin ? '#185FA5' : '#3B6D11',
+                background: isPlugin ? 'rgba(24,95,165,0.12)' : 'rgba(99,153,34,0.12)',
+              },
+            },
+            isPlugin ? '装插件' : '行为建议',
+          ),
+          h('span', { style: { fontSize: '13px', fontWeight: 500 } }, rx.title),
+        ),
+        h('div', { style: { fontSize: '13px', lineHeight: '1.65' } }, rx.detail),
+        rx.command
+          ? h(
+              'div',
+              { style: S.codeBox },
+              h('span', { style: S.codeText }, rx.command),
+              h(CopyButton, { text: rx.command, label: '命令' }),
+            )
+          : null,
+        h(
+          'div',
+          { style: { marginTop: '8px', fontSize: '11px', color: V.text3, lineHeight: '1.6' } },
+          '依据：',
+          rx.because,
+        ),
+      );
+    }
+
     // -----------------------------------------------------------------------
     // 侧边栏按钮
     // -----------------------------------------------------------------------
@@ -660,6 +710,15 @@ window.__ModuleLoader__.load({
                 state.data.notDetected.map((d) => h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
               )
             : h('div', { style: S.empty }, '（无）'),
+
+          state.data.prescriptions && state.data.prescriptions.length
+            ? h(
+                'div',
+                { style: { marginTop: '20px' } },
+                h('h3', { style: S.sectionTitle }, `处方（${state.data.prescriptions.length} 条，宁精勿滥）`),
+                state.data.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
+              )
+            : null,
 
           state.data.notImplemented.length
             ? h(

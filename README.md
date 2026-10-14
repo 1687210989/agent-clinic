@@ -1,10 +1,18 @@
 # agent-clinic · Agent 体检诊所
 
+**装为 Skill**（一行命令，无需克隆、无需选位置、无需回答任何提问）：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
 ```
 
-**一条命令装完** —— 无需克隆、无需选位置、无需回答任何提问。脚本会自己拉源码、定位 Node、自动检测平台并部署。
+**装为 DSH 插件**（侧边栏 → **插件** → **添加插件**，粘贴下面这行）：
+
+```bash
+https://github.com/1687210989/agent-clinic.git
+```
+
+> 装成插件后有侧边栏「🩺 体检」入口和全页面板。**装完必须完全退出并重启 Harness**——插件只在启动时装载。
 
 > **你的 Agent 体检诊所。** 只读扫描本地 Agent 会话，用**可逐条复核的证据**诊断真实发生的使用体验问题（token 浪费、死循环、跨会话失忆、资产闲置），并为每个问题开出可执行的处方。
 
@@ -116,29 +124,50 @@ cd agent-clinic
 ./install.sh --ref v0.1.0       # 指定版本
 ```
 
-### 另：作为 DSH Plugin（原生工具）
+### 另：作为 DSH Plugin（原生工具 + UI 面板）
+
+**推荐用应用内界面装**（桌面版的 profile 由应用独占，CLI 改不了）：
+
+侧边栏 → **插件** → **添加插件** → 粘贴下面这行 →
+
+```bash
+https://github.com/1687210989/agent-clinic.git
+```
+
+→ **安装** → 装完点 **立即启用** → **完全退出并重启 Harness**。
+
+也可以走 CLI（仅对自建 profile 有效，桌面版 `desktop` profile 会报
+`profile "desktop" is managed exclusively by the Electron application`）：
 
 ```bash
 dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-clinic.git
-# 装完必须重启 Harness —— 插件只在启动时装载
 ```
 
-注册两个模型可见工具：`agent_clinic_scan`、`agent_clinic_show`、`agent_clinic_report`。
+> ⚠️ CLI 方式下 `-w`（workspace root）是必须的，漏掉会报 `ERR_PNPM_ADDING_TO_ROOT`。
+> 完整步骤见 [DSH 插件指南](../agent-clinic-DSH插件发布与安装指南.md)。
 
-> ⚠️ `-w`（workspace root）是必须的，漏掉会报 `ERR_PNPM_ADDING_TO_ROOT`。
-> 完整发布与安装步骤见 [DSH 插件指南](../agent-clinic-DSH插件发布与安装指南.md)。
+装好后额外得到：
+
+- 3 个模型可见工具：`agent_clinic_scan`、`agent_clinic_show`、`agent_clinic_report`
+- 侧边栏「🩺 体检」入口 + 全页面板（见下节）
+- **准实时角标**：对话过程中每 6 秒检查一次，发现新问题会在按钮上亮红点
 
 ### 插件带 UI 面板
 
-作为 DSH 插件安装后，会在侧边栏底部多一个**「🩺 体检」按钮**，点开是**全页面板**，直接展示体检报告（含问题、证据定位、未检测到的维度）。
+作为 DSH 插件安装后，会在侧边栏底部多一个**「🩺 体检」按钮**，点开是**全页面板**，直接展示体检报告（含问题、证据定位、处方、未检测到的维度）。
 
 | 位置 | 插槽 | 内容 |
 |---|---|---|
-| 侧边栏底部 | `sidebar.footer.action` | 「🩺 体检」入口按钮 |
-| 覆盖层面板 | `shell.overlay` | 体检报告全文 + 刷新 / 关闭 |
+| 侧边栏底部 | `sidebar.footer.action` | 「🩺 体检」入口按钮（带未读角标） |
+| 覆盖层面板 | `shell.overlay` | 体检报告：指标格 / 问题卡 / 处方卡 |
 
 数据流：面板 → `fetch('/api/agent-clinic/report')` → 宿主半路由 → `buildReport()` → JSON。
 该路由**只读本地会话，零外发**。
+
+> **纯 JavaScript 手写，无构建步骤** —— 客户端入口 `plugin/client.js` 通过
+> `window.__ModuleLoader__.load` 注册，React 取自宿主浏览器模块表。
+> 各插槽注册彼此隔离：某个插槽不可用时不会拖垮整个插件。
+> 若面板提示「宿主仍是旧版」，说明插件更新后没完全重启 Harness。
 
 > **纯 JavaScript 手写，无构建步骤** —— 客户端入口 `plugin/client.js` 通过
 > `window.__ModuleLoader__.load` 注册，React 取自宿主浏览器模块表。

@@ -24,6 +24,157 @@ import { searchCatalog } from './catalog/index.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
+ * 把同一指标的多条 finding 合并成一组 —— 「同类型合并，不要重复展示」。
+ *
+ * 合并键是**指标 ID**：C1 在 3 个会话里命中 = 1 类问题、3 处实例；
+ * A3 有 4 种工具序列 = 1 类问题、4 处实例。展开后仍能看到每一处的
+ * 会话、结论与证据定位，不会因为合并而丢信息。
+ *
+ * @param {Array} findings 诊断层的扁平结果
+ * @returns {Array} 分组（保持原始出现顺序，即严重度顺序）
+ */
+export function groupFindings(findings) {
+  const byId = new Map();
+  for (const f of findings) {
+    if (!byId.has(f.id)) byId.set(f.id, []);
+    byId.get(f.id).push(f);
+  }
+
+  const groups = [];
+  for (const [id, list] of byId) {
+    const first = list[0];
+    const sessions = [...new Set(list.map((f) => f.scope).filter(Boolean))];
+    const tools = [...new Set(list.map((f) => f.tool).filter(Boolean))];
+    const dangerPatterns = [...new Set(list.flatMap((f) => f.dangerPatterns ?? []))];
+    const repeatCount = Math.max(...list.map((f) => f.repeatCount ?? 0)) || null;
+    const severity = pickSeverity(list);
+    const headline = buildHeadline(id, list, tools);
+
+    const instances = list.map((f) => ({
+      scope: f.scope ?? null,
+      summary: f.summary,
+      impact: f.impact ?? null,
+      confidence: f.confidence ?? null,
+      evidence: (f.evidence ?? []).map((e) => ({ locator: e.locator, note: e.note ?? null })),
+    }));
+
+    // 用于出处方的"聚合 finding"：处方文案对着整体数字说话，
+    // 而不是只描述第一个会话（否则合并后会张冠李戴）。
+    const meta = {
+      id,
+      title: first.title,
+      category: first.category,
+      severity,
+      scope: sessions[0] ?? null,
+      summary: headline,
+      tool: tools[0] ?? null,
+      repeatCount,
+      dangerPatterns,
+      evidence: instances.flatMap((i) => i.evidence).slice(0, 12),
+      occurrenceCount: list.length,
+      sessions,
+    };
+
+    groups.push({
+      id,
+      title: first.title,
+      category: first.category,
+      severity,
+      count: list.length,
+      sessions,
+      tools,
+      summary: headline,
+      impact: sumImpact(list),
+      confidence: Math.max(...list.map((f) => f.confidence ?? 0)),
+      instances,
+      dangerPatterns,
+      meta,
+    });
+  }
+  return groups;
+}
+
+const SEV_ORDER = { 高: 0, 中: 1, 低: 2 };
+const pickSeverity = (list) =>
+  [...list].sort((a, b) => (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9))[0].severity;
+
+/**
+ * 合并后的一句话结论。
+ *
+ * 尽量把"最值"提出来（最高倍数 / 最多条数 / 涉及的序列与工具）；
+ * 拿不到就用"N 处 + 首个实例结论"兜底 —— 不编数字。
+ */
+function buildHeadline(id, list, tools) {
+  const n = list.length;
+  const pick = (re, idx = 1) => {
+    const nums = list.map((f) => Number((f.summary.match(re) ?? [])[idx])).filter((x) => Number.isFinite(x));
+    return nums.length ? Math.max(...nums) : null;
+  };
+
+  if (id === 'C1') {
+    const max = pick(/的\s*([\d.]+)\s*倍/);
+    const ratios = list
+      .slice(0, 3)
+      .map((f) => (f.summary.match(/的\s*([\d.]+)\s*倍/) ?? [, '?'])[1] + ' 倍')
+      .join(' / ');
+    return `${n} 个会话的 output 远超自身基线${max ? `（最高 ${max} 倍）` : ''}：${ratios}${n > 3 ? ` 等 ${n} 处` : ''}`;
+  }
+  if (id === 'C3') {
+    const max = pick(/单会话\s*(\d+)\s*条消息/);
+    return `${n} 个会话消息数超阈值${max ? `（最多 ${max} 条）` : ''}`;
+  }
+  if (id === 'A3') {
+    const seqs = list
+      .map((f) => (f.summary.match(/「(.+?)」重复\s*(\d+)\s*次/) ?? []).slice(1))
+      .filter((x) => x.length === 2);
+    if (seqs.length) {
+      return `${seqs.length} 类工具序列重复出现：${seqs
+        .slice(0, 3)
+        .map(([s, c]) => `${s} ${c} 次`)
+        .join('、')}${seqs.length > 3 ? ` 等 ${seqs.length} 类` : ''}`;
+    }
+  }
+  if (id === 'E5' || id === 'E1') {
+    const detail = list
+      .slice(0, 3)
+      .map((f) => `${f.tool ?? '工具'} ${f.repeatCount ?? '?'} 次`)
+      .join('、');
+    return `${n} 处${id === 'E1' ? '死循环' : '冗余重复调用'}：${detail}${n > 3 ? ` 等 ${n} 处` : ''}`;
+  }
+  if (id === 'N2') {
+    const pats = [...new Set(list.flatMap((f) => f.dangerPatterns ?? []))];
+    return `${n} 处高风险操作${pats.length ? `：命中 ${pats.join('、')}` : ''}`;
+  }
+  if (id === 'A2') {
+    const names = list.map((f) => (f.summary.match(/skill「(.+?)」/) ?? [])[1]).filter(Boolean);
+    return names.length ? `${names.length} 个 skill 长期未触发：${names.join('、')}` : `${n} 处 skill 闲置`;
+  }
+  if (tools.length > 1) {
+    return `${n} 处${list[0].title}：涉及 ${tools.slice(0, 4).join('、')}`;
+  }
+  return n > 1 ? `${n} 处${list[0].title}：${list[0].summary}` : list[0].summary;
+}
+
+/**
+ * 合计影响估算。
+ *
+ * 只在**所有实例的单位一致**时才相加（例如都是"约多消耗 N output token"）；
+ * 单位不同就老实不合计 —— 宁可少说，不编一个加不出来的数。
+ */
+function sumImpact(list) {
+  const parsed = list.map((f) => {
+    const m = String(f.impact ?? '').match(/^(.*?)([\d,]+)(.*)$/);
+    if (!m) return null;
+    return { prefix: m[1], value: Number(m[2].replace(/,/g, '')), suffix: m[3] };
+  });
+  if (!parsed.length || parsed.some((p) => !p || !Number.isFinite(p.value))) return null;
+  const suffix = parsed[0].suffix;
+  if (!parsed.every((p) => p.suffix === suffix)) return null;
+  const total = parsed.reduce((a, p) => a + p.value, 0);
+  return `${parsed[0].prefix}${total.toLocaleString('en-US')}${suffix}`;
+}
+
+/**
  * 产出结构化体检结果。
  *
  * @param {{scan:object, summary:object}} ctx
@@ -70,6 +221,23 @@ export function analyze(ctx, opts = {}) {
     skipped: skippedFor(f, { ctx: rxCtx }),
   }));
 
+  // 同类型合并：一类问题一张卡，处方对着聚合后的数字生成（不再一处一张）
+  const groups = groupFindings(findings).map((grp) => ({
+    id: grp.id,
+    title: grp.title,
+    category: grp.category,
+    severity: grp.severity,
+    count: grp.count,
+    sessions: grp.sessions,
+    tools: grp.tools,
+    summary: grp.summary,
+    impact: grp.impact,
+    confidence: grp.confidence,
+    instances: grp.instances,
+    prescriptions: prescribeOne(grp.meta, { ctx: rxCtx, rejected: opts.rejected }),
+    skippedPrescriptions: skippedFor(grp.meta, { ctx: rxCtx }),
+  }));
+
   return {
     header: {
       platform: 'DSH',
@@ -106,6 +274,8 @@ export function analyze(ctx, opts = {}) {
       // 被"当前值已足够"否决掉的处方，写出来是为了让用户看到"为什么没给这条"
       skippedPrescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.skipped ?? [],
     })),
+    // 同类型合并后的分组视图（面板与报告都用它，避免一处一张卡）
+    groups,
     notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
     notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
     unimplementable: unimplementable.map((d) => ({ id: d.id, title: d.title, reason: d.reason })),
@@ -184,30 +354,32 @@ export function buildReport(ctx, opts = {}) {
   }
   push();
 
-  if (data.findings.length === 0) {
+  if (data.groups.length === 0) {
     push('### 未发现问题');
     push();
     push('所有已实现的指标均未检测到异常。');
     push();
   } else {
-    push(`### 发现 ${data.findings.length} 个问题（按严重度排序）`);
+    // 同类型合并：一类问题一条，实例作为子条目列出（不再一处一张）
+    const total = data.groups.reduce((n, g) => n + g.count, 0);
+    push(`### 发现 ${data.groups.length} 类问题（共 ${total} 处 · 按严重度排序）`);
     push();
-    for (const f of data.findings) {
-      const sess = String(f.scope ?? '').replace(/^session-/, '').slice(0, 12);
-      push(`**[${f.severity}] ${f.id} ${f.title}** —— 会话 ${sess}`);
-      push(`- 结论：${f.summary}`);
-      const first = f.evidence[0];
-      if (first) {
-        push(`- 证据定位：${first.locator}`);
-        push(`- 复核命令：./run.sh show "${first.locator}"`);
-      }
-      if (f.impact) push(`- 影响估算：${f.impact}`);
-      push(`- 置信度：${f.confidence >= 0.8 ? '高' : '中'}`);
-      if (f.prescriptions.length) {
-        push(`- 处方：${f.prescriptions.map((r) => `${r.kindLabel}·${r.title}`).join(' / ')}`);
-      }
-      for (const s of f.skippedPrescriptions ?? []) {
-        push(`- 已否决：${s.title} —— ${s.reason}`);
+    for (const grp of data.groups) {
+      push(
+        `**[${grp.severity}] ${grp.id} ${grp.title}** —— ${grp.count} 处` +
+          (grp.count > 1 ? `（${grp.sessions.length} 个会话）` : ''),
+      );
+      push(`- 结论：${grp.summary}`);
+      if (grp.impact) push(`- 影响估算：${grp.impact}`);
+      push(`- 置信度：${grp.confidence >= 0.8 ? '高' : '中'}`);
+      for (const [i, inst] of grp.instances.entries()) {
+        const sess = String(inst.scope ?? '').replace(/^session-/, '').slice(0, 12) || '(全局)';
+        const loc = inst.evidence[0]?.locator ?? null;
+        push(`  ${i + 1}. 会话 ${sess}：${inst.summary}`);
+        if (loc) {
+          push(`     - 证据定位：${loc}`);
+          push(`     - 复核命令：./run.sh show "${loc}"`);
+        }
       }
       push();
     }

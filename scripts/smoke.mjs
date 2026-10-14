@@ -821,6 +821,61 @@ process.stdout.write('\n12b) 配置探测层（只读）\n');
 }
 
 
+// --- 12c. 同类型合并（用户要求"不要重复展示"）---
+process.stdout.write('\n12c) 同类型合并\n');
+{
+  const { analyze, groupFindings } = await import('../src/report.mjs');
+  const data = analyze({ scan, summary: summarize(scan) });
+  const groups = data.groups || [];
+
+  check('analyze() 返回合并后的视图', Array.isArray(groups) && groups.length > 0, `${groups.length} 类`);
+  check(
+    '同一指标只出现一张卡（不再一处一张）',
+    new Set(groups.map((g) => g.id)).size === groups.length,
+    groups.map((g) => `${g.id}×${g.count}`).join(' · '),
+  );
+  check(
+    '合并确实压掉了重复（类数 < 处数）',
+    groups.length < data.findings.length,
+    `${groups.length} 类 / ${data.findings.length} 处`,
+  );
+  check(
+    '合并没丢信息：实例数 == 命中处数',
+    groups.every((g) => g.count === g.instances.length) &&
+      groups.reduce((n, g) => n + g.count, 0) === data.findings.length,
+  );
+  check(
+    '每个实例都保留自己的证据定位',
+    groups.every((g) => g.instances.every((i) => !i.scope || (i.evidence && i.evidence.length > 0))),
+  );
+  check(
+    '每张合并卡都有自己的处方（对着聚合结论生成）',
+    groups.every((g) => Array.isArray(g.prescriptions) && g.prescriptions.length > 0),
+    groups.filter((g) => !g.prescriptions?.length).map((g) => g.id).join(', ') || '全部有处方',
+  );
+  const c1g = groups.find((g) => g.id === 'C1');
+  if (c1g) {
+    check('聚合结论对着整体说话（不只描述第一个会话）', /最高|处/.test(c1g.summary), c1g.summary);
+    check(
+      '单位一致时给出合计影响估算',
+      typeof c1g.impact === 'string' && /约多消耗/.test(c1g.impact),
+      c1g.impact || '(无)',
+    );
+  }
+  check('groupFindings 对空输入返回空数组', groupFindings([]).length === 0);
+  check(
+    '单位不一致时不做合计（不编加不出来的数）',
+    (() => {
+      const { groupFindings: gf } = { groupFindings };
+      const mixed = gf([
+        { id: 'X', title: 'T', category: 'E', severity: '中', summary: 's', impact: '约 3 次无效调用', confidence: 0.5, evidence: [] },
+        { id: 'X', title: 'T', category: 'E', severity: '中', summary: 's', impact: '约 2 个文件未读', confidence: 0.5, evidence: [] },
+      ]);
+      return mixed[0].impact === null;
+    })(),
+  );
+}
+
 // --- 13. 全维度覆盖与误报防护 ---
 process.stdout.write('\n13) 全维度覆盖与误报防护\n');
 {

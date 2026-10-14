@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '8';
+    const CLIENT_VERSION = '9';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -416,16 +416,19 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 问题卡片：可折叠。
-     * 收起态一行说清（严重度 + 指标 + 一句话结论 + 有几个处方）；
-     * 展开后看到证据定位、影响、置信度，以及**挂在它下面的处方与建议**。
+     * 问题卡片（**同类型已合并**）：一类问题一张卡。
+     *
+     * 收起态：严重度 + 指标 + 「N 处」+ 聚合结论 + 处方数；
+     * 展开后：每一处的会话 / 结论 / 证据定位（可复制），再挂这个问题的处方与建议。
+     * 合并不会丢信息 —— 每一处照样能看到自己的定位符。
      */
-    function FindingCard({ f, prescriptions }) {
+    function GroupCard({ g }) {
       const [open, setOpen] = React.useState(false);
-      const sev = sevOf(f.severity);
-      const first = (f.evidence || [])[0];
-      const sess = f.scope ? String(f.scope).replace(/^session-/, '').slice(0, 12) : '';
-      const attached = prescriptions || [];
+      const [showAll, setShowAll] = React.useState(false);
+      const sev = sevOf(g.severity);
+      const attached = g.prescriptions || [];
+      const instances = g.instances || [];
+      const shown = showAll ? instances : instances.slice(0, 5);
       return h(
         'div',
         { style: Object.assign({}, S.card, { borderLeft: `3px solid ${sev.accent}` }) },
@@ -437,73 +440,118 @@ window.__ModuleLoader__.load({
             role: 'button',
             'aria-expanded': open,
           },
-          h('span', { style: Object.assign({}, S.badge, { color: sev.color, background: sev.bg }) }, f.severity),
-          h('span', { style: S.cardTitle }, `${f.id} ${f.title}`),
-          sess ? h('span', { style: S.cardScope }, sess) : null,
+          h('span', { style: Object.assign({}, S.badge, { color: sev.color, background: sev.bg }) }, g.severity),
+          h('span', { style: S.cardTitle }, `${g.id} ${g.title}`),
+          g.count > 1
+            ? h(
+                'span',
+                {
+                  style: {
+                    fontSize: '11px',
+                    color: V.text3,
+                    background: 'rgba(127,127,127,0.12)',
+                    borderRadius: '999px',
+                    padding: '1px 8px',
+                  },
+                },
+                `${g.count} 处`,
+              )
+            : String(g.sessions?.[0] || '')
+              ? h('span', { style: S.cardScope }, String(g.sessions[0]).replace(/^session-/, '').slice(0, 12))
+              : null,
           h('span', { style: { flex: '1 1 auto' } }),
-          attached.length
-            ? h('span', { style: { fontSize: '11px', color: V.text3 } }, `处方 ${attached.length}`)
-            : null,
+          attached.length ? h('span', { style: { fontSize: '11px', color: V.text3 } }, `处方 ${attached.length}`) : null,
           h('span', { style: { fontSize: '11px', color: V.text3 } }, open ? '收起 ▾' : '展开 ▸'),
         ),
         h(
           'div',
           { style: { marginTop: '6px', fontSize: '12px', color: V.text2, lineHeight: '1.7' } },
-          f.summary,
+          g.summary,
         ),
+        g.impact
+          ? h('div', { style: { marginTop: '2px', fontSize: '11px', color: V.text3 } }, `影响：${g.impact}`)
+          : null,
         open
           ? h(
               'div',
               { style: S.cardBody },
-              first
-                ? h(
-                    'div',
-                    { style: S.row },
-                    h('span', { style: S.rowLabel }, '证据'),
-                    h(
-                      'span',
-                      { style: S.rowText },
-                      h('code', { style: { fontFamily: V.mono, fontSize: '12px' } }, shortLocator(first.locator)),
-                    ),
-                  )
-                : null,
-              f.impact
-                ? h(
-                    'div',
-                    { style: S.row },
-                    h('span', { style: S.rowLabel }, '影响'),
-                    h('span', { style: S.rowText }, f.impact),
-                  )
-                : null,
               h(
                 'div',
-                { style: S.row },
-                h('span', { style: S.rowLabel }, '置信度'),
-                h('span', { style: S.rowText }, f.confidence >= 0.8 ? '高' : '中'),
+                { style: { fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
+                `置信度：${g.confidence >= 0.8 ? '高' : '中'}`,
+                g.sessions && g.sessions.length
+                  ? ` · 涉及会话：${g.sessions.map((s) => String(s).replace(/^session-/, '').slice(0, 8)).join('、')}`
+                  : '',
+                g.tools && g.tools.length ? ` · 涉及工具：${g.tools.join('、')}` : '',
               ),
-              first
-                ? h(
+              h(
+                'div',
+                { style: { marginTop: '8px' } },
+                h(
+                  'div',
+                  { style: { fontSize: '11px', fontWeight: 500, color: V.text2, marginBottom: '6px' } },
+                  `具体是哪几处（${g.count}）`,
+                ),
+                shown.map((inst, i) =>
+                  h(
                     'div',
-                    { style: S.codeBox },
-                    h('span', { style: S.codeText }, first.locator),
-                    h(CopyButton, { text: first.locator, label: '定位符' }),
-                  )
-                : null,
-              first
-                ? h(
-                    'div',
-                    { style: S.howTo },
-                    '复制定位符后，在会话里运行 ',
-                    h('code', { style: { fontFamily: V.mono } }, './run.sh show "<定位符>"'),
-                    ' 可查看原始记录亲自复核',
-                  )
-                : null,
-              f.skippedPrescriptions && f.skippedPrescriptions.length
+                    {
+                      key: i,
+                      style: {
+                        padding: '7px 10px',
+                        marginBottom: '6px',
+                        borderRadius: '8px',
+                        background: 'rgba(127,127,127,0.06)',
+                      },
+                    },
+                    h(
+                      'div',
+                      { style: { fontSize: '12px', color: V.text2, lineHeight: '1.6' } },
+                      h(
+                        'span',
+                        { style: { fontFamily: V.mono, fontSize: '11px', color: V.text3, marginRight: '6px' } },
+                        String(inst.scope || '(全局)').replace(/^session-/, '').slice(0, 12),
+                      ),
+                      inst.summary,
+                    ),
+                    inst.impact
+                      ? h('div', { style: { fontSize: '11px', color: V.text3, marginTop: '2px' } }, inst.impact)
+                      : null,
+                    inst.evidence && inst.evidence[0]
+                      ? h(
+                          'div',
+                          { style: S.codeBox },
+                          h('span', { style: S.codeText }, inst.evidence[0].locator),
+                          h(CopyButton, { text: inst.evidence[0].locator, label: '定位符' }),
+                        )
+                      : null,
+                  ),
+                ),
+                instances.length > 5
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        style: S.copyBtn,
+                        onClick: () => setShowAll((v) => !v),
+                      },
+                      showAll ? '只看前 5 处' : `显示全部 ${instances.length} 处`,
+                    )
+                  : null,
+              ),
+              h(
+                'div',
+                { style: S.howTo },
+                '复制定位符后，在会话里运行 ',
+                h('code', { style: { fontFamily: V.mono } }, './run.sh show "<定位符>"'),
+                ' 可查看原始记录亲自复核',
+              ),
+              g.skippedPrescriptions && g.skippedPrescriptions.length
                 ? h(
                     'div',
                     { style: S.howTo },
                     '已否决的处方：',
-                    f.skippedPrescriptions.map((s) => `${s.title}（${s.reason}）`).join('；'),
+                    g.skippedPrescriptions.map((s) => `${s.title}（${s.reason}）`).join('；'),
                   )
                 : null,
               attached.length
@@ -513,7 +561,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { style: { fontSize: '11px', fontWeight: 500, color: V.text2, marginBottom: '6px' } },
-                      `这个问题的处方与建议（${attached.length} 条）`,
+                      `这个问题的处方与建议（${attached.length} 条 · 同类问题共用）`,
                     ),
                     attached.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
                   )
@@ -990,25 +1038,37 @@ window.__ModuleLoader__.load({
             h(Stat, { label: 'cacheRead', value: hd.cacheReadTokens.toLocaleString() }),
           ),
 
-          state.data.findings.length === 0
-            ? h(
-                'div',
-                null,
-                h('h3', { style: S.sectionTitle }, '未发现问题'),
-                h('div', { style: S.empty }, '所有已实现的指标均未检测到异常。'),
-              )
+          (state.data.groups && state.data.groups.length) || state.data.findings.length === 0
+            ? (state.data.groups || []).length === 0
+              ? h(
+                  'div',
+                  null,
+                  h('h3', { style: S.sectionTitle }, '未发现问题'),
+                  h('div', { style: S.empty }, '所有已实现的指标均未检测到异常。'),
+                )
+              : h(
+                  'div',
+                  null,
+                  h(
+                    'h3',
+                    { style: S.sectionTitle },
+                    `发现 ${state.data.groups.length} 类问题（共 ${state.data.groups.reduce(
+                      (n, g) => n + g.count,
+                      0,
+                    )} 处 · 按严重度排序）`,
+                  ),
+                  h(
+                    'div',
+                    { style: S.howTo },
+                    '同一指标的多处命中已合并成一张卡（不再重复展示）。点开卡片：能看到每一处的会话与证据定位，以及**这个问题的处方与建议**。',
+                  ),
+                  state.data.groups.map((g) => h(GroupCard, { key: g.id, g })),
+                )
             : h(
                 'div',
                 null,
                 h('h3', { style: S.sectionTitle }, `发现 ${state.data.findings.length} 个问题（按严重度排序）`),
-                h(
-                  'div',
-                  { style: S.howTo },
-                  '点任意一张卡片展开：能看到证据定位，以及**这个问题的处方与建议**。',
-                ),
-                state.data.findings.map((f) =>
-                  h(FindingCard, { key: `${f.id}|${f.scope || ''}`, f, prescriptions: f.prescriptions || [] }),
-                ),
+                h('div', { style: S.empty }, '（宿主未返回合并视图，请更新插件后重启以启用同类型合并）'),
               ),
 
           h('h3', { style: S.sectionTitle }, '未检测到异常的维度'),

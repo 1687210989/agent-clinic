@@ -1300,6 +1300,150 @@ process.stdout.write('\n14) 联网现搜插件（发现问题 → 联网找方�
   check('禁用联网时报告不出现"本次联网现搜"块', !mdOff.includes('本次联网现搜'));
 }
 
+// --- 15. 窄领域插件蹭通用能力词（用户报的噪音：视频插件被推给 C1） ---
+process.stdout.write('\n15) 窄领域「蹭词」过滤\n');
+{
+  const capMod = await import('../src/catalog/capabilities.mjs');
+  const catMod = await import('../src/catalog/index.mjs');
+
+  // 判据 1：身份即窄领域（包名里就写着 video）
+  const byName = {
+    package: 'ilps2/dsh-video-understand',
+    displayName: 'dsh-video-understand',
+    summary: '视频理解插件',
+    keywords: [],
+  };
+  check(
+    '身份是窄领域 → 判定成立',
+    capMod.domainOfEntry(byName)?.via === 'identity' && capMod.domainOfEntry(byName)?.domain === 'media',
+    JSON.stringify(capMod.domainOfEntry(byName)),
+  );
+
+  // 判据 2：包名看不出来、开头 40 字也没有领域词，
+  // 但简介后段把"低成本 / token 压缩"与"视频"写在了一起 —— 自我成本声明
+  const byClaim = {
+    package: 'some-innocent-name',
+    displayName: 'some-innocent-name',
+    summary: '把素材转成文字的插件，主打低成本和速度，token 压缩 99.95%+；支持视频 / 音频 / 字幕',
+    keywords: [],
+  };
+  check(
+    '自我成本声明 → 判定成立（包名与开头都看不出来也算）',
+    capMod.domainOfEntry(byClaim)?.via === 'self-claim',
+    JSON.stringify(capMod.domainOfEntry(byClaim)),
+  );
+  check(
+    '身份判据只看开头一句（不含简介后段）',
+    capMod.narrowDomainOf(capMod.identityTextOf(byClaim)) === null,
+    JSON.stringify(capMod.identityTextOf(byClaim)),
+  );
+
+  // 反例：正常上下文压缩插件、长描述里顺带提一句 video 的聚合包，都不能误伤
+  const legit = {
+    package: 'demo-ctx-compress',
+    displayName: 'Demo 上下文压缩',
+    summary: '上下文压缩插件：把会话历史压成摘要，省 token 且支持超长会话',
+    keywords: ['token'],
+  };
+  const aggregate = {
+    package: '@fish-under-sea/dsh-fish',
+    displayName: 'Fish 全家桶',
+    summary: '插件全家桶聚合包：一键插入十四个插件行 —— git-sync / 视频下载 video-fetch / settings-nav-order',
+    keywords: [],
+  };
+  check('不误伤：真正的上下文压缩插件', capMod.domainOfEntry(legit) === null, JSON.stringify(capMod.domainOfEntry(legit)));
+  check(
+    '不误伤：长描述里顺带提一句 video 的聚合包',
+    capMod.domainOfEntry(aggregate) === null,
+    JSON.stringify(capMod.domainOfEntry(aggregate)),
+  );
+
+  // 打分层面的效果：该插件的 token-saving/cost 不再计分，于是不会推荐给 C1
+  const finding = { id: 'C1', title: 'token 消耗过快', category: 'C', summary: 'token 消耗' };
+  const noisy = {
+    ...byClaim,
+    capabilities: ['token-saving', 'cost'],
+    capabilityEvidence: [
+      { cap: 'token-saving', matched: 'token 压缩' },
+      { cap: 'cost', matched: '低成本' },
+    ],
+    origin: 'github-live',
+    targets: [],
+  };
+  const noisyHits = catMod.matchPlugins(finding, { catalog: [noisy], installed: [], limit: 3 });
+  check('窄领域插件不再被推荐给 C1', noisyHits.length === 0, `命中 ${noisyHits.length} 条`);
+  check(
+    '被挡掉的原因被记录下来（不是静默丢弃）',
+    (noisyHits.offDomain ?? []).length === 1 &&
+      noisyHits.offDomain[0].droppedCaps.includes('token-saving') &&
+      noisyHits.offDomain[0].domain === 'media',
+    JSON.stringify(noisyHits.offDomain),
+  );
+
+  // 人工核实过的条目豁免（那是人读过后给的判断，不由文本推断）
+  const audited = { ...noisy, origin: 'curated', targets: ['C1'] };
+  check(
+    '人工核实条目不受该规则影响',
+    catMod.matchPlugins(finding, { catalog: [audited], installed: [], limit: 3 }).length === 1,
+  );
+
+  // 端到端：报告里要写明"挡掉了哪些、为什么"
+  const liveMeta = {
+    networked: true,
+    sent: ['npm: test'],
+    stats: { kept: 1, added: 1 },
+    errors: [],
+    elapsedMs: 1,
+    degraded: false,
+    fetchedAt: 'now',
+  };
+  const dNoisy = reportMod.analyze(
+    { scan, summary: summarize(scan) },
+    { liveEntries: [{ ...noisy, id: 'github:noisy/video', install: { gui: 'x', cli: 'y' }, risk: '未审阅' }], liveMeta },
+  );
+  check(
+    'analyze() 输出里带域外过滤清单',
+    (dNoisy.catalog.offDomainFiltered ?? []).length >= 1,
+    JSON.stringify(dNoisy.catalog.offDomainFiltered),
+  );
+  check(
+    '推荐列表里不含该窄领域插件',
+    !dNoisy.catalog.recommendations.some((r) => r.package === 'some-innocent-name'),
+  );
+  const mdNoisy = reportMod.renderReport(dNoisy);
+  check('报告里如实写出「已挡掉 N 个窄领域蹭词推荐」', /已挡掉 \d+ 个「窄领域插件蹭通用能力词」/.test(mdNoisy));
+
+  // 联网现搜到的条目必须能进入处方层（否则"点了联网却拿不到现搜处方"）
+  const liveGood = [
+    {
+      id: 'npm:demo/ctx-compress',
+      package: 'demo-ctx-compress',
+      displayName: 'Demo 压缩',
+      summary: '上下文压缩插件：把会话历史压成摘要，同时降低 token 成本',
+      capabilities: ['token-saving', 'cost'],
+      capabilityEvidence: [
+        { cap: 'token-saving', matched: '上下文压缩' },
+        { cap: 'cost', matched: '成本' },
+      ],
+      keywords: ['token'],
+      origin: 'npm-live',
+      live: true,
+      targets: [],
+      install: { gui: 'x', cli: 'y' },
+      risk: '未审阅',
+    },
+  ];
+  const dGood = reportMod.analyze(
+    { scan, summary: summarize(scan) },
+    { liveEntries: liveGood, liveMeta },
+  );
+  check(
+    '联网现搜到的对症插件进入处方层',
+    dGood.prescriptions.some((rx) => rx.action?.packageName === 'demo-ctx-compress'),
+    dGood.prescriptions.filter((r) => r.kind === 'plugin').map((r) => r.action?.packageName).join(', ') || '(无插件处方)',
+  );
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

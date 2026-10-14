@@ -386,6 +386,9 @@ export function buildCatalogPrescription(hit, finding, ctx = {}) {
 /** 为一个 finding 做插件目录检索（返回处方形态；**已安装的不再推荐**） */
 export function pluginRecommendations(finding, ctx = {}) {
   const hits = matchPlugins(finding, {
+    // ctx.catalog 是"本次生效的目录"（可能含**联网现搜**到的条目）——
+    // 不传就会退回本地快照，现搜到的插件将无法进入处方。
+    ...(ctx.catalog ? { catalog: ctx.catalog } : {}),
     installed: ctx.installedPlugins ?? [],
     limit: ctx.pluginLimit ?? 3,
   });

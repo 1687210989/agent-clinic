@@ -205,14 +205,19 @@ export function analyze(ctx, opts = {}) {
   // 现搜条目只在"目录里没有"时补进来，避免把人工核实过的同一条降级成未审阅版本。
   let catalog = null;
   let liveMeta = opts.liveMeta ?? null;
+  // 本次**生效的目录条目**：快照（含人工核实）+ 联网现搜新增。
+  // 它必须一路传到处方层，否则现搜到的插件只会出现在"插件目录"段，
+  // 不会出现在"针对 C1 的处方"里 —— 用户点了联网却拿不到现搜的处方。
+  let effectiveEntries = null;
   try {
     const snapshot = activeCatalog({ env: opts.env ?? process.env });
     const snapshotNames = new Set(snapshot.entries.map((e) => e.package));
     const liveOnly = (opts.liveEntries ?? []).filter((e) => !snapshotNames.has(e.package));
     const entries = [...snapshot.entries, ...liveOnly.map(applyTranslation)];
+    effectiveEntries = entries.length ? entries : null;
     catalog = searchCatalog(findings, {
       env: opts.env ?? process.env,
-      catalog: entries.length ? entries : undefined,
+      catalog: effectiveEntries ?? undefined,
     });
     catalog.sources = {
       ...(catalog.sources ?? snapshot.sources),
@@ -233,7 +238,13 @@ export function analyze(ctx, opts = {}) {
     catalog = { matches: {}, installed: { installed: [], error: e.message }, catalogSize: 0, catalogVersion: null };
   }
 
-  const rxCtx = { ...ctx, config, installedPlugins: catalog.installed.installed ?? [] };
+  const rxCtx = {
+    ...ctx,
+    config,
+    installedPlugins: catalog.installed.installed ?? [],
+    // 让处方层的插件检索也看到"本次生效的目录"（含联网现搜条目）
+    catalog: effectiveEntries ?? undefined,
+  };
   const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
 
   // 省 token 开关清单：已经作为处方给出的不再重复列
@@ -323,6 +334,16 @@ export function analyze(ctx, opts = {}) {
       installed: catalog.installed.installed ?? [],
       installedDir: catalog.installed.profileDir ?? null,
       error: catalog.installed.error ?? null,
+      // 被"窄领域蹭通用能力词"规则挡掉/降权的插件 —— 如实披露，不静默丢弃
+      offDomainFiltered: (catalog.offDomainFiltered ?? []).map((o) => ({
+        package: o.package,
+        displayName: o.displayName,
+        domain: o.domain,
+        domainLabel: o.domainLabel ?? o.domain,
+        domainMatched: o.domainMatched,
+        domainVia: o.domainVia ?? null,
+        caps: o.caps,
+      })),
       // 去重后的推荐清单：同一个插件只出现一次，findingIds 列出它命中的全部指标
       recommendations: (catalog.recommendations ?? []).map((r) => ({
         id: r.id,
@@ -573,6 +594,19 @@ export function renderReport(data) {
     }
     push('> 按「能力标签 + 关键词」检索出来的相关插件 —— 同一个插件只列一次，**装过的不再推荐**。');
     push('> 热度（star / 下载量）只用于同分时排序与展示，**不参与对症打分**。');
+    // 被域外规则挡掉的插件要写出来：否则用户无法判断"是真的没有对症插件"还是"被规则挡了"
+    const od = data.catalog.offDomainFiltered ?? [];
+    if (od.length) {
+      push(
+        `> 已挡掉 ${od.length} 个「窄领域插件蹭通用能力词」的推荐：` +
+          od
+            .slice(0, 4)
+            .map((o) => `\`${o.package}\`（${o.domainLabel ?? o.domain}，丢弃 ${o.caps.join('/')}）`)
+            .join('、') +
+          (od.length > 4 ? ` 等 ${od.length} 个` : ''),
+      );
+      push('> 原因：它们的"省 token / 降成本"通常指自己那条流水线，不是给你的主会话省上下文。');
+    }
     push();
     for (const h of data.catalog.recommendations) {
       const originLabel =

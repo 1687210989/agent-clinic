@@ -67,6 +67,8 @@ E2 反复失败（错误率 7.3%，低于 30% 阈值）、C1、C2、A1、A2…�
 > **本次联网现搜**：新发现 K 条（共取回 N 条，耗时 X.Xs）
 > 实际发出的检索词（不含任何会话内容）：`npm: keywords:dsh-plugin`、`npm: context compression`、`github: topic:dsh-plugin`
 > 按「能力标签 + 关键词」从已核实的插件目录里检索出来的相关插件 —— 每条都说明**为什么命中**。
+> 已挡掉 2 个「窄领域插件蹭通用能力词」的推荐：`dsh-ppt`（文件格式转换，丢弃 skill-asset）、`@liustack/modlens`（视频/音频/图像处理，丢弃 skill-asset）
+> 原因：它们的"省 token / 降成本"通常指自己那条流水线，不是给你的主会话省上下文。
 **针对 C1**
 - **Billion Context（ACP 上下文压缩）**（`billion-context-dsh`，未安装）
   - 能力：context-compaction / long-session / token-saving

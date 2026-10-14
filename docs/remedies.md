@@ -216,6 +216,43 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 - **热度不参与打分**：一个插件能不能解决问题，靠的是指标靶子与能力标签；
   热度只在**分数相同**时决定先看哪个 —— 有断言守住（"高热但不对症依然不推荐"）
 
+### 窄领域插件「蹭通用能力词」的过滤
+
+用户要求（原话）：「去掉这类'窄领域插件蹭到通用能力词'的噪音」。
+
+实例：`ilps2/dsh-video-understand`（★12，视频理解插件）简介写着
+「低成本视频理解 … 摘要+问答（token 压缩 99.95%+）」——
+这里的"省 token / 低成本"指的是**它自己那条视频流水线**，
+不是"你主会话的上下文在烧 token"，但它同时命中 `token-saving` + `cost`，
+拿到 6 分、过了非人工条目的 5 分门槛，于是被推荐给 C1。
+
+规则（`src/catalog/capabilities.mjs` `domainOfEntry()`）：判定为窄领域后，
+该插件的**通用基础设施能力标签**（`GENERAL_CAPABILITIES`）不再计分。
+两道判据，命中任一即算：
+
+| 判据 | 怎么判 | 例 |
+|---|---|---|
+| `identity` | 包名 / 显示名 / 关键词 / **简介第一个分句**里出现领域词 | `dsh-video-understand`、`dsh-ppt`、`@dfy-plugins/dsh-image-generation` |
+| `self-claim` | 领域词与"省 token / 低成本"说法**挨在一起**（40 字符内，含空格） | 包名正常，但简介写「主打低成本和速度，token 压缩 99.95%+；支持视频」 |
+
+窄领域分类：`media`（视频/音频/图像）、`entertainment`（壁纸/桌宠）、
+`content-gen`（小说/写作/翻译）、`web-crawl`（爬虫/浏览器自动化）、
+`file-convert`（PPT/PDF/Excel 等格式转换）。本机目录 155 条里命中 20 条。
+
+**刻意不做的两件事**（都踩过）：
+
+1. **不按"文本里任意位置出现领域词"判**。实测 `@fish-under-sea/dsh-fish`
+   （14 个插件的聚合包）清单里列了一句"视频下载 video-fetch"，
+   全文检索会把它误判成视频插件 —— 所以身份判据只看**第一个分句**。
+2. **不是封杀**。被扣分的只是通用能力标签；窄领域插件仍可靠人工核实的
+   `targets` 与问题文本关键词命中拿分。人工核实条目（`curated`）完全豁免 ——
+   那是人读过后给出的判断，不该由文本推断推翻。
+
+**如实披露**：被扣分/挡掉的插件会写进报告
+（`已挡掉 N 个「窄领域插件蹭通用能力词」的推荐`）与 JSON
+（`data.catalog.offDomainFiltered`，含 `domain` / `domainLabel` / `domainVia` / `caps`），
+不是静默丢弃 —— 否则用户无法区分"真的没有对症插件"和"被规则挡了"。
+
 ### 官方内置包 vs 社区插件
 
 按下载量排序时，`@deepseek-ai/dsh-*` 这些**随 dsh-base 分发的内置包会碾压社区插件**

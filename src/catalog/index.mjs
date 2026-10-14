@@ -37,6 +37,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveProfileDir } from '../config/index.mjs';
+import {
+  GENERAL_CAPABILITIES,
+  domainOfEntry,
+} from './capabilities.mjs';
 
 /** 目录版本（人工核实日），报告里会显示，便于判断推荐是否过期 */
 export const CATALOG_VERSION = '2026-10-16';
@@ -453,6 +457,7 @@ export function matchPlugins(finding, opts = {}) {
   ];
 
   const hits = [];
+  const offDomain = [];
   for (const entry of catalog) {
     // npm / GitHub 同步进来的条目没有人工读过文档，门槛更高：单个泛能力标签不算数。
     // （踩过的坑：某会话分支插件因描述里出现一次 "retry" 被当作循环防护推给 E5）
@@ -466,7 +471,26 @@ export function matchPlugins(finding, opts = {}) {
       reasons.push(`它的适用指标里明确写了 ${finding.id}（${finding.title ?? ''}）`);
     }
 
-    const capHits = (entry.capabilities ?? []).filter((c) => wanted.includes(c));
+    // 窄领域插件不得用"通用基础设施能力"对症通用问题 —— 它的省 token / 降成本
+    // 通常指它自己那条流水线（用户报的噪音：视频插件因描述里的一句
+    // "token 压缩 99.95%" 被推荐给 C1 token 消耗过快）。
+    // 人工核实过的条目豁免：那是人读过后给出的判断，不由文本推断。
+    const domain = isAudited ? null : domainOfEntry(entry);
+    const capHitsAll = (entry.capabilities ?? []).filter((c) => wanted.includes(c));
+    const capHits = domain ? capHitsAll.filter((c) => !GENERAL_CAPABILITIES.has(c)) : capHitsAll;
+    const droppedCaps = capHitsAll.length - capHits.length;
+    if (droppedCaps > 0) {
+      offDomain.push({
+        package: entry.package,
+        displayName: entry.displayName ?? entry.package,
+        domain: domain.domain,
+        domainLabel: domain.label,
+        domainMatched: domain.matched,
+        domainVia: domain.via ?? null,
+        droppedCaps: capHitsAll.filter((c) => GENERAL_CAPABILITIES.has(c)),
+      });
+    }
+
     if (capHits.length) {
       // 命中多个能力标签才算强信号（每个 +3，最多计 2 个）
       score += Math.min(capHits.length, 2) * 3;
@@ -500,7 +524,7 @@ export function matchPlugins(finding, opts = {}) {
     });
   }
 
-  return hits
+  const result = hits
     .sort(
       (a, b) =>
         b.score - a.score ||
@@ -511,6 +535,9 @@ export function matchPlugins(finding, opts = {}) {
         String(a.entry.id).localeCompare(String(b.entry.id)),
     )
     .slice(0, limit);
+  // 挂上"因域外被扣分"的清单，供报告如实披露（不是静默丢弃）
+  result.offDomain = offDomain;
+  return result;
 }
 
 /**
@@ -527,9 +554,20 @@ export function searchCatalog(findings, opts = {}) {
   const catalog = active.entries;
   const matches = {};
   const byPackage = new Map();
+  // 因"窄领域蹭通用能力词"被扣分/排除的插件（如实披露，不静默丢弃）
+  const offDomainFiltered = new Map();
 
   for (const f of findings) {
     const hits = matchPlugins(f, { catalog, installed: scan.installed, ...opts });
+    for (const od of hits.offDomain ?? []) {
+      const key = od.package;
+      const prev = offDomainFiltered.get(key);
+      if (prev) {
+        prev.caps = [...new Set([...prev.caps, ...od.droppedCaps])];
+      } else {
+        offDomainFiltered.set(key, { ...od, caps: od.droppedCaps, findingIds: [f.id] });
+      }
+    }
     // 用户要求：**已经安装的就不再显示推荐** —— 直接过滤掉，不再以"已装"形式出现
     const fresh = hits.filter((h) => !h.installed);
     if (!fresh.length) continue;
@@ -586,6 +624,8 @@ export function searchCatalog(findings, opts = {}) {
   return {
     matches,
     recommendations,
+    // 域外扣分清单：报告里会写明"挡掉了哪些、为什么"
+    offDomainFiltered: [...offDomainFiltered.values()],
     installed: scan,
     catalogSize: catalog.length,
     catalogVersion: CATALOG_VERSION,

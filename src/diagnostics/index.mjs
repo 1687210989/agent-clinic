@@ -424,6 +424,7 @@ function detectN2(ctx) {
       severity: SEVERITY.HIGH,
       scope: s.sessionId,
       summary: `检测到 ${hits.length} 次高危命令调用，命中模式：${patterns.join('、')}`,
+      dangerPatterns: patterns,
       evidence: hits.slice(0, 8).map((h) => ({
         locator: h.locator,
         note: `${h.tool_name} 命中 ${h.danger.join('、')}`,

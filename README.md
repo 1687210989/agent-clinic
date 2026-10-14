@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-70%2F70-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-103%2F103-brightgreen)]()
 
 ---
 
@@ -29,7 +29,8 @@ https://github.com/1687210989/agent-clinic.git
 agent-clinic 的做法不同：**它给证据，也给处方。**
 
 - 不只说"你有死循环"，而是说"10 月 8 日这个会话，`list_agents` 用同样的参数失败了 4 次，在 `session.v4.jsonl.zstd#L101-L108`"——一条命令你就能自己复核。
-- 不只给建议，而是给**能装的插件**或**明确说没有插件能解**。
+- 不只给建议，而是给**可执行的动作**：能整段粘进 profile 的 YAML 片段、斜杠命令、已核实插件的安装入口，或明确说没有插件能解。
+- **读你的真实配置**再开口：处方会说"你现在 `maxInlineTokens=12500`（随附默认，profile 未覆盖）→ 建议 6000"，而不是"建议调低一点"。当前值已经不弱于建议时，这条处方会被直接撤掉。
 
 > **不做的事**：不主动推送、不代你安装、不改你的配置、不诊断代码质量、不把任何对话内容发到外部。
 
@@ -79,14 +80,14 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | 聚合统计 | ✅ 可用 |
 | 证据层 `show` | ✅ 可用 |
 | **诊断指标 12 项** | ✅ **可用**（见上表） |
-| **处方层** | ✅ **可用**（无对症插件时给基于证据的行为建议） |
+| **处方层（可执行：配置片段 / 命令 / 插件 / 设置 / 行为）** | ✅ **可用**（读本机真实配置，给出「当前值 → 建议值」） |
 | **体检报告 `report`** | ✅ **可用** |
 | **DSH 插件（侧边栏入口 + 报告面板 + 准实时角标）** | ✅ **可用** |
 | **处方反馈闭环**（记住已拒绝 / 感兴趣） | ⏳ 待实现 |
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **77/77 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **103/103 通过**。
 
 ```bash
 $ ./run.sh report
@@ -109,16 +110,63 @@ token：input 427,379 · output 114,656 · cacheRead 6,551,936
 
 ### 未检测到异常的维度
 - C2 上下文膨胀 / C3 长会话疲劳 / E1 死循环 / E2 反复失败 / N1 / N2 / A3 / A4
-- A2 skill 闲置 —— 扫描窗口仅 2.2 天（需 30 天），样本不足
+- A2 skill 闲置 —— 扫描窗口仅 3.0 天（需 30 天），样本不足
 
-### 处方（1 条，宁精勿滥）
-1. 行为建议：在同一轮对话里把 list_agents 的结果一次性取回并记住…
+### 处方（3 条 · 每条都有可执行动作）
+
+> 配置类处方改的是这份文件（本工具只读它，不代你改）：`C:\Users\you\.dsh\profiles\desktop\cordis.patch.yml`
+
+1. **【行为建议】把长任务拆成多个短会话** —— 针对 C1
+   - 怎么做：在开新会话前，让 Agent 先写一份简短交接（当前进度 / 已确认的结论 / 下一步）…
+   - 依据：output 高通常来自"一个会话里想做太多事"，拆分是零成本且立刻见效的一步。
+   - 风险提示：拆会话会丢掉原会话的上下文，必须靠交接文件补齐。
+   - 怎么确认有效：重跑 ./run.sh report，看 C1 是否还命中。
+   - 出处：agent-clinic · 行为处方（本工具生成）· 核实于 2026-10-15
+
+2. **【改配置】让重复调用提醒来得更早** —— 针对 E5
+   - 怎么做：同参数重复调用达到阈值时提醒模型换策略，减少"同参数再来一次"的冗余回合。
+     当前：thresholds=[3, 5, 8] · argumentsPreviewChars=500（随附默认值（你的 profile 未覆盖这一行））
+     建议：thresholds=[2, 3, 5] · argumentsPreviewChars=500
+   - 改成（可整段粘进 profile patch）：
+     ```yaml
+     - id: repeat-tool-reminder
+       name: '@deepseek-ai/dsh-repeat-tool-reminder'
+       config:
+         thresholds: [2, 3, 5]
+         argumentsPreviewChars: 500
+     ```
+   - 风险提示：提醒只是建议，不阻止合理重复；阈值调到 2 会在幂等轮询场景里更吵。
+   - 怎么确认有效：再遇到同参数重复时，结果后面应出现插件的提醒消息
+   - 出处：@deepseek-ai/dsh-repeat-tool-reminder（随附插件）· 核实于 2026-10-15
+
+3. **【行为建议】把固定套路写成 skill** —— 针对 A3 …
+
+### 省 token 开关清单（本机真实存在，供按需调整）
+
+> 这是**工具陈列**，不是体检结论 —— 本次未触发对应指标，列出来是因为你随时可以拧它们。
+
+- **【改配置】收紧工具结果的 spill 预算（最能省 input 的一档）**
+  - 当前：maxInlineTokens=12500 → 建议：maxInlineTokens=6000
+  - 片段：
+    ```yaml
+    - id: spill-policy
+      name: '@deepseek-ai/dsh-spill-policy'
+      config:
+        maxInlineTokens: 6000
+    ```
+  - 风险：被省略的中间内容模型看不到，需要时它得自己 read/grep 那个 spill 文件。
+- **【装插件】装 smart-compaction（让模型自己择机压缩 + 看得见真实用量）**
+  - 安装：侧边栏 → 插件 → 添加插件 → 粘贴 smart-compaction
+  - 出处：smart-compaction · 核实于 2026-10-15
 
 ### 不可实现的维度（DSH 数据源缺失）
 - E3 工具结果过大 —— tool/result 不含 content 与长度
 - K1 / K2 —— user/message 无正文，无法跨会话比对
 - N3 / N4 —— 无 approval/asked 与 llm/retry 事件
 ```
+
+> 关于"哪些开关能省 token、出处是什么、怎么复核"，
+> 见 [docs/remedies.md](docs/remedies.md)（含 asar 解包命令与 npm 核实方式）。
 
 ---
 
@@ -292,9 +340,9 @@ L2 诊断层   指标判定（阈值 + 防误报）
   ▼
 L3 证据层   file#L 定位 · 可展开 · 可复现   ← 护城河
   ▼
-L4 处方层   问题 → 处方（≤2 条，须自证有效）
+L4 处方层   问题 → 可执行处方（≤4 条，须自证有效）   ← 读本机真实配置，给"当前值 → 建议值"
   ▼
-L5 输出层   体检报告 + 证据清单 + 处方卡片
+L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清单
 ```
 
 ---
@@ -313,7 +361,11 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片
 
 - **只支持 DSH v4 会话格式**；v3 / 无压缩格式兼容待验证
 - 需要 Node ≥ 22.15（低版本会明确报错，不会静默跳过数据）；node 不在 PATH 上也没关系，会自动定位
-- 目前只实现 2 个诊断指标
+- **12 项诊断指标已实现**，1 项排期（A1 MCP 闲置），5 项明确不可实现（报告会列出原因）
+- 处方里的「随附默认值」是一份**抄录表**（出处 `@deepseek-ai/dsh-base` 的 `cordis.patch.yml`），
+  升级 DSH 后若随附默认值变了，需要同步这份表；用户 profile 的真实覆盖值一律现读，不靠猜
+- 配置层只解析 `cordis.patch.yml` 里用到的那个 YAML 子集（顶层 `- id/name/config` + 标量与列表），
+  更深的嵌套结构会被忽略并在 `warnings` 里说明
 - 需要 `~/.agents/skills/` 目录存在（`install.sh` 会自动创建）
 
 ### ⚠️ 关于 DSH 数据格式
@@ -327,10 +379,11 @@ DSH 会话文件是**多帧 zstd 拼接**（单个文件实测含 60~233 个帧�
 ## 路线图
 
 - **M1** ✅ DSH 解码 + E1/E2/E5 诊断 + 证据层 + 体检报告（最小闭环已打通）
-- M2 扩展 C1/C2/A1/A2
-- M3 处方池 + 四重过滤 + 反馈闭环
+- M2 ✅ 扩展 C1/C2/C3/E4/N1/N2/A2/A3/A4（12 项）
+- M3 ✅ 处方层重写：读本机真实配置 + 可执行处方（配置片段 / 命令 / 插件 / 设置 / 行为）+ 省 token 开关清单
+- M3.5 ⏳ 处方四重过滤 + 反馈闭环（记住已拒绝 / 感兴趣）
 - M4 体检报告卡片（可分享）
-- M5 开源发布（SKILL.md / install.sh / 文档）
+- M5 ✅ 开源发布（SKILL.md / install.sh / 文档）
 - M6 全维度 + 生态接入
 - M7 WorkBuddy 平台
 

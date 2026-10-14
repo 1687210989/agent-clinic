@@ -12,10 +12,14 @@
  *   2. 必须列出「未检测到异常的维度」
  *   3. 必须列出「未实现的维度」—— 不假装全知
  *   4. 零对话原文；证据只给定位符，原文由 show 命令按需展开
+ *
+ * 2026-10-15 修正：处方不再是"一句正确的废话"。`analyze()` 现在会先读一次
+ * 本机真实生效配置（只读），处方因此能说出「当前 12500 → 建议 6000」。
  */
 
 import { runDiagnostics } from './diagnostics/index.mjs';
-import { prescribe } from './prescriber/index.mjs';
+import { prescribe, prescribeOne, skippedFor, tokenInventory, KIND_LABEL } from './prescriber/index.mjs';
+import { readEffectiveConfig } from './config/index.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
@@ -28,6 +32,37 @@ import { num, pct } from './summary.mjs';
 export function analyze(ctx, opts = {}) {
   const g = ctx.summary.global;
   const { findings, notDetected, notImplemented, unimplementable } = runDiagnostics(ctx, opts);
+
+  // 只读探测本机生效配置：处方据此说"当前值 → 建议值"
+  let config = null;
+  let configError = null;
+  try {
+    config = readEffectiveConfig(opts.env ?? process.env);
+  } catch (e) {
+    configError = e.message;
+  }
+
+  const rxCtx = { ...ctx, config };
+  const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
+
+  // 省 token 开关清单：已经作为处方给出的不再重复列
+  const levers = tokenInventory({
+    ctx: rxCtx,
+    excludeIds: prescriptions.map((r) => r.targetId),
+  });
+
+  // 每个问题各自挂上它的处方（旧版只在末尾给全局列表，用户看不出"这条对应哪个问题"）
+  const perFinding = findings.map((f) => ({
+    id: f.id,
+    scope: f.scope ?? null,
+    remedies: prescribeOne(f, { ctx: rxCtx, rejected: opts.rejected }).map((r) => ({
+      targetId: r.targetId,
+      kind: r.kind,
+      kindLabel: r.kindLabel,
+      title: r.title,
+    })),
+    skipped: skippedFor(f, { ctx: rxCtx }),
+  }));
 
   return {
     header: {
@@ -56,16 +91,37 @@ export function analyze(ctx, opts = {}) {
       // 丢掉它们会让行为建议退化成无信息量的通用文案
       tool: f.tool ?? null,
       repeatCount: f.repeatCount ?? null,
+      dangerPatterns: f.dangerPatterns ?? null,
       evidence: (f.evidence ?? []).map((e) => ({
         locator: e.locator,
         note: e.note ?? null,
       })),
+      prescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.remedies ?? [],
+      // 被"当前值已足够"否决掉的处方，写出来是为了让用户看到"为什么没给这条"
+      skippedPrescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.skipped ?? [],
     })),
     notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
     notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
     unimplementable: unimplementable.map((d) => ({ id: d.id, title: d.title, reason: d.reason })),
-    // 处方：宁精勿滥，最多 2 条；没有对症插件时给行为建议
-    prescriptions: prescribe(findings),
+    // 处方：每条都可执行（配置片段 / 命令 / 插件入口 / 设置路径 / 具体动作）
+    prescriptions,
+    // 省 token 开关清单（陈列本机真实存在的旋钮，不是诊断结论）
+    levers,
+    // 处方所依据的本机配置快照（只含我们真正会给处方的行）
+    config: config
+      ? {
+          patchPath: config.patchPath,
+          patchExists: config.patchExists,
+          profileDir: config.profileDir,
+          rows: Object.values(config.rows).map((r) => ({
+            id: r.id,
+            name: r.name,
+            source: r.source,
+            config: r.config,
+          })),
+          warnings: config.warnings,
+        }
+      : { patchPath: null, patchExists: false, error: configError },
     footer: '证据可复核 · 全程本地 · 零外发',
   };
 }
@@ -115,6 +171,12 @@ export function buildReport(ctx, opts = {}) {
       }
       if (f.impact) push(`- 影响估算：${f.impact}`);
       push(`- 置信度：${f.confidence >= 0.8 ? '高' : '中'}`);
+      if (f.prescriptions.length) {
+        push(`- 处方：${f.prescriptions.map((r) => `${r.kindLabel}·${r.title}`).join(' / ')}`);
+      }
+      for (const s of f.skippedPrescriptions ?? []) {
+        push(`- 已否决：${s.title} —— ${s.reason}`);
+      }
       push();
     }
   }
@@ -130,15 +192,55 @@ export function buildReport(ctx, opts = {}) {
   push();
 
   if (data.prescriptions.length > 0) {
-    push(`### 处方（${data.prescriptions.length} 条，宁精勿滥）`);
+    push(`### 处方（${data.prescriptions.length} 条 · 每条都有可执行动作）`);
     push();
-    for (const [i, rx] of data.prescriptions.entries()) {
-      push(`${i + 1}. **${rx.title}**`);
-      push(`   - 怎么做：${rx.detail}`);
-      if (rx.command) push(`   - 命令：\`${rx.command}\``);
-      push(`   - 依据：${rx.because}`);
+    if (data.config?.patchPath) {
+      push(`> 配置类处方改的是这份文件（本工具只读它，不代你改）：\`${data.config.patchPath}\``);
       push();
     }
+    for (const [i, rx] of data.prescriptions.entries()) {
+      push(`${i + 1}. **【${rx.kindLabel}】${rx.title}** —— 针对 ${rx.findingId}`);
+      push(`   - 怎么做：${rx.detail.replace(/\n/g, '\n     ')}`);
+      if (rx.command) {
+        const isYaml = rx.action?.type === 'config';
+        push(isYaml ? '   - 改成（可整段粘进 profile patch）：' : '   - 命令：');
+        push('     ```' + (isYaml ? 'yaml' : 'bash'));
+        for (const line of String(rx.command).split('\n')) push(`     ${line}`);
+        push('     ```');
+      }
+      push(`   - 依据：${rx.because}`);
+      if (rx.risk) push(`   - 风险提示：${rx.risk}`);
+      if (rx.verify) push(`   - 怎么确认有效：${rx.verify}`);
+      if (rx.source) push(`   - 出处：${rx.source}${rx.sourceVia ? ` · ${rx.sourceVia}` : ''}`);
+      push();
+    }
+  }
+
+  if (data.levers?.length) {
+    push('### 省 token 开关清单（本机真实存在，供按需调整）');
+    push();
+    push('> 这是**工具陈列**，不是体检结论 —— 本次未触发对应指标，列出来是因为你随时可以拧它们。');
+    if (data.config?.patchPath) push(`> 配置类改的是：\`${data.config.patchPath}\``);
+    push();
+    for (const lv of data.levers) {
+      push(`- **【${lv.kindLabel}】${lv.title}**`);
+      push(`  - 作用：${lv.solves}`);
+      if (lv.current || lv.suggested) {
+        push(`  - 当前：${lv.current ?? '(未读到)'} → 建议：${lv.suggested ?? '按需'}`);
+      }
+      if (lv.snippet) {
+        push('  - 片段：');
+        push('    ```yaml');
+        for (const line of String(lv.snippet).split('\n')) push(`    ${line}`);
+        push('    ```');
+      }
+      if (lv.install?.gui) push(`  - 安装：${lv.install.gui}`);
+      if (lv.install?.cli) push(`  - 命令行：\`${lv.install.cli}\``);
+      if (lv.note) push(`  - 备注：${lv.note}`);
+      if (lv.risk) push(`  - 风险：${lv.risk}`);
+      if (lv.source) push(`  - 出处：${lv.source}`);
+    }
+    push();
   }
 
   if (data.notImplemented.length) {
@@ -158,3 +260,5 @@ export function buildReport(ctx, opts = {}) {
 
   return `${out.join('\n')}\n`;
 }
+
+export { KIND_LABEL };

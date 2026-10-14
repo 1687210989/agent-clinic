@@ -485,9 +485,20 @@ process.stdout.write('\n11) 宿主→客户端数据契约\n');
 process.stdout.write('\n12) 处方层\n');
 {
   const { analyze } = await import('../src/report.mjs');
-  const findings_12 = analyze({ scan, summary: summarize(scan) }).findings;
+  const analysis = analyze({ scan, summary: summarize(scan) });
+  const findings_12 = analysis.findings;
 
-  const { PRESCRIPTIONS, prescribe, prescribeOne, selfJustify, RX_TYPE } = await import('../src/prescriber/index.mjs');
+  const {
+    PRESCRIPTIONS,
+    prescribe,
+    prescribeOne,
+    tokenInventory,
+    selfJustify,
+    REMEDY_KIND,
+    VERIFIED_BUT_UNTARGETED,
+  } = await import('../src/prescriber/index.mjs');
+  const { REMEDIES } = await import('../src/prescriber/remedies.mjs');
+  const { REGISTRY } = await import('../src/diagnostics/index.mjs');
 
   check('处方池只含已验证插件', PRESCRIPTIONS.every((p) => p.verifiedAt && p.repo), `${PRESCRIPTIONS.length} 项`);
   check(
@@ -495,41 +506,226 @@ process.stdout.write('\n12) 处方层\n');
     !PRESCRIPTIONS.some((p) => ['caveman', 'superpowers', 'claude-mem', 'deja-vu'].includes(p.id)),
     PRESCRIPTIONS.map((p) => p.id).join(', '),
   );
-
-  const noSolve = PRESCRIPTIONS.filter((p) => p.targets.length === 0);
   check(
-    '没有对症插件时不给安装处方（诚实降级为行为建议）',
-    noSolve.length === PRESCRIPTIONS.length || noSolve.every((p) => p.targets.length === 0),
+    '不对症的插件只做记录、不进处方池',
+    VERIFIED_BUT_UNTARGETED.every((p) => !PRESCRIPTIONS.some((x) => x.id === p.id)),
+    VERIFIED_BUT_UNTARGETED.map((p) => p.id).join(', '),
+  );
+
+  // 核心回归：每条处方必须有真靶子。
+  // 2026-10-15 的真实事故就是所有插件 targets=[]，插件分支永远不触发。
+  check(
+    '每条处方都有对症指标（不再有空靶）',
+    REMEDIES.every((r) => Array.isArray(r.targets) && r.targets.length > 0),
+    REMEDIES.filter((r) => !r.targets?.length).map((r) => r.id).join(', ') || '全部有靶',
+  );
+  check(
+    '每条处方都可自证（targets + solves + 出处）',
+    REMEDIES.every((r) => selfJustify(r, r.targets[0]).ok),
+    REMEDIES.filter((r) => !selfJustify(r, r.targets[0]).ok).map((r) => r.id).join(', ') || '全部自证通过',
+  );
+  check(
+    '每条处方都写了风险与验证方式（不给"试了也不知道有没有用"的建议）',
+    REMEDIES.every((r) => r.risk && r.verify),
+    REMEDIES.filter((r) => !r.risk || !r.verify).map((r) => r.id).join(', ') || '全部具备',
+  );
+  check(
+    '成本类指标（C1/C2/C3）都有"可执行"处方，不只是行为建议',
+    ['C1', 'C2', 'C3'].every((id) =>
+      REMEDIES.some((r) => r.targets.includes(id) && r.kind !== REMEDY_KIND.BEHAVIOR),
+    ),
+    ['C1', 'C2', 'C3']
+      .filter((id) => !REMEDIES.some((r) => r.targets.includes(id) && r.kind !== REMEDY_KIND.BEHAVIOR))
+      .join(', ') || '全部具备',
+  );
+  check(
+    '每个已实现指标都至少有一条对症处方',
+    REGISTRY.filter((m) => m.implemented).every((m) => REMEDIES.some((r) => r.targets.includes(m.id))),
+    REGISTRY.filter((m) => m.implemented && !REMEDIES.some((r) => r.targets.includes(m.id)))
+      .map((m) => m.id)
+      .join(', ') || '全覆盖',
+  );
+
+  // 配置类处方必须给出可粘贴的 YAML（含 id / name / config 三要素）
+  const cfgRx = prescribe([{ id: 'C2', summary: '合成样本', evidence: [] }], {
+    ctx: { config: null, summary: { global: {} } },
+  });
+  const spill = cfgRx.find((r) => r.targetId === 'spill-tighten');
+  check(
+    'C2 能拿到省 input 的配置处方',
+    Boolean(spill),
+    cfgRx.map((r) => r.targetId).join(', ') || '（空）',
+  );
+  check(
+    '配置处方含可整段粘贴的 YAML（id + name + config）',
+    Boolean(spill) &&
+      /^- id: spill-policy$/m.test(spill.command) &&
+      /name: '@deepseek-ai\/dsh-spill-policy'/.test(spill.command) &&
+      /maxInlineTokens: 6000/.test(spill.command),
+    spill ? spill.command.split('\n')[0] : '(无)',
+  );
+  check(
+    '配置处方会说明"当前值 → 建议值"',
+    Boolean(spill) && /当前：/.test(spill.detail) && /建议：/.test(spill.detail),
+    spill ? spill.detail.split('\n')[1] : '(无)',
   );
 
   // 用真实数据跑一遍
-  const rx = prescribe(findings_12);
-  check('处方数量 <= 2（宁精勿滥）', rx.length <= 2, `${rx.length} 条`);
+  const rx = prescribe(findings_12, { ctx: { config: analysis.config ? { rows: {} } : null } });
+  check('处方数量 <= 4（仍不放任刷屏）', rx.length <= 4, `${rx.length} 条`);
   check(
     '每条处方结构完整',
-    rx.every((r) => r.kind && r.title && r.detail && r.because),
+    rx.every((r) => r.kind && r.kindLabel && r.title && r.detail && r.because),
     rx.map((r) => `${r.kind}/${r.title}`).join(' · '),
   );
   check(
     'E5 的行为建议基于实测工具名生成（非固定文案）',
-    rx.some((r) => r.kind === RX_TYPE.BEHAVIOR && /list_agents/.test(r.detail)),
+    prescribeOne({ id: 'E5', tool: 'list_agents', repeatCount: 4, summary: '合成本' }, {
+      ctx: { config: null, summary: { global: {} } },
+    }).some((r) => r.kind === REMEDY_KIND.BEHAVIOR && /list_agents/.test(r.detail)),
   );
   check(
     '行为建议带实测次数',
-    rx.some((r) => /4\s*次/.test(r.detail)),
+    prescribeOne({ id: 'E5', tool: 'list_agents', repeatCount: 4, summary: '合成本' }, {
+      ctx: { config: null, summary: { global: {} } },
+    }).some((r) => /4\s*次/.test(r.detail)),
+  );
+
+  // 自我否决：推理强度已经是最低档时，不许再建议"调低"
+  const { readEffectiveConfig } = await import('../src/config/index.mjs');
+  const snap = readEffectiveConfig({ HOME: '/nonexistent-home', USERPROFILE: '/nonexistent-home' });
+  const c1 = prescribeOne(
+    { id: 'C1', summary: '合成样本', evidence: [] },
+    { ctx: { config: null, summary: { global: {} } } },
+  );
+  check('C1 在没有配置快照时仍有可用处方', c1.length > 0, c1.map((r) => r.targetId).join(', '));
+  const c1Real = prescribeOne(
+    { id: 'C1', summary: '合成样本', evidence: [] },
+    { ctx: { config: snap, summary: { global: {} } } },
+  );
+  check(
+    '推理强度已是最低档时不给"再调低"的空建议',
+    !c1Real.some((r) => r.targetId === 'reasoning-effort') ||
+      snap.rows['agent-default-model'].config.reasoningEffort !== 'low',
+    `reasoningEffort=${snap.rows['agent-default-model'].config.reasoningEffort}`,
+  );
+
+  // 省 token 开关清单：必须包含配置与插件两类，且带当前值
+  const levers = tokenInventory({ ctx: { config: null } });
+  check(
+    '省 token 开关清单覆盖配置与插件',
+    levers.some((l) => l.kind === REMEDY_KIND.CONFIG) && levers.some((l) => l.kind === REMEDY_KIND.PLUGIN),
+    levers.map((l) => l.id).join(', '),
+  );
+  check(
+    '清单里的插件都带安装入口与出处',
+    levers
+      .filter((l) => l.kind === REMEDY_KIND.PLUGIN)
+      .every((l) => (l.install?.gui || l.install?.cli) && l.source),
   );
 
   // 自证校验：处方不许声称能解决自己没声明的指标
-  const bogus = { id: 'x', targets: [], solves: 's' };
+  const bogus = { id: 'x', targets: [], solves: 's', source: { package: 'p' } };
   check('selfJustify 拒绝未声明 targets 的处方', !selfJustify(bogus, 'E1').ok);
-  const okOne = PRESCRIPTIONS.find((p) => p.targets.length > 0);
-  if (okOne) {
-    check('selfJustify 接受已声明的处方', selfJustify(okOne, okOne.targets[0]).ok);
-  }
+  const okOne = REMEDIES.find((p) => p.targets.length > 0);
+  check('selfJustify 接受已声明的处方', selfJustify(okOne, okOne.targets[0]).ok);
+  check(
+    'selfJustify 拒绝没有出处的处方',
+    !selfJustify({ id: 'y', targets: ['E1'], solves: 's' }, 'E1').ok,
+  );
 
   // 无 finding 时不给处方
   check('没有问题时不硬编处方', prescribe([]).length === 0);
 }
+
+// --- 12b. 配置探测层 ---
+process.stdout.write('\n12b) 配置探测层（只读）\n');
+{
+  const { parsePatch, readEffectiveConfig, toPatchSnippet, resolveDshHome, SHIPPED_ROWS } = await import(
+    '../src/config/index.mjs'
+  );
+
+  const sample = [
+    '# 注释行',
+    '- id: agent-default-model',
+    "  name: '@deepseek-ai/dsh-agent-default-model'",
+    '  config:',
+    '    provider: deepseek-account',
+    '    model: deepseek-flash',
+    '    reasoningEffort: low',
+    '- id: spill-policy',
+    "  name: '@deepseek-ai/dsh-spill-policy'",
+    '  config:',
+    '    maxInlineTokens: 8000',
+  ].join('\n');
+  const parsed = parsePatch(sample);
+  check('能解析 profile patch 的行', parsed.rows.length === 2, parsed.rows.map((r) => r.id).join(', '));
+  check(
+    '能解析 config 里的标量（含字符串/数字）',
+    parsed.rows[1].config.maxInlineTokens === 8000 &&
+      parsed.rows[0].config.reasoningEffort === 'low' &&
+      parsed.rows[0].config.provider === 'deepseek-account',
+    JSON.stringify(parsed.rows[1].config),
+  );
+  check('解析不带警告', parsed.warnings.length === 0, parsed.warnings.join('; '));
+
+  const listSample = [
+    '- id: repeat-tool-reminder',
+    "  name: '@deepseek-ai/dsh-repeat-tool-reminder'",
+    '  config:',
+    '    thresholds: [2, 3, 5]',
+    '    argumentsPreviewChars: 500',
+    '- id: tool-result-pruner',
+    "  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'",
+    '  config:',
+    '    thresholdChars: 4096',
+    '    headChars: 2048',
+    '    tailChars: 512',
+  ].join('\n');
+  const listParsed = parsePatch(listSample);
+  check(
+    '能解析列表值 [2, 3, 5]',
+    Array.isArray(listParsed.rows[0].config.thresholds) && listParsed.rows[0].config.thresholds.length === 3,
+    JSON.stringify(listParsed.rows[0].config.thresholds),
+  );
+  check(
+    'pruner 三个键都解析到',
+    listParsed.rows[1].config.thresholdChars === 4096 &&
+      listParsed.rows[1].config.headChars === 2048 &&
+      listParsed.rows[1].config.tailChars === 512,
+  );
+
+  const snippet = toPatchSnippet('spill-policy', { maxInlineTokens: 6000 }, '@deepseek-ai/dsh-spill-policy');
+  check(
+    'YAML 片段可直接粘贴（id/name/config 三要素）',
+    snippet.split('\n')[0] === '- id: spill-policy' && /config:\n {4}maxInlineTokens: 6000/.test(snippet),
+    snippet.replace(/\n/g, ' ⏎ '),
+  );
+
+  check('能解析 DSH_HOME', resolveDshHome({ DSH_HOME: 'X:/dsh' }) === 'X:/dsh');
+  check('DSH_HOME 缺失时回退到 HOME', resolveDshHome({ HOME: 'X:/home' }).endsWith('.dsh'));
+
+  check(
+    '随附默认值表都带 id / name / 说明',
+    SHIPPED_ROWS.every((r) => r.id && r.name && r.note),
+    `${SHIPPED_ROWS.length} 行`,
+  );
+  check(
+    '随附默认值都用带 @scope 的包名（防止把插件短名当成包名）',
+    SHIPPED_ROWS.every((r) => r.name.startsWith('@deepseek-ai/')),
+  );
+
+  // 空目录/不存在目录不得抛异常
+  const empty = readEffectiveConfig({ HOME: 'X:/nonexistent-home', USERPROFILE: 'X:/nonexistent-home' });
+  check('profile 不存在时不抛异常且标注来源', empty.patchExists === false && Object.keys(empty.rows).length > 0);
+  check(
+    '未覆盖的行标为 bundle-default',
+    empty.rows['spill-policy'].source === 'bundle-default' &&
+      empty.rows['spill-policy'].config.maxInlineTokens === 12500,
+    JSON.stringify(empty.rows['spill-policy'].config),
+  );
+}
+
 
 // --- 13. 全维度覆盖与误报防护 ---
 process.stdout.write('\n13) 全维度覆盖与误报防护\n');

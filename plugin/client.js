@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '5';
+    const CLIENT_VERSION = '6';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -459,6 +459,30 @@ window.__ModuleLoader__.load({
             h('span', { style: S.rowLabel }, '置信度'),
             h('span', { style: S.rowText }, f.confidence >= 0.8 ? '高' : '中'),
           ),
+          f.prescriptions && f.prescriptions.length
+            ? h(
+                'div',
+                { style: S.row },
+                h('span', { style: S.rowLabel }, '处方'),
+                h(
+                  'span',
+                  { style: S.rowText },
+                  f.prescriptions.map((r) => `${r.kindLabel}·${r.title}`).join(' / '),
+                ),
+              )
+            : null,
+          f.skippedPrescriptions && f.skippedPrescriptions.length
+            ? h(
+                'div',
+                { style: S.row },
+                h('span', { style: S.rowLabel }, '已否决'),
+                h(
+                  'span',
+                  { style: S.rowText },
+                  f.skippedPrescriptions.map((s) => `${s.title} —— ${s.reason}`).join('；'),
+                ),
+              )
+            : null,
           first
             ? h(
                 'div',
@@ -480,14 +504,36 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // 处方按类型配色：改配置 / 跑命令 / 装插件 / 改设置 / 行为建议
+    const KIND_STYLE = {
+      config: { fg: '#3B6D11', bg: 'rgba(99,153,34,0.12)', bd: 'rgba(99,153,34,0.45)', card: 'rgba(99,153,34,0.06)' },
+      command: { fg: '#8B5CF6', bg: 'rgba(139,92,246,0.14)', bd: 'rgba(139,92,246,0.45)', card: 'rgba(139,92,246,0.06)' },
+      plugin: { fg: '#185FA5', bg: 'rgba(24,95,165,0.12)', bd: 'rgba(24,95,165,0.45)', card: 'rgba(24,95,165,0.06)' },
+      settings: { fg: '#B45309', bg: 'rgba(180,83,9,0.12)', bd: 'rgba(180,83,9,0.45)', card: 'rgba(180,83,9,0.06)' },
+      behavior: { fg: '#3B6D11', bg: 'rgba(99,153,34,0.12)', bd: 'rgba(99,153,34,0.45)', card: 'rgba(99,153,34,0.06)' },
+    };
+
+    function MetaRow({ label, text }) {
+      if (!text) return null;
+      return h(
+        'div',
+        { style: { marginTop: '6px', fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
+        `${label}：`,
+        String(text),
+      );
+    }
+
     function RxCard({ rx }) {
-      const isPlugin = rx.kind === 'install';
+      const k = KIND_STYLE[rx.kind] || KIND_STYLE.behavior;
+      const isConfig = rx.action && rx.action.type === 'config';
+      const snippet = isConfig ? rx.action.snippet || rx.command : null;
+      const cli = !isConfig ? rx.command : null;
       return h(
         'div',
         {
           style: {
-            border: `0.5px solid ${isPlugin ? 'rgba(24,95,165,0.4)' : 'rgba(99,153,34,0.4)'}`,
-            background: isPlugin ? 'rgba(24,95,165,0.06)' : 'rgba(99,153,34,0.06)',
+            border: `0.5px solid ${k.bd}`,
+            background: k.card,
             borderRadius: '10px',
             padding: '12px 14px',
             marginBottom: '10px',
@@ -504,29 +550,115 @@ window.__ModuleLoader__.load({
                 fontWeight: 500,
                 padding: '2px 8px',
                 borderRadius: '999px',
-                color: isPlugin ? '#185FA5' : '#3B6D11',
-                background: isPlugin ? 'rgba(24,95,165,0.12)' : 'rgba(99,153,34,0.12)',
+                color: k.fg,
+                background: k.bg,
+                flex: '0 0 auto',
               },
             },
-            isPlugin ? '装插件' : '行为建议',
+            rx.kindLabel || (rx.kind === 'install' ? '装插件' : '行为建议'),
           ),
           h('span', { style: { fontSize: '13px', fontWeight: 500 } }, rx.title),
+          rx.findingId
+            ? h('span', { style: S.cardScope }, `针对 ${rx.findingId}`)
+            : null,
         ),
-        h('div', { style: { fontSize: '13px', lineHeight: '1.65' } }, rx.detail),
-        rx.command
+        String(rx.detail || '')
+          .split('\n')
+          .map((line, i) => h('div', { key: i, style: { fontSize: '13px', lineHeight: '1.65' } }, line)),
+        snippet
+          ? h(
+              'div',
+              { style: { marginTop: '8px' } },
+              isConfig && rx.action?.file
+                ? h('div', { style: S.howTo }, '改这份文件（只给片段，不代你改）：', h('code', { style: { fontFamily: V.mono } }, rx.action.file))
+                : null,
+              h(
+                'div',
+                { style: S.codeBox },
+                h('span', { style: S.codeText }, snippet),
+                h(CopyButton, { text: snippet, label: '片段' }),
+              ),
+            )
+          : null,
+        cli
           ? h(
               'div',
               { style: S.codeBox },
-              h('span', { style: S.codeText }, rx.command),
-              h(CopyButton, { text: rx.command, label: '命令' }),
+              h('span', { style: S.codeText }, cli),
+              h(CopyButton, { text: cli, label: '命令' }),
             )
           : null,
+        rx.action && rx.action.type === 'settings' && rx.action.where
+          ? h('div', { style: S.howTo }, '改哪里：', h('code', { style: { fontFamily: V.mono } }, rx.action.where))
+          : null,
+        h(MetaRow, { label: '依据', text: rx.because }),
+        h(MetaRow, { label: '风险', text: rx.risk }),
+        h(MetaRow, { label: '怎么确认有效', text: rx.verify }),
+        h(MetaRow, { label: '出处', text: [rx.source, rx.sourceVia].filter(Boolean).join(' · ') }),
+      );
+    }
+
+    /** 省 token 开关清单：陈列本机真实存在的旋钮（不是体检结论） */
+    function LeverRow({ lv }) {
+      const k = KIND_STYLE[lv.kind] || KIND_STYLE.config;
+      return h(
+        'div',
+        {
+          style: {
+            border: `0.5px solid ${k.bd}`,
+            background: k.card,
+            borderRadius: '10px',
+            padding: '10px 12px',
+            marginBottom: '8px',
+          },
+        },
         h(
           'div',
-          { style: { marginTop: '8px', fontSize: '11px', color: V.text3, lineHeight: '1.6' } },
-          '依据：',
-          rx.because,
+          { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' } },
+          h(
+            'span',
+            {
+              style: {
+                fontSize: '11px',
+                fontWeight: 500,
+                padding: '2px 8px',
+                borderRadius: '999px',
+                color: k.fg,
+                background: k.bg,
+                flex: '0 0 auto',
+              },
+            },
+            lv.kindLabel,
+          ),
+          h('span', { style: { fontSize: '12px', fontWeight: 500 } }, lv.title),
         ),
+        h('div', { style: { fontSize: '12px', color: V.text2, lineHeight: '1.6' } }, lv.solves),
+        lv.current || lv.suggested
+          ? h(
+              'div',
+              { style: { marginTop: '4px', fontSize: '11px', color: V.text3, fontFamily: V.mono, wordBreak: 'break-word' } },
+              `当前 ${lv.current || '(未读到)'} → 建议 ${lv.suggested || '按需'}`,
+            )
+          : null,
+        lv.snippet
+          ? h(
+              'div',
+              { style: S.codeBox },
+              h('span', { style: S.codeText }, lv.snippet),
+              h(CopyButton, { text: lv.snippet, label: '片段' }),
+            )
+          : null,
+        lv.install && lv.install.gui ? h('div', { style: S.howTo }, '安装：', lv.install.gui) : null,
+        lv.install && lv.install.cli
+          ? h(
+              'div',
+              { style: S.codeBox },
+              h('span', { style: S.codeText }, lv.install.cli),
+              h(CopyButton, { text: lv.install.cli, label: '命令' }),
+            )
+          : null,
+        h(MetaRow, { label: '风险', text: lv.risk }),
+        h(MetaRow, { label: '出处', text: lv.source }),
       );
     }
 
@@ -655,6 +787,7 @@ window.__ModuleLoader__.load({
         );
       } else {
         const hd = state.data.header;
+        const configPath = (state.data.config && state.data.config.patchPath) || null;
         const stale = state.version !== CLIENT_VERSION;
         body = h(
           'div',
@@ -759,21 +892,38 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { style: { marginTop: '20px' } },
-                h('h3', { style: S.sectionTitle }, `处方（${state.data.prescriptions.length} 条，宁精勿滥）`),
+                h('h3', { style: S.sectionTitle }, `处方（${state.data.prescriptions.length} 条 · 每条都有可执行动作）`),
+                state.configPath
+                  ? h(
+                      'div',
+                      { style: S.howTo },
+                      '配置类处方改的是：',
+                      h('code', { style: { fontFamily: V.mono } }, configPath),
+                      '（本工具只读它，不代你改）',
+                    )
+                  : null,
                 state.data.prescriptions.map((rx, i) => h(RxCard, { key: rx.targetId || i, rx })),
+                state.data.config && state.data.config.warnings && state.data.config.warnings.length
+                  ? h(
+                      'div',
+                      { style: S.howTo },
+                      `配置读取提示：${state.data.config.warnings.join('；')}`,
+                    )
+                  : null,
               )
             : null,
 
-          state.data.notImplemented.length
+          state.data.levers && state.data.levers.length
             ? h(
                 'div',
-                { style: { marginTop: '16px' } },
-                h('h3', { style: S.sectionTitle }, '未实现的维度（骨架阶段）'),
+                { style: { marginTop: '20px' } },
+                h('h3', { style: S.sectionTitle }, '省 token 开关清单'),
                 h(
                   'div',
-                  { style: S.chips },
-                  state.data.notImplemented.map((d) => h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
+                  { style: S.howTo },
+                  '这是工具陈列，不是体检结论 —— 本次未触发对应指标，列出来是因为你随时可以拧它们。',
                 ),
+                state.data.levers.map((lv, i) => h(LeverRow, { key: lv.id || i, lv })),
               )
             : null,
 

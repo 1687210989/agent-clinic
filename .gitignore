@@ -14,6 +14,9 @@ state.json
 # 本地探针脚本产物
 probe/out/
 
+# 调研草稿（从 app.asar 解包出来的包文档等，不进仓库）
+.tmp/
+
 # 系统 / 编辑器
 .DS_Store
 Thumbs.db

@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '11';
+    const CLIENT_VERSION = '12';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -864,7 +864,14 @@ window.__ModuleLoader__.load({
           h('span', { style: { flex: '1 1 auto' } }),
           h('span', { style: { fontSize: '11px', color: V.text3, flex: '0 0 auto' } }, open ? '收起 ▾' : '展开 ▸'),
         ),
-        h('div', { style: { marginTop: '4px', fontSize: '12px', color: V.text2, lineHeight: '1.6' } }, hit.summary),
+        h(
+          'div',
+          { style: { marginTop: '4px', fontSize: '12px', color: V.text2, lineHeight: '1.6' } },
+          hit.summaryLang === 'en'
+            ? h('span', { style: { color: V.text3, marginRight: '4px' } }, '（英文原文）')
+            : null,
+          hit.summary,
+        ),
         open
           ? h(
               'div',

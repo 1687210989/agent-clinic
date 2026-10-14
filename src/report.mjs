@@ -298,6 +298,7 @@ export function analyze(ctx, opts = {}) {
         package: r.package,
         displayName: r.displayName,
         summary: r.summary,
+        summaryLang: r.summaryLang ?? null,
         capabilities: r.capabilities,
         capabilityEvidence: r.capabilityEvidence,
         repo: r.repo,
@@ -495,7 +496,7 @@ export function buildReport(ctx, opts = {}) {
       push(`- **${h.displayName}**（\`${h.package}\`${h.version ? ` v${h.version}` : ''}${originLabel}）`);
       push(`  - 命中指标：${(h.findingIds ?? []).join(' / ')}`);
       push(`  - 能力：${(h.capabilities ?? []).join(' / ') || '(目录未标注)'}`);
-      push(`  - 作用：${h.summary}`);
+      push(`  - 作用：${h.summary}${h.summaryLang === 'en' ? '（英文原文）' : ''}`);
       for (const r of h.reasons) push(`  - 命中原因：${r}`);
       if (h.install?.gui) push(`  - 安装：${h.install.gui}`);
       if (h.install?.cli) push(`  - 命令行：\`${h.install.cli}\``);

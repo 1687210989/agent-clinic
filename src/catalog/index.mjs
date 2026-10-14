@@ -34,6 +34,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { resolveProfileDir } from '../config/index.mjs';
 
@@ -42,6 +43,44 @@ export const CATALOG_VERSION = '2026-10-16';
 
 /** npm 同步快照的默认落盘位置（由 `./run.sh catalog-sync` 生成） */
 export const SNAPSHOT_PATH = path.join(os.homedir(), '.agent-clinic', 'catalog.snapshot.json');
+
+/** 中文简介覆盖层（离线、人工翻译、可复核；不含机器翻译） */
+export const I18N_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'i18n.zh.json');
+
+let _i18n = null;
+function i18nTable() {
+  if (_i18n) return _i18n;
+  try {
+    const raw = JSON.parse(fs.readFileSync(I18N_PATH, 'utf8'));
+    delete raw._comment;
+    _i18n = raw;
+  } catch {
+    _i18n = {};
+  }
+  return _i18n;
+}
+
+/**
+ * 套用中文简介。
+ *
+ * 为什么要有这一层：npm / GitHub 同步进来的插件描述大多只有英文
+ * （用户反馈"标出的插件简介需要翻译为中文"）。这里用**人工维护的覆盖层**
+ * 提供中文简介；没覆盖到的条目**原样保留英文**，并在 `summaryLang` 上如实标注，
+ * 不用机器翻译糊弄。
+ */
+export function applyTranslation(entry) {
+  const t = i18nTable()[entry.package];
+  if (!t) {
+    return { ...entry, summaryLang: /[\u4e00-\u9fff]/.test(entry.summary ?? '') ? 'zh' : 'en' };
+  }
+  return {
+    ...entry,
+    displayName: t.displayName || entry.displayName,
+    summaryOriginal: entry.summary,
+    summary: t.summary,
+    summaryLang: 'zh',
+  };
+}
 
 /**
  * 指标 → 能力标签。
@@ -210,20 +249,22 @@ export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
     const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
     const entries = Array.isArray(doc.entries) ? doc.entries : [];
     return {
-      entries: entries.map((e) => ({
-        ...e,
-        origin: e.origin ?? 'npm-registry',
-        // 同步进来的条目没有人工读过的 targets，只靠能力与关键词命中
-        targets: e.targets ?? [],
-        risk:
-          e.risk ??
-          (e.origin === 'github'
-            ? `来自 GitHub（未发 npm；本工具只核实了仓库存在与 package.json 元数据，未审阅源码）。` +
-              `安装需按仓库 README 自行操作：${e.repo ?? ''}`
-            : `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
-              `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`),
-        verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
-      })),
+      entries: entries.map((e) =>
+        applyTranslation({
+          ...e,
+          origin: e.origin ?? 'npm-registry',
+          // 同步进来的条目没有人工读过的 targets，只靠能力与关键词命中
+          targets: e.targets ?? [],
+          risk:
+            e.risk ??
+            (e.origin === 'github'
+              ? `来自 GitHub（未发 npm；本工具只核实了仓库存在与 package.json 元数据，未审阅源码）。` +
+                `安装需按仓库 README 自行操作：${e.repo ?? ''}`
+              : `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
+                `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`),
+          verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
+        }),
+      ),
       fetchedAt: doc.fetchedAt ?? null,
       source: typeof doc.source === 'string' ? doc.source : JSON.stringify(doc.source ?? ''),
       file,
@@ -243,7 +284,7 @@ export function activeCatalog(opts = {}) {
   const curatedNames = new Set(CURATED.map((e) => e.package));
   const synced = (snap?.entries ?? []).filter((e) => !curatedNames.has(e.package));
   return {
-    entries: [...CURATED, ...synced],
+    entries: [...CURATED.map(applyTranslation), ...synced],
     sources: {
       curated: CURATED.length,
       registry: synced.filter((e) => e.origin === 'npm-registry').length,

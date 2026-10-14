@@ -161,8 +161,11 @@ function doCatalogSync() {
 }
 
 function doCatalog() {
-  const { activeCatalog, SNAPSHOT_PATH: snapPath } = catalogMod;
+  const { activeCatalog, SNAPSHOT_PATH: snapPath, I18N_PATH: i18nPath } = catalogMod;
   const a = activeCatalog();
+  const cjk = /[\u4e00-\u9fff]/;
+  const withCaps = a.entries.filter((e) => (e.capabilities ?? []).length);
+  const untranslated = withCaps.filter((e) => !cjk.test(e.summary ?? ''));
   process.stdout.write('插件目录\n');
   process.stdout.write(`  总条目：${a.entries.length}\n`);
   process.stdout.write(`  人工核实：${a.sources.curated} 条\n`);
@@ -172,6 +175,12 @@ function doCatalog() {
       (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) +
       '\n',
   );
+  process.stdout.write(
+    `  中文简介：${withCaps.length - untranslated.length}/${withCaps.length} 条（可能被推荐的条目）· 覆盖层 ${i18nPath}\n`,
+  );
+  if (untranslated.length) {
+    process.stdout.write(`  ⚠ 仍为英文（补进覆盖层即可）：${untranslated.map((e) => e.package).join('、')}\n`);
+  }
   const synced = a.entries.filter((e) => e.origin && e.origin !== 'curated');
   if (synced.length) {
     process.stdout.write('\n  同步条目（前 20）:\n');

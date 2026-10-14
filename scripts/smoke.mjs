@@ -1068,6 +1068,41 @@ process.stdout.write('\n12d) 插件目录（npm 同步 + 去重）\n');
       return loaded.entries[0].origin === 'github' && /未审阅源码/.test(loaded.entries[0].risk);
     })(),
   );
+
+  // 中文简介覆盖层（用户要求：简介翻译成中文）
+  const cjk = /[\u4e00-\u9fff]/;
+  const allNow = cat.activeCatalog().entries;
+  const withCaps = allNow.filter((e) => (e.capabilities ?? []).length);
+  const untranslated = withCaps.filter((e) => !cjk.test(e.summary ?? ''));
+  check(
+    '可能被推荐的插件都有中文简介（新增英文插件会在这里报出来）',
+    untranslated.length === 0,
+    untranslated.length
+      ? `待翻译 ${untranslated.length} 条：${untranslated.map((e) => e.package).join('、')}`
+      : `${withCaps.length} 条能力条目全部为中文`,
+  );
+  check(
+    '每条目录条目都标了简介语言（zh/en）',
+    allNow.every((e) => e.summaryLang === 'zh' || e.summaryLang === 'en'),
+  );
+  check(
+    '覆盖层命中的条目会记录原文（便于复核翻译）',
+    (() => {
+      const t = cat.applyTranslation({
+        package: 'dsh-cost-meter',
+        summary: 'Session cost meter: cost, price sync.',
+        capabilities: ['cost'],
+      });
+      return t.summaryLang === 'zh' && typeof t.summaryOriginal === 'string' && cjk.test(t.summary);
+    })(),
+  );
+  check(
+    '覆盖层未命中的条目保留英文原文并如实标注（不机翻、不编造）',
+    (() => {
+      const t = cat.applyTranslation({ package: 'no-such-pkg-xyz', summary: 'English only summary.' });
+      return t.summaryLang === 'en' && t.summary === 'English only summary.';
+    })(),
+  );
 }
 
 // --- 13. 全维度覆盖与误报防护 ---

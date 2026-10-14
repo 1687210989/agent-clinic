@@ -1,0 +1,162 @@
+{
+  "_comment": "插件目录的中文简介覆盖层。key = 包名，value = { summary, displayName? }。同步脚本与目录层都会套用；没覆盖到的条目会如实标注来源语言（原文保留，不机翻、不编造）。",
+  "@lolkda/dsh-skills-manager": {
+    "summary": "在设置页管理 DSH 技能目录：列出 DSH 实际解析到的技能，按策略启用/停用，而不改动技能自身的源码。"
+  },
+  "@wxg-prc-cpg/browser-skill-dsh-plugin": {
+    "summary": "把 BrowserSkill 浏览器自动化能力（browser_* 工具）暴露给模型。"
+  },
+  "@morlay/ui-conversation-message-actions": {
+    "summary": "会话消息的倒回 / 重试 / 撤回 / 分叉编排（宿主侧），外加浏览器侧渲染，替换 conversation.chat.node 的用户消息与 steering 渲染。"
+  },
+  "@kenz1117/dsh-ui-usage-billing": {
+    "summary": "用量与费用看板：侧边栏成本指标 + 完整仪表盘弹窗，按多厂商实时价格目录计价。"
+  },
+  "dsh-mnemosyne": {
+    "summary": "Mnemosyne 记忆插件：提供 remember / recall / forget / stats / sleep 等工具，内置技能与自动初始化，可选自动同步与预取。"
+  },
+  "dsh-codex-subscription": {
+    "summary": "在 DSH 里使用 ChatGPT / Codex 订阅：OAuth 登录、额度查看、安全重置，并支持联网搜索、图片与 Fast 模式。"
+  },
+  "dsh-mcp-connector": {
+    "summary": "DSH 的 MCP 连接器：连接 MCP 服务器、跨连接检索工具、排查发现失败，并维护一份持续更新的连接清单。"
+  },
+  "@tt-a1i/archify-dsh": {
+    "summary": "Archify 架构图技能的 Skill-only 组合包（需显式启用）。"
+  },
+  "dsh-free-search": {
+    "summary": "免费联网检索：内置 24 个搜索引擎（Bing / DuckDuckGo / SearXNG / Exa / Tavily / Firecrawl 等，部分无需 API key）。"
+  },
+  "dsh-mnemon": {
+    "summary": "可组合的视图式记忆：来源与策略可插拔，开箱即用分层记忆。"
+  },
+  "@nanmicoder/dsh-agent-teams": {
+    "summary": "多智能体团队协作：队长 / 成员 / 带依赖的任务 / 消息往来，用自然语言驱动。"
+  },
+  "dsh-context-compressor": {
+    "summary": "面向小上下文模型的上下文压缩（Web GUI）：一键把整段对话浓缩成几句话。"
+  },
+  "@mimichunterz/agent-compact": {
+    "summary": "上下文压缩工具（context_compact）：由模型自己写替换用的检查点、交给宿主的压缩引擎，从而跳过 LLM 摘要调用；自动压缩仍走官方引擎。"
+  },
+  "dsh-quilt-compact": {
+    "summary": "压缩链后端：按模型池分层摘要（带单模型冷却）、重叠分块，并沿用会话当前模型。"
+  },
+  "dsh-token-headroom": {
+    "summary": "上下文压缩技能：让实时提示词保持精简，同时不丢掉关键状态。"
+  },
+  "dsh-cost-meter": {
+    "summary": "会话费用统计：本会话成本、当日费用、历史记录，并与官方价格同步，支持多厂商多模型计价。"
+  },
+  "dshmarket": {
+    "summary": "DSH 内置的可视化插件市场：浏览、检索与安装插件。"
+  },
+  "@michengai/dsh-archive-manager": {
+    "summary": "会话归档、恢复、收藏与永久删除，并能诊断损坏的会话日志。"
+  },
+  "@michengai/dsh-skills-manager": {
+    "summary": "DSH 技能管理器：统一加载并安全管理本机的 Agent 技能。"
+  },
+  "@roarpeng/graphflow": {
+    "summary": "本地优先的记忆与上下文框架（面向编码 agent）。"
+  },
+  "dsh-plugin-model-proxy": {
+    "summary": "按模型分流的代理路由（http / https / socks5）。"
+  },
+  "@fooxe/dsh-memory": {
+    "summary": "Claude Code 风格的分层持久记忆：用户级 + 项目级（可随 git 共享）作用域，跨会话保留。"
+  },
+  "dsh-swarm-orchestrator": {
+    "summary": "基于角色的多智能体编排：按角色绑定模型（duty table）、并行任务 DAG。"
+  },
+  "@memtensor/memos-local-plugin": {
+    "summary": "Reflect2Evolve 记忆插件：L1/L2/L3 分层记忆、按反思加权回传价值、跨任务策略继承。"
+  },
+  "dsh-zhihu-search": {
+    "summary": "知乎站内搜索、全网搜索与「直答」问答，走知乎开放平台官方接口。"
+  },
+  "@max-null/dsh-memory": {
+    "summary": "跨会话明文记忆：确定性的 BM25 召回，写入即时生效。"
+  },
+  "@perrylink/dsh-plugin-doctor": {
+    "summary": "零依赖的 DSH 插件静态检查 + 沙箱冒烟检测（含包结构门禁）。"
+  },
+  "@goodandready/dsh-clinebot": {
+    "summary": "ClineBot / ClinePass 的 DSH 伴侣插件：动态同步订阅模型、额度耗尽告警。"
+  },
+  "@goodandready/dsh-cron": {
+    "summary": "后台自动化运行器：隔离的 agent 运行，支持脚本 / HTTP / SSH / Docker 运行时，带成本护栏与通知。"
+  },
+  "dsh-auto-review": {
+    "summary": "对审批请求做第二模型自动复核：由只读的复核子代理决定是否放行。"
+  },
+  "dsh-perm-gate": {
+    "summary": "DSH 权限闸门（面向 0.1.5 线）：自足、确定性优先、失败即拒绝。"
+  },
+  "dsh-plugin-admin": {
+    "summary": "Web UI 管理面板：扩展 / 技能 / MCP 服务器 / 子代理 / 命令 / 钩子等十一个管理页。"
+  },
+  "meow-memory": {
+    "summary": "跨会话项目记忆：七层 SQLite 记忆，首轮注入快照。"
+  },
+  "@anysearch/anysearch-dsh": {
+    "summary": "AnySearch 的联网搜索与网页抓取提供方，外加进阶工具。"
+  },
+  "dsh-permission-rules": {
+    "summary": "声明式的 Claude Code 风格权限规则，外加 Codex 风格的进程级网络策略。"
+  },
+  "stratagate-dsh": {
+    "summary": "近期对话保持清晰、较早的淡出为摘要而不是遗忘（分层摘要）。"
+  },
+  "dsh-find-plugin": {
+    "summary": "在 agent 内部查找 DSH 插件：实时检索 GitHub 的 dsh-plugin 主题并排序。"
+  },
+  "@morlay/session-branch": {
+    "summary": "基于分支的会话编辑契约层：提供 rewind / forkFrom / readBranchPrefix 抽象与高层服务。"
+  },
+  "@morlay/session-rdb": {
+    "summary": "DSH 的 RDB 持久化会话后端：同时实现会话持久化与相关接口。"
+  },
+  "dsh-codex-connect": {
+    "summary": "为 DSH 接入 ChatGPT OAuth 与 Codex 模型。"
+  },
+  "dsh-custom-mode": {
+    "summary": "编辑 DSH 的自定义模式：系统提示词、基础模式与插件开关。"
+  },
+  "dsh-remote": {
+    "summary": "远端协作助手：连接 SSH（密码 / 密钥 / agent / 键盘交互）。"
+  },
+  "dsh-image-gen": {
+    "summary": "把类 ChatGPT 的图片生成带进 DSH：支持 Gemini、OpenAI、Seedream、DashScope 等。"
+  },
+  "@goodandready/dsh-image-gen": {
+    "summary": "DSH 图片生成：提供 generate_image 工具，提供方（provider）可插拔。"
+  },
+  "@goodandready/dsh-lanmode": {
+    "summary": "让 DSH Web UI 支持局域网与反向代理访问（返回设置服务）。"
+  },
+  "dsh-builtin-browser": {
+    "summary": "DSH 共享的真实浏览器插件：装完即用，提供可见的原生浏览器。"
+  },
+  "dsh-univer-office": {
+    "summary": "DSH × Univer 集成：内置协作 Gateway 与 Viewer，支持 Office 文件行内预览。"
+  },
+  "dsh-plugin-wallpaper-engine": {
+    "summary": "给 DSH Web GUI 加 Wallpaper Engine 动态壁纸（渲染本地壁纸）。"
+  },
+  "dsh-claude-style": {
+    "summary": "DSH Web GUI 的 Claude Code 桌面主题（视觉与交互覆盖）。"
+  },
+  "dsh-dafeiyu": {
+    "summary": "由 DSH 会话事件驱动的桌面原生「大鱼」伴侣。"
+  },
+  "@eddyskywalker/dsh-chatgpt-subscription": {
+    "summary": "通过 ChatGPT 订阅访问 Codex 的 DSH 提供方插件。"
+  },
+  "@goodandready/dsh-russian-lang": {
+    "summary": "DSH 的完整俄语本地化：9,850 条 UI 文案、88 个插件。"
+  },
+  "@morlay/dsh-agent-instructions-as-prompt": {
+    "summary": "@deepseek-ai/dsh-agent-instructions 的分支：把工作区指令基线作为提示词投递。"
+  }
+}

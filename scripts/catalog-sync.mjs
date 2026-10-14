@@ -39,7 +39,7 @@ const argOf = (name, dflt) => {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : dflt;
 };
-const DETAIL_LIMIT = Number(argOf('--limit', 60)) || 60;
+const DETAIL_LIMIT = Number(argOf('--limit', 120)) || 120;
 const OUT = argOf('--out', DEFAULT_OUT);
 const SOURCE = argOf('--source', 'both'); // both | npm | github
 

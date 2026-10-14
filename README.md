@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-144%2F144-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-148%2F148-brightgreen)]()
 
 ---
 

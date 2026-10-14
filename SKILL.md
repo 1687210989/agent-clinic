@@ -58,7 +58,7 @@ license: MIT
 ./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步 + GitHub 核实）
 ./run.sh catalog-sync            # 同步插件目录（npm + GitHub，唯一联网命令）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向
-./scripts/smoke.sh               # 自检（144 项）
+./scripts/smoke.sh               # 自检（148 项）
 ```
 
 ## 已实现的诊断指标

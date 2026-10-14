@@ -36,7 +36,7 @@ export const name = 'agent-clinic';
  * 用户只会看到面板内容没变，无法判断该做什么。
  * 改动 /api/agent-clinic/report 的响应结构时，两边一起 +1。
  */
-export const API_VERSION = '4';
+export const API_VERSION = '5';
 
 // ---------------------------------------------------------------------------
 // Config：优先用 schemastery；本地无 peer 时退化为朴素描述，保证可导入

@@ -27,7 +27,7 @@ import { num, pct } from './summary.mjs';
  */
 export function analyze(ctx, opts = {}) {
   const g = ctx.summary.global;
-  const { findings, notDetected, notImplemented } = runDiagnostics(ctx, opts);
+  const { findings, notDetected, notImplemented, unimplementable } = runDiagnostics(ctx, opts);
 
   return {
     header: {
@@ -63,6 +63,7 @@ export function analyze(ctx, opts = {}) {
     })),
     notDetected: notDetected.map((d) => ({ id: d.id, title: d.title, note: d.note ?? null })),
     notImplemented: notImplemented.map((d) => ({ id: d.id, title: d.title })),
+    unimplementable: unimplementable.map((d) => ({ id: d.id, title: d.title, reason: d.reason })),
     // 处方：宁精勿滥，最多 2 条；没有对症插件时给行为建议
     prescriptions: prescribe(findings),
     footer: '证据可复核 · 全程本地 · 零外发',
@@ -119,7 +120,13 @@ export function buildReport(ctx, opts = {}) {
   }
 
   push('### 未检测到异常的维度');
-  push(data.notDetected.length ? data.notDetected.map((d) => `${d.id} ${d.title}`).join('、') : '（无）');
+  if (data.notDetected.length === 0) {
+    push('（无）');
+  } else {
+    for (const d of data.notDetected) {
+      push(d.note ? `- ${d.id} ${d.title} —— ${d.note}` : `- ${d.id} ${d.title}`);
+    }
+  }
   push();
 
   if (data.prescriptions.length > 0) {
@@ -135,8 +142,14 @@ export function buildReport(ctx, opts = {}) {
   }
 
   if (data.notImplemented.length) {
-    push('### 未实现的维度（骨架阶段）');
-    push(data.notImplemented.map((d) => `${d.id} ${d.title}`).join('、'));
+    push('### 未实现的维度（排期中）');
+    for (const d of data.notImplemented) push(`- ${d.id} ${d.title}`);
+    push();
+  }
+
+  if (data.unimplementable.length) {
+    push('### 不可实现的维度（DSH 数据源缺失，非排期问题）');
+    for (const d of data.unimplementable) push(`- ${d.id} ${d.title} —— ${d.reason}`);
     push();
   }
 

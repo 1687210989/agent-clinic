@@ -13,6 +13,7 @@ export const KIND = {
   TOOL_RESULT: 'tool_result',
   USAGE: 'usage',
   APPROVAL: 'approval',
+  TODO_WRITE: 'todo_write',
   META: 'meta',
 };
 

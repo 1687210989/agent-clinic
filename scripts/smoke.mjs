@@ -531,6 +531,52 @@ process.stdout.write('\n12) 处方层\n');
   check('没有问题时不硬编处方', prescribe([]).length === 0);
 }
 
+// --- 13. 全维度覆盖与误报防护 ---
+process.stdout.write('\n13) 全维度覆盖与误报防护\n');
+{
+  const { REGISTRY, UNIMPLEMENTABLE, SEVERITY, runDiagnostics } = await import('../src/diagnostics/index.mjs');
+  const validSeverities = new Set(Object.values(SEVERITY));
+
+  const implemented = REGISTRY.filter((m) => m.implemented).map((m) => m.id);
+  const pending = REGISTRY.filter((m) => !m.implemented).map((m) => m.id);
+  check(
+    '已实现指标齐全',
+    ['C1', 'C2', 'C3', 'E1', 'E2', 'E4', 'E5', 'N1', 'N2', 'A2', 'A3', 'A4'].every((id) =>
+      implemented.includes(id),
+    ),
+    `${implemented.length} 项`,
+  );
+  check('排期中的指标有记录', pending.length > 0, pending.join(','));
+  check(
+    '不可实现的 5 项全部显式列出',
+    ['E3', 'K1', 'K2', 'N3', 'N4'].every((id) => UNIMPLEMENTABLE.some((u) => u.id === id)) &&
+      UNIMPLEMENTABLE.every((u) => u.reason && u.reason.length > 5),
+    `${UNIMPLEMENTABLE.length} 项`,
+  );
+  check(
+    '每条不可实现都带原因',
+    UNIMPLEMENTABLE.every((u) => typeof u.reason === 'string' && u.reason.trim()),
+  );
+
+  // 每个已实现指标必须跑通且返回结构合法（含不命中的）
+  const rAll = runDiagnostics({ scan, summary: summarize(scan) });
+  check(
+    '所有 detect 均不抛异常',
+    rAll.notDetected.every((d) => !String(d.note || '').startsWith('判定异常')),
+    `异常项：${rAll.notDetected.filter((d) => String(d.note || '').startsWith('判定异常')).length}`,
+  );
+  check(
+    'findings 都带合法严重度与摘要',
+    rAll.findings.every((f) => validSeverities.has(f.severity) && typeof f.summary === 'string' && f.summary),
+    `${rAll.findings.length} 条`,
+  );
+  check(
+    '除全局型 finding 外都带证据定位',
+    rAll.findings.every((f) => f.scope === null || (Array.isArray(f.evidence) && f.evidence.length > 0)),
+    rAll.findings.map((f) => `${f.id}${f.evidence?.length ? '' : '(全局)'}`).join(' · '),
+  );
+}
+
 // --- 汇总 ---
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (fail > 0) {

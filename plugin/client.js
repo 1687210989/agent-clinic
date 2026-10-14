@@ -50,7 +50,7 @@ window.__ModuleLoader__.load({
      * client.js，而宿主半是启动时装入进程的，必须重启才生效。
      * 若不显式提示，用户只会看到面板内容没变，无从判断该做什么。
      */
-    const CLIENT_VERSION = '4';
+    const CLIENT_VERSION = '5';
 
     // -----------------------------------------------------------------------
     // 极简共享状态：按钮与面板需要同一个「开合」状态
@@ -707,9 +707,53 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { style: S.chips },
-                state.data.notDetected.map((d) => h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
+                state.data.notDetected.map((d) =>
+                  h(
+                    'span',
+                    { key: d.id, style: S.chip, title: d.note || '未检测到异常' },
+                    `${d.id} ${d.title}`,
+                  )),
               )
             : h('div', { style: S.empty }, '（无）'),
+
+          state.data.notDetected.some((d) => d.note)
+            ? h(
+                'div',
+                { style: { marginTop: '8px', fontSize: '11px', color: V.text3, lineHeight: '1.7' } },
+                state.data.notDetected
+                  .filter((d) => d.note)
+                  .map((d) => `${d.id} ${d.title}：${d.note}`)
+                  .join('；'),
+              )
+            : null,
+
+          state.data.notImplemented && state.data.notImplemented.length
+            ? h(
+                'div',
+                { style: { marginTop: '16px' } },
+                h('h3', { style: S.sectionTitle }, '未实现的维度（排期中）'),
+                h(
+                  'div',
+                  { style: S.chips },
+                  state.data.notImplemented.map((d) =>
+                    h('span', { key: d.id, style: S.chip }, `${d.id} ${d.title}`)),
+                ),
+              )
+            : null,
+
+          state.data.unimplementable && state.data.unimplementable.length
+            ? h(
+                'div',
+                { style: { marginTop: '16px' } },
+                h('h3', { style: S.sectionTitle }, '不可实现的维度（DSH 数据源缺失）'),
+                h(
+                  'div',
+                  { style: { fontSize: '11px', color: V.text3, lineHeight: '1.8' } },
+                  state.data.unimplementable.map((d) =>
+                    h('div', { key: d.id }, `${d.id} ${d.title} —— ${d.reason}`)),
+                ),
+              )
+            : null,
 
           state.data.prescriptions && state.data.prescriptions.length
             ? h(

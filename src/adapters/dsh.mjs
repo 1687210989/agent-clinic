@@ -84,6 +84,89 @@ function isErrorResult(data) {
   return false;
 }
 
+/**
+ * N2 高风险操作的模式表。
+ *
+ * 隐私约束（本项目硬性原则）：只返回**命中的模式标签**，
+ * 绝不返回原始参数、路径或命令正文。报告与面板里也只出现标签。
+ *
+ * ⚠️ 只匹配命令执行类工具的 command 字段。
+ * 实测踩过的坑：早期版本对整个 arguments JSON 做匹配，结果把
+ * `write` 工具写入的 Markdown 文档正文里的 "--force" 当成高危命令，
+ * 报了 2 条假警报。write/edit/read 的参数是**用户内容**，不是命令。
+ */
+const DANGER_PATTERNS = [
+  { label: 'rm -r/-f', re: /\brm\s+-[a-z]*(?:r|f)[a-z]*\b/i },
+  { label: '--force', re: /--force\b/i },
+  { label: 'git reset --hard', re: /\breset\s+--hard\b/i },
+  { label: 'git clean -fd', re: /\bgit\s+clean\s+-[a-z]*f/i },
+  { label: 'DROP/TRUNCATE', re: /\b(?:drop|truncate)\s+(?:table|database|schema)\b/i },
+  { label: 'curl | sh', re: /\bcurl\b[^|]{0,200}\|\s*(?:ba|z|a)?sh\b/i },
+  { label: 'kill -9', re: /\bkill\s+-9\b/i },
+  { label: 'chmod 777', re: /\bchmod\s+777\b/i },
+  { label: 'mkfs', re: /\bmkfs\b/i },
+  { label: 'fork bomb', re: /:\(\)\s*\{/ },
+];
+
+/** 命令执行类工具：只有它们的参数才是"命令"而非"内容" */
+const COMMAND_TOOLS =
+  /^(?:pwsh|powershell|powershell\.exe|pwsh\.exe|bash|sh|zsh|dash|shell|exec|execute|run_command|cmd|cmd\.exe|terminal|node|python|python3|ruby)$/i;
+
+/** 从参数里取出命令文本；取不到返回 null */
+function commandTextOf(args) {
+  let obj;
+  if (typeof args === 'string') {
+    try {
+      obj = JSON.parse(args);
+    } catch {
+      return args; // 纯字符串当作命令
+    }
+  } else {
+    obj = args;
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  for (const k of ['command', 'cmd', 'script', 'code', 'shellCommand']) {
+    if (typeof obj[k] === 'string' && obj[k].trim()) return obj[k];
+  }
+  return null;
+}
+
+/** 返回命中的高危模式标签数组（空数组 = 未命中）。不携带任何原始内容。 */
+function dangerOf(name, args) {
+  if (!name || !COMMAND_TOOLS.test(String(name))) return [];
+  const cmd = commandTextOf(args);
+  if (!cmd) return [];
+  const hits = [];
+  for (const p of DANGER_PATTERNS) {
+    try {
+      if (p.re.test(cmd)) hits.push(p.label);
+    } catch {
+      /* 单个正则异常不影响其他模式 */
+    }
+  }
+  return hits;
+}
+
+/** todo 条目数。结构未知时保守返回 null，不下结论。 */
+function todoCountOf(data) {
+  const t = data?.todos ?? data?.todoList ?? data?.items;
+  if (Array.isArray(t)) return t.length;
+  if (typeof t === 'number') return t;
+  return null;
+}
+
+/** 已完成的 todo 条目数 */
+function todoDoneOf(data) {
+  const t = data?.todos ?? data?.todoList ?? data?.items;
+  if (!Array.isArray(t)) return null;
+  let n = 0;
+  for (const item of t) {
+    const st = item?.status ?? item?.state;
+    if (st === 'done' || st === 'completed' || item?.done === true) n += 1;
+  }
+  return n;
+}
+
 function usageOf(data) {
   const u = data?.usage;
   if (!u) return {};
@@ -96,8 +179,7 @@ function usageOf(data) {
   };
 }
 
-/** 累加 content 块中指定类型的文本长度 */
-function sumTextLen(blocks, type) {
+/** 累加 content 块中指定类型的文本长度 */function sumTextLen(blocks, type) {
   if (!Array.isArray(blocks)) return 0;
   let n = 0;
   for (const b of blocks) {
@@ -195,6 +277,9 @@ export function parseSession(file) {
           tool_name: data.name ?? '(unknown)',
           tool_call_id: data.callId ?? null,
           tool_args_hash: hashArgs(data.arguments),
+          // N2：只对命令执行类工具检测，且只记命中的模式标签，
+          // 不记原始参数（隐私硬约束 + 防 write/edit 内容误报）
+          danger: dangerOf(data.name, data.arguments),
         });
         break;
 
@@ -202,6 +287,15 @@ export function parseSession(file) {
         ev = makeEvent({ ...base, kind: KIND.TOOL_RESULT }, {
           tool_call_id: data.toolCallId ?? data.message?.source?.callId ?? null,
           is_error: isErrorResult(data),
+        });
+        break;
+
+      case 'todo/write':
+        // E4 计划执行脱节：把「写了计划」这个事实记下来。
+        // 只记条目数与是否全部完成，不记计划正文。
+        ev = makeEvent({ ...base, kind: KIND.TODO_WRITE }, {
+          todo_count: todoCountOf(data),
+          done_count: todoDoneOf(data),
         });
         break;
 
@@ -237,6 +331,11 @@ export function parseSession(file) {
     totalLines: rawLines.length,
     badLines,
     unmapped,
+    // A4 子代理开销：header 顶层字段（不在 .data 里）
+    delegationDepth: Number.isFinite(meta?.delegationDepth) ? meta.delegationDepth : null,
+    parentSession: typeof meta?.parentSession === 'string' ? meta.parentSession : null,
+    isSubagent: (meta?.origin === 'subagent') || (Number(meta?.delegationDepth) > 0),
+    origin: typeof meta?.origin === 'string' ? meta.origin : null,
     events,
   };
 }

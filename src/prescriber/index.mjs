@@ -26,38 +26,42 @@
 import { REMEDY_KIND, RX_TYPE, KIND_LABEL, toPatchSnippet } from './types.mjs';
 import { REMEDIES, VERIFY_VIA } from './remedies.mjs';
 import { readEffectiveConfig, valueOf } from '../config/index.mjs';
+import { matchPlugins, PLUGIN_CATALOG } from '../catalog/index.mjs';
 import { num } from '../summary.mjs';
 
 export { REMEDY_KIND, RX_TYPE, KIND_LABEL };
 
 /**
- * 已核实、但**对当前指标不对症**的插件。
+ * 已核实、但**当前没有指标靶子**的插件。
  *
- * 保留这份记录是为了不丢失 2026-10-14 的核实工作，也为了让"为什么不出现在
- * 处方里"有据可查 —— 它们不是被删了，是没有对症指标。
+ * 它们现在活在插件目录（src/catalog）里，靠**能力标签 + 关键词检索**被匹配出来，
+ * 不再依赖硬绑 targets。这份列表保留，是为了让"目录里到底有哪些、什么时候核实的"
+ * 有据可查。
  */
-export const VERIFIED_BUT_UNTARGETED = [
-  { id: 'modsearch', name: 'modsearch', repo: 'liustack/modsearch', solves: '给模型补上免费联网检索能力', verifiedAt: '2026-10-14' },
-  { id: 'dsh-taskboard', name: 'dsh-taskboard', repo: 'shengsheng90/DSH-taskboard', solves: '本地任务看板', verifiedAt: '2026-10-14' },
-  { id: 'dsh-skill-hub', name: 'dsh-skill-hub', repo: 'cheshireez/dsh-skill-hub', solves: '浏览本地技能目录', verifiedAt: '2026-10-14' },
-];
+export const VERIFIED_BUT_UNTARGETED = PLUGIN_CATALOG.filter((p) => !(p.targets ?? []).length).map((p) => ({
+  id: p.id,
+  name: p.package,
+  repo: p.repo,
+  solves: p.summary,
+  verifiedAt: p.source?.verifiedAt,
+}));
 
 /**
- * 已核实的插件处方池（由处方目录派生，单一事实来源）。
- * 保留 `repo` / `verifiedAt` / `install` 字段，便于复核与防回归。
+ * 已核实的插件处方池 —— 现在**由插件目录派生**（单一事实来源 src/catalog）。
+ * 保留 `repo` / `verifiedAt` / `targets` 字段，便于复核与防回归。
  */
-export const PRESCRIPTIONS = REMEDIES.filter((r) => r.kind === REMEDY_KIND.PLUGIN).map((r) => ({
-  id: r.id,
-  name: r.source.package,
-  repo: r.source.repo,
+export const PRESCRIPTIONS = PLUGIN_CATALOG.map((p) => ({
+  id: p.id,
+  name: p.package,
+  repo: p.repo,
   type: RX_TYPE.INSTALL,
-  targets: r.targets,
-  solves: r.solves,
-  stars: undefined,
-  verifiedAt: r.source.verifiedAt,
-  verifiedVia: r.source.via,
-  install: { dsh: r.install?.cli ?? null, gui: r.install?.gui ?? null },
-  note: r.risk,
+  targets: p.targets ?? [],
+  solves: p.summary,
+  capabilities: p.capabilities ?? [],
+  verifiedAt: p.source?.verifiedAt,
+  verifiedVia: p.source?.via,
+  install: { dsh: p.install?.cli ?? null, gui: p.install?.gui ?? null },
+  note: p.risk,
 }));
 
 // ---------------------------------------------------------------------------
@@ -327,6 +331,67 @@ const fmt = (v) => {
   return String(v);
 };
 
+/**
+ * 把一条插件目录检索结果变成处方。
+ *
+ * 与固定处方不同：它带 `matchedOn`（为什么推荐它），因为这是"检索"出来的，
+ * 用户有权知道匹配依据；已安装的不再推"安装"，改推"确认启用 / 检查配置"。
+ */
+export function buildCatalogPrescription(hit, finding, ctx = {}) {
+  const { entry, installed, reasons } = hit;
+  const pseudo = {
+    id: 'catalog-' + entry.id,
+    kind: REMEDY_KIND.PLUGIN,
+    targets: [finding.id],
+    title: `${installed ? '已装' : '装'} ${entry.displayName}`,
+    solves: entry.summary,
+    install: entry.install,
+    risk: entry.risk,
+    verify: entry.verify,
+    source: {
+      type: entry.source?.type === 'third-party' ? 'third-party' : 'first-party',
+      package: entry.package,
+      repo: entry.repo,
+      doc: entry.source?.doc,
+      via: entry.source?.via,
+      verifiedAt: entry.source?.verifiedAt,
+    },
+  };
+
+  const built = buildPrescription(pseudo, finding, ctx);
+  return {
+    ...built,
+    brief: installed
+      ? `已安装 ${entry.package}（${entry.version ?? ''}）—— 确认已启用并核对配置`
+      : `${entry.summary.slice(0, 40)}…（界面：插件 → 添加插件）`,
+    matchedOn: reasons,
+    installed,
+    catalogId: entry.id,
+    capabilityTags: entry.capabilities ?? [],
+    compatibility: entry.compatibility ?? null,
+    steps: installed
+      ? [
+          '打开侧边栏 → 插件，确认这个插件处于「已启用」状态',
+          `核对版本：本地已装 ${entry.package}${entry.version ? `，目录里核实到的最新版是 ${entry.version}` : ''}`,
+          entry.repo ? `用法与配置项见仓库：${entry.repo}` : '用法见插件自身的说明页',
+          `验证：${entry.verify}`,
+        ]
+      : built.steps,
+    action: installed
+      ? { type: 'plugin', packageName: entry.package, installed: true, repo: entry.repo }
+      : built.action,
+  };
+}
+
+/** 为一个 finding 做插件目录检索（返回处方形态） */
+export function pluginRecommendations(finding, ctx = {}) {
+  const hits = matchPlugins(finding, {
+    installed: ctx.installedPlugins ?? [],
+    limit: ctx.pluginLimit ?? 2,
+  });
+  return hits.map((hit) => buildCatalogPrescription(hit, finding, ctx));
+}
+
 // ---------------------------------------------------------------------------
 // 匹配
 // ---------------------------------------------------------------------------
@@ -359,7 +424,32 @@ export function prescribeOne(finding, opts = {}) {
     if (rejected.has(built.targetId)) continue;
     out.push({ ...built, skipped: null });
   }
-  return out;
+
+  // 插件目录检索结果也参与排序：**能动手的排在纯建议前面**
+  // （用户明确希望"能省 token 的插件"被建议出来，而不是被一句行为建议盖住）
+  const seenIds = new Set(out.map((r) => r.targetId));
+  for (const rx of pluginRecommendations(finding, ctx)) {
+    if (rejected.has(rx.targetId)) continue;
+    if (seenIds.has(rx.targetId)) continue;
+    seenIds.add(rx.targetId);
+    out.push(rx);
+  }
+
+  const KIND_WEIGHT = {
+    [REMEDY_KIND.CONFIG]: 0,
+    [REMEDY_KIND.COMMAND]: 0,
+    [REMEDY_KIND.SETTINGS]: 0,
+    [REMEDY_KIND.PLUGIN]: 1,
+    [REMEDY_KIND.BEHAVIOR]: 2,
+  };
+  return out
+    .map((rx, i) => ({ rx, i }))
+    .sort((a, b) => {
+      const wa = KIND_WEIGHT[a.rx.kind] ?? 3;
+      const wb = KIND_WEIGHT[b.rx.kind] ?? 3;
+      return wa - wb || a.i - b.i;
+    })
+    .map((x) => x.rx);
 }
 
 /** 被 skipIf 否决的处方（报告里可用来解释"为什么没给这条"） */
@@ -386,7 +476,9 @@ export function skippedFor(finding, opts = {}) {
  */
 export function matchPrescriptions(problem, opts = {}) {
   const limit = opts.limit ?? 4;
-  const perFinding = opts.perFinding ?? 1;
+  // 每个问题默认给 2 个名额：第 1 个是确定对症的处方，第 2 个留给插件目录检索结果，
+  // 这样"能装的插件"不会被一句行为建议挤掉。
+  const perFinding = opts.perFinding ?? 2;
   const ctx = opts.ctx ?? {};
 
   const findings = Array.isArray(problem) ? problem : [{ id: String(problem), summary: '' }];
@@ -501,8 +593,7 @@ export function tokenInventory(opts = {}) {
           ctx,
           { type: 'plugin', packageName: remedy.source?.package },
         ),
-        packageName: remedy.source?.package ?? null,
-        repo: remedy.source?.repo ?? null,
+        packageName: remedy.source?.package ?? null,        repo: remedy.source?.repo ?? null,
         install: remedy.install ?? null,
         current: '未安装',
         suggested: '按需安装',
@@ -513,6 +604,50 @@ export function tokenInventory(opts = {}) {
       });
     }
   }
+
+  // 插件目录里与「省 token / 省成本」相关的条目也进清单（含未安装的），
+  // 这样即使用户这次没有命中 C1/C2/C3，也能看到"有哪些插件能省 token"。
+  const installedList = ctx.installedPlugins ?? [];
+  for (const entry of PLUGIN_CATALOG) {
+    const caps = entry.capabilities ?? [];
+    if (!caps.includes('token-saving') && !caps.includes('cost')) continue;
+    if (exclude.has('catalog-' + entry.id)) continue;
+    const installed = installedList.some(
+      (n) => n === entry.package || n === entry.package.replace(/^@[^/]+\//, ''),
+    );
+    const pseudo = {
+      id: 'catalog-' + entry.id,
+      kind: REMEDY_KIND.PLUGIN,
+      targets: [entry.targets?.[0] ?? 'C2'],
+      source: { package: entry.package, type: 'third-party' },
+      install: entry.install,
+    };
+    rows.push({
+      id: 'catalog-' + entry.id,
+      kind: REMEDY_KIND.PLUGIN,
+      kindLabel: KIND_LABEL[REMEDY_KIND.PLUGIN],
+      title: `${installed ? '已装' : '装'} ${entry.displayName}`,
+      solves: entry.summary,
+      steps: installed
+        ? [
+            '打开侧边栏 → 插件，确认它处于「已启用」状态',
+            entry.repo ? `用法与配置见仓库：${entry.repo}` : '用法见插件自身说明',
+            `验证：${entry.verify}`,
+          ]
+        : buildSteps(pseudo, { id: 'C2', summary: '' }, ctx, { type: 'plugin', packageName: entry.package }),
+      packageName: entry.package,
+      repo: entry.repo ?? null,
+      install: entry.install ?? null,
+      current: installed ? '已安装' : '未安装',
+      suggested: installed ? '确认已启用' : '按需安装',
+      status: 'optional',
+      note: null,
+      capabilityTags: caps,
+      source: `${entry.package} · 核实于 ${entry.source?.verifiedAt}`,
+      risk: entry.risk ?? null,
+    });
+  }
+
   return rows;
 }
 

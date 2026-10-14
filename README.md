@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-103%2F103-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-114%2F114-brightgreen)]()
 
 ---
 
@@ -31,6 +31,8 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 - 不只说"你有死循环"，而是说"10 月 8 日这个会话，`list_agents` 用同样的参数失败了 4 次，在 `session.v4.jsonl.zstd#L101-L108`"——一条命令你就能自己复核。
 - 不只给建议，而是给**可执行的动作**：能整段粘进 profile 的 YAML 片段、斜杠命令、已核实插件的安装入口，或明确说没有插件能解。
 - **读你的真实配置**再开口：处方会说"你现在 `maxInlineTokens=12500`（随附默认，profile 未覆盖）→ 建议 6000"，而不是"建议调低一点"。当前值已经不弱于建议时，这条处方会被直接撤掉。
+- **检索插件目录做针对性推荐**：按「能力标签 + 关键词」匹配你的问题，并说明**为什么推荐它**（例如"能力标签 token-saving 对上 C1；你的问题描述里出现了 token、消耗"）。已安装的不推安装，改推"确认已启用"。
+- **面板里一切皆可折叠**：问题卡点开能看到证据与**挂在它下面的处方**；处方卡点开才展开分步操作、片段、风险与出处。
 
 > **不做的事**：不主动推送、不代你安装、不改你的配置、不诊断代码质量、不把任何对话内容发到外部。
 

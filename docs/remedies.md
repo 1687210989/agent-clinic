@@ -152,10 +152,56 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 
 ---
 
+## 插件目录检索（针对性推荐）
+
+用户反馈：「还要能够检索插件目录进行针对性推荐，例如 billion-context 可以压缩
+上下文省 token，就可以建议出来」。
+
+旧做法是每条处方在 `remedies.mjs` 里硬绑 `targets` —— 插件只能出现在它被显式绑定的
+那个指标上。一旦某个指标没有绑定（例如 C1 的 output 侧），即使用户的问题描述里明摆着
+写着"token / 上下文"，也不会有任何插件被推荐出来。
+
+现在插件推荐改由 `src/catalog/index.mjs` 负责，分三层打分：
+
+1. **指标靶子**（`entry.targets`）：确定对症，权重 +5
+2. **能力标签**（`entry.capabilities` × `CAPABILITY_BY_METRIC`）：权重 +3
+3. **关键词**（`entry.keywords` 出现在问题文本里，最多计 3 个）：每个 +2
+
+得分 ≥3 才会推荐，最多 2 条/问题，并且**每条都必须给出 `matchedOn`（为什么命中）** ——
+不做黑盒推荐。命中原因会同时出现在报告与面板里，例如：
+
+```
+针对 C1
+- Billion Context（ACP 上下文压缩）（billion-context-dsh，未安装）
+  - 能力标签：context-compaction / long-session / token-saving
+  - 命中原因：能力标签「token-saving」对上 C1 需要的能力；你的问题描述里出现了「token」「消耗」
+```
+
+### 本地插件目录（只读扫描）
+
+`scanInstalledPlugins()` 读两处，都不写：
+
+- `$DSH_HOME/profiles/<profile>/package.json` 的 `dsh.profile.bundles` + `dependencies`
+- 同目录 `node_modules` 的顶层包名（跳过 `.pnpm` / `.bin` 等点开头目录）
+
+用途有两个：报告里显示「本地已装 N 个」，以及**已安装的插件不再推"安装"**，
+改推"确认已启用 / 核对配置"。
+
+### 纪律
+
+- 目录里只放**核实过的包**，每条都带 `source.verifiedAt`、`source.via` 与 `repo`；
+  新增条目必须先核实（这是 2026-10-14 "编插件"事故换来的规矩）
+- 检索不到就诚实说"没有对症插件"，不硬凑
+- **不联网**：目录内置在仓库里，扫描只读本地 —— 保持"零外发"
+
+---
+
 ## 处方上限
 
 - 默认 `limit = 4`（旧版是 2）
-- 每个 finding 至少 1 条（`perFinding = 1` 轮转）
+- 每个 finding 给 2 个名额（`perFinding = 2` 轮转）：第 1 个是确定对症的处方，
+  第 2 个留给插件目录检索结果 —— 避免"能装的插件"被一句行为建议挤掉
+- 能动手的排在纯建议前面（config/command/settings → plugin → behavior）
 - 同一 (处方, 指标) 组合不重复给
 
 旧版把上限压到 2 条，本意是"宁精勿滥"，但配合空靶池的结果是"看到问题却拿不到方案"。
@@ -166,7 +212,7 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 ## 自检
 
 ```bash
-./scripts/smoke.sh          # 103 项
+./scripts/smoke.sh          # 114 项
 ```
 
 处方层相关的关键断言：
@@ -178,6 +224,10 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 - 每个已实现指标都至少有一条对症处方
 - 配置处方含可整段粘贴的 YAML，且会说明"当前值 → 建议值"
 - 推理强度已是最低档时不给"再调低"的空建议
+- 插件目录条目都带核实出处与仓库地址
+- 检索能把"省 token"的插件召回给成本类问题，且每条命中都有可读原因
+- 不对症的插件不会被硬塞进指标处方（按能力检索，不按人情）
+- 已安装的插件不推"安装"，改推"确认启用"
 - 每条处方都有分步操作指引（展开即照着做）
 - 每条处方都有收起态摘要（一行说明白）
 - 配置处方的步骤带真实文件路径与"整段替换"提醒

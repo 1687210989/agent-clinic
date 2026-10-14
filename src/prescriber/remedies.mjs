@@ -140,56 +140,14 @@ export const REMEDIES = [
   }),
 
   // =========================================================================
-  // 第三方插件（已核实存在，给出可粘贴的安装入口）
+  // 第三方插件
+  //
+  // ⚠️ 2026-10-16：插件处方**已从这里迁走**，改由 `src/catalog/index.mjs`
+  // 的插件目录 + 能力检索提供（用户要求"能够检索插件目录进行针对性推荐"）。
+  // 硬绑 targets 只能覆盖被显式绑定的指标；目录检索还能靠能力标签与关键词
+  // 命中问题描述（例如 C1 的文本里出现"token 消耗"，也能召回省 token 的插件）。
+  // 插件目录同样要求每条都带核实出处，纪律不变。
   // =========================================================================
-  P({
-    id: 'plugin-smart-compaction',
-    kind: REMEDY_KIND.PLUGIN,
-    priority: 40,
-    targets: ['C3', 'C2'],
-    title: '装 smart-compaction（让模型自己择机压缩 + 看得见真实用量）',
-    solves:
-      '给模型 compact_now（在它自己判断的安全点压缩，回合中途也能用）与 context_status（对照真实上下文窗口报告 token 用量），并在 todo 勾完、上下文过半时自动压缩',
-    install: {
-      gui: '侧边栏 → 插件 → 添加插件 → 粘贴 smart-compaction',
-      cli: 'dsh plugin --profile <你的 profile> add smart-compaction --allow-build=smart-compaction',
-    },
-    source: {
-      type: 'third-party',
-      package: 'smart-compaction',
-      repo: 'https://github.com/JoblessJoe/smart-compaction',
-      doc: 'npm 包元数据 dsh.bundle.patch + README（v0.3.10）',
-      via: VERIFY_VIA.npm,
-      verifiedAt: '2026-10-15',
-    },
-    risk: '社区插件（MIT）；desktop profile 由应用独占，只能用界面安装，装完需完全重启 Harness；它不改动 DSH 核心，只挂在公开的 compaction API 上。',
-    verify: '装完重启，让会话调用 context_status，应报告类似 "~42,300 / 77,824 tokens used"',
-  }),
-
-  P({
-    id: 'plugin-billion-context',
-    kind: REMEDY_KIND.PLUGIN,
-    priority: 60, // 排在 smart-compaction 之后：更重、更激进
-    targets: ['C2', 'C3'],
-    title: '装 billion-context-dsh（ACP：模型驱动压缩，作者标注为测试版）',
-    solves:
-      '给模型 compress / decompress / search_context / acp_status 四个工具，由模型决定压缩什么，摘要由模型自己写（不额外调用一次摘要模型）',
-    install: {
-      gui: '侧边栏 → 插件 → 添加插件 → 粘贴 billion-context-dsh',
-      cli: 'dsh plugin --profile <你的 profile> add billion-context-dsh',
-    },
-    source: {
-      type: 'third-party',
-      package: 'billion-context-dsh',
-      repo: 'https://github.com/Tyan66666/billion-context-dsh',
-      doc: 'npm 包元数据（v0.2.27）+ README「安装」',
-      via: VERIFY_VIA.npm,
-      verifiedAt: '2026-10-15',
-    },
-    risk:
-      '作者在 README 顶部明确写「测试版，请勿用于工程化/生产环境」；它会禁用 host 的 compaction-basic 并接管压缩，对 DSH 版本有 peer 区间要求。想稳就别装它。',
-    verify: '装完重启，新会话调用 acp_status 自证挂载',
-  }),
 
   // =========================================================================
   // E5 冗余重复调用

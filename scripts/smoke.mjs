@@ -506,10 +506,64 @@ process.stdout.write('\n12) 处方层\n');
     !PRESCRIPTIONS.some((p) => ['caveman', 'superpowers', 'claude-mem', 'deja-vu'].includes(p.id)),
     PRESCRIPTIONS.map((p) => p.id).join(', '),
   );
+  const { PLUGIN_CATALOG, matchPlugins, scanInstalledPlugins, CAPABILITY_BY_METRIC } = await import(
+    '../src/catalog/index.mjs'
+  );
+  const { buildCatalogPrescription } = await import('../src/prescriber/index.mjs');
   check(
-    '不对症的插件只做记录、不进处方池',
-    VERIFIED_BUT_UNTARGETED.every((p) => !PRESCRIPTIONS.some((x) => x.id === p.id)),
-    VERIFIED_BUT_UNTARGETED.map((p) => p.id).join(', '),
+    '插件目录条目都带核实出处与仓库地址',
+    PLUGIN_CATALOG.every((p) => p.source?.verifiedAt && p.repo && p.source?.via),
+    `${PLUGIN_CATALOG.length} 条`,
+  );
+  check(
+    '不对症的插件不会被硬塞进指标处方（按能力检索，不按人情）',
+    matchPlugins(
+      { id: 'C1', title: 'token 消耗过快', summary: '本会话 output 是自身基线的 7 倍', category: 'C' },
+      { installed: [] },
+    ).every((h) => h.entry.id !== 'modsearch'),
+  );
+  check(
+    '检索能把"省 token"的插件召回给成本类问题（用户点名要的场景）',
+    matchPlugins(
+      { id: 'C1', title: 'token 消耗过快', summary: '本会话 output 是自身基线的 7 倍', category: 'C' },
+      { installed: [] },
+    ).some((h) => ['billion-context-dsh', 'smart-compaction'].includes(h.entry.id)),
+    'billion-context-dsh / smart-compaction',
+  );
+  check(
+    '每条命中都给出可读的命中原因（不做黑盒推荐）',
+    matchPlugins(
+      { id: 'C2', title: '上下文膨胀', summary: 'input 从首轮涨到末轮 14 倍', category: 'C' },
+      { installed: [] },
+    ).every((h) => Array.isArray(h.reasons) && h.reasons.length > 0),
+  );
+  check(
+    '已安装的插件不推"安装"，改推"确认启用"',
+    (() => {
+      const hit = matchPlugins(
+        { id: 'C2', title: '上下文膨胀', summary: 'input 膨胀', category: 'C' },
+        { installed: ['smart-compaction'] },
+      ).find((h) => h.entry.id === 'smart-compaction');
+      if (!hit) return false;
+      const rx = buildCatalogPrescription(
+        hit,
+        { id: 'C2', title: '上下文膨胀', summary: 'input 膨胀', evidence: [] },
+        { config: null },
+      );
+      return rx.installed === true && rx.steps.every((s) => !/打开侧边栏 → 插件 → 添加插件/.test(s));
+    })(),
+  );
+  check(
+    '能力表覆盖所有已实现指标（检索不会漏掉某个指标）',
+    REGISTRY.filter((m) => m.implemented).every(
+      (m) => (CAPABILITY_BY_METRIC[m.id]?.length ?? 0) > 0 || Boolean(CAPABILITY_BY_METRIC._category[m.category]),
+    ),
+  );
+  const localScan = scanInstalledPlugins();
+  check(
+    '只读扫描本地插件目录不抛异常',
+    Array.isArray(localScan.installed),
+    `发现 ${localScan.installed.length} 个包${localScan.error ? `（${localScan.error}）` : ''}`,
   );
 
   // 核心回归：每条处方必须有真靶子。
@@ -597,7 +651,7 @@ process.stdout.write('\n12) 处方层\n');
       cfgSteps.some((s) => /整段替换/.test(s)),
     cfgSteps[0] ? cfgSteps[0].slice(0, 56) : '(无)',
   );
-  const plugSteps = (allRx.find((r) => r.targetId === 'plugin-smart-compaction') || {}).steps || [];
+  const plugSteps = (allRx.find((r) => r.targetId === 'catalog-smart-compaction') || {}).steps || [];
   check(
     '插件处方的步骤写明界面入口与"完全重启"',
     plugSteps.some((s) => /插件 → 添加插件/.test(s)) && plugSteps.some((s) => /完全退出/.test(s)),

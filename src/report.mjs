@@ -20,6 +20,7 @@
 import { runDiagnostics } from './diagnostics/index.mjs';
 import { prescribe, prescribeOne, skippedFor, tokenInventory, KIND_LABEL } from './prescriber/index.mjs';
 import { readEffectiveConfig } from './config/index.mjs';
+import { searchCatalog } from './catalog/index.mjs';
 import { num, pct } from './summary.mjs';
 
 /**
@@ -42,7 +43,15 @@ export function analyze(ctx, opts = {}) {
     configError = e.message;
   }
 
-  const rxCtx = { ...ctx, config };
+  // 插件目录检索：读本地已装插件 + 用能力/关键词匹配每个问题
+  let catalog = null;
+  try {
+    catalog = searchCatalog(findings, { env: opts.env ?? process.env });
+  } catch (e) {
+    catalog = { matches: {}, installed: { installed: [], error: e.message }, catalogSize: 0, catalogVersion: null };
+  }
+
+  const rxCtx = { ...ctx, config, installedPlugins: catalog.installed.installed ?? [] };
   const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
 
   // 省 token 开关清单：已经作为处方给出的不再重复列
@@ -51,16 +60,13 @@ export function analyze(ctx, opts = {}) {
     excludeIds: prescriptions.map((r) => r.targetId),
   });
 
-  // 每个问题各自挂上它的处方（旧版只在末尾给全局列表，用户看不出"这条对应哪个问题"）
+  // 每个问题各自挂上它的处方与插件检索命中（旧版只在末尾给全局列表，
+  // 用户看不出"这条对应哪个问题"，也看不到"为什么推荐这个插件"）。
+  // 这里存**完整处方对象**，面板展开问题时可以直接渲染成卡片。
   const perFinding = findings.map((f) => ({
     id: f.id,
     scope: f.scope ?? null,
-    remedies: prescribeOne(f, { ctx: rxCtx, rejected: opts.rejected }).map((r) => ({
-      targetId: r.targetId,
-      kind: r.kind,
-      kindLabel: r.kindLabel,
-      title: r.title,
-    })),
+    full: prescribeOne(f, { ctx: rxCtx, rejected: opts.rejected }),
     skipped: skippedFor(f, { ctx: rxCtx }),
   }));
 
@@ -96,7 +102,7 @@ export function analyze(ctx, opts = {}) {
         locator: e.locator,
         note: e.note ?? null,
       })),
-      prescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.remedies ?? [],
+      prescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.full ?? [],
       // 被"当前值已足够"否决掉的处方，写出来是为了让用户看到"为什么没给这条"
       skippedPrescriptions: perFinding.find((p) => p.id === f.id && p.scope === (f.scope ?? null))?.skipped ?? [],
     })),
@@ -107,6 +113,32 @@ export function analyze(ctx, opts = {}) {
     prescriptions,
     // 省 token 开关清单（陈列本机真实存在的旋钮，不是诊断结论）
     levers,
+    // 插件目录检索：本地已装清单 + 每个问题命中到的插件（含"为什么命中"）
+    catalog: {
+      version: catalog.catalogVersion,
+      size: catalog.catalogSize,
+      installedCount: (catalog.installed.installed ?? []).length,
+      installed: catalog.installed.installed ?? [],
+      installedDir: catalog.installed.profileDir ?? null,
+      error: catalog.installed.error ?? null,
+      matches: Object.entries(catalog.matches ?? {}).map(([id, hits]) => ({
+        findingId: id,
+        hits: hits.map((h) => ({
+          id: h.entry.id,
+          package: h.entry.package,
+          displayName: h.entry.displayName,
+          summary: h.entry.summary,
+          capabilities: h.entry.capabilities,
+          repo: h.entry.repo,
+          install: h.entry.install,
+          risk: h.entry.risk,
+          verifiedAt: h.entry.source?.verifiedAt,
+          score: h.score,
+          installed: h.installed,
+          reasons: h.reasons,
+        })),
+      })),
+    },
     // 处方所依据的本机配置快照（只含我们真正会给处方的行）
     config: config
       ? {
@@ -249,6 +281,27 @@ export function buildReport(ctx, opts = {}) {
       if (lv.source) push(`  - 出处：${lv.source}`);
     }
     push();
+  }
+
+  if (data.catalog?.matches?.length) {
+    push(`### 插件目录检索（目录 ${data.catalog.size} 条 · 本地已装 ${data.catalog.installedCount} 个）`);
+    push();
+    push('> 按「能力标签 + 关键词」从已核实的插件目录里检索出来的相关插件 —— 每条都说明**为什么命中**。');
+    push();
+    for (const m of data.catalog.matches) {
+      push(`**针对 ${m.findingId}**`);
+      for (const h of m.hits) {
+        push(`- **${h.displayName}**（\`${h.package}\`，${h.installed ? '本地已安装' : '未安装'}）`);
+        push(`  - 能力：${(h.capabilities ?? []).join(' / ')}`);
+        push(`  - 作用：${h.summary}`);
+        for (const r of h.reasons) push(`  - 命中原因：${r}`);
+        if (!h.installed && h.install?.gui) push(`  - 安装：${h.install.gui}`);
+        if (h.install?.cli) push(`  - 命令行：\`${h.install.cli}\``);
+        if (h.risk) push(`  - 风险：${h.risk}`);
+        push(`  - 核实：${h.verifiedAt}${h.repo ? ` · ${h.repo}` : ''}`);
+      }
+      push();
+    }
   }
 
   if (data.notImplemented.length) {

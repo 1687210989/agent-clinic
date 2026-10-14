@@ -63,7 +63,9 @@ export const REMEDIES = [
     id: 'spill-tighten',
     kind: REMEDY_KIND.CONFIG,
     priority: 10,
-    targets: ['C2'],
+    // E3 与 C2 是同一根因的两面：C2 量"末轮 input 涨了多少"，E3 直接点出
+    // "哪些工具结果本身太大了"。两者都指向同一个开关，不该各写一遍。
+    targets: ['C2', 'E3'],
     title: '收紧工具结果的 spill 预算（最能省 input 的一档）',
     solves: '超过预算的工具结果落到磁盘，内联只留首尾与文件路径，直接砍掉最大块的 input',
     row: { id: 'spill-policy', name: '@deepseek-ai/dsh-spill-policy' },
@@ -78,13 +80,23 @@ export const REMEDIES = [
     },
     evidence: (f, ctx) => {
       const [tool, n] = topTool(ctx);
-      if (!tool) return null;
-      return `你的会话里调用最多的是 ${tool}（${n} 次）；这类"整页抓取/整目录列举"的结果是 spill 的主要对象。`;
+      const v = ctx?.config?.rows?.['spill-policy']?.config?.maxInlineTokens;
+      const budgetNote =
+        typeof v === 'number'
+          ? `当前预算 ${v} token。`
+          : '当前这一行**没有设 maxInlineTokens**（省略即禁用策略）—— 设上预算才会开始落盘，这条正是你现在最需要的。';
+      if (!tool) return budgetNote;
+      return `${budgetNote}你的会话里调用最多的是 ${tool}（${n} 次）；这类"整页抓取/整目录列举"的结果是 spill 的主要对象。`;
     },
+    /**
+     * ⚠️ 第二轮评估 F16：这里原来在"没设预算"时返回原因字符串 → 处方被静默撤掉，
+     *    而"没设预算"恰恰是这条建议最该出现的场景（同族的 pruner-tighten 当时
+     *    就是给建议的，两条规则自相矛盾）。
+     *    现在：只有**确实已经比建议值更紧**才撤；没设/非数字一律照给。
+     */
     skipIf: (snap) => {
       const v = snap?.rows?.['spill-policy']?.config?.maxInlineTokens;
-      if (typeof v !== 'number') return 'spill 策略当前未设预算（或已被禁用），建议先确认这一行是否被覆盖删除';
-      if (v <= 6000) return `已经是 ${v}，比建议值还紧，无需再调`;
+      if (typeof v === 'number' && v <= 6000) return `已经是 ${v}，比建议值还紧，无需再调`;
       return null;
     },
     risk: '被省略的中间内容模型看不到，需要时它得自己 read/grep 那个 spill 文件；预算过小会让"通知放不下"从而放弃替换。',
@@ -95,7 +107,7 @@ export const REMEDIES = [
     id: 'pruner-tighten',
     kind: REMEDY_KIND.CONFIG,
     priority: 20,
-    targets: ['C2'],
+    targets: ['C2', 'E3'],
     title: '收紧历史工具结果的剪枝阈值',
     solves: '压缩触发时把超大工具结果剪成"头 + 尾"，中段不再重复占用后续每一轮的 input',
     row: { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner' },
@@ -357,6 +369,42 @@ export const REMEDIES = [
   }),
 
   P({
+    id: 'behavior-approval-preset',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 88,
+    // 第二轮评估 F1：N3 原本被列为"不可实现"，现在能给出可执行动作了
+    targets: ['N3'],
+    title: '把常用低风险工具放进权限预设',
+    solves: '每次审批都要你亲手点一下，等待时间纯属额外开销',
+    build: (f) => ({
+      detail:
+        '按证据里的工具分布，把高频且低风险的那几个加进权限预设（或放宽对应策略），' +
+        '保留真正危险的命令（rm -rf / --force 之类）为人工确认。' +
+        `实测：${f.summary}`,
+      because: '审批等待时长与工具分布都是从会话日志里实测出来的，不是推测。',
+    }),
+  }),
+
+  P({
+    id: 'behavior-retry-route',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 88,
+    targets: ['N4'],
+    title: '重试集中在同一失败码时先查路由',
+    solves: '反复重试同一类失败是白花的等待与 token，先定位再重试',
+    build: (f) => ({
+      detail:
+        '按失败码分组看：如果集中在 TRANSPORT/TIMEOUT，多半是本机网络或代理稳定性；' +
+        '如果是 SERVER/RATE_LIMIT，考虑换时段或换路由。' +
+        '同时确认适配器行的 retryPolicy 是 normal 模式（有界重试），别用 always 无限重试。' +
+        `实测：${f.summary}`,
+      because: '失败码、重试次数与累计退避都能在证据里逐条复核。',
+    }),
+  }),
+
+  P({
     id: 'behavior-drop-idle-skill',
     kind: REMEDY_KIND.BEHAVIOR,
     source: BEHAVIOR_SOURCE,
@@ -453,6 +501,14 @@ const BEHAVIOR_META = {
     risk: '增加确认会拖慢高频安全操作；只对真正高危的模式加。',
     verify: '重跑 ./run.sh report，N2 应显示新的高危调用已被逐条确认（无新增未确认记录）。',
   },
+  'behavior-approval-preset': {
+    risk: '放宽权限意味着这些工具以后不再问你 —— 只把低频危险之外的常用工具放进去，别整个放开。',
+    verify: '重跑 ./run.sh report，看 N3 的审批次数与等待中位数是否下降。',
+  },
+  'behavior-retry-route': {
+    risk: '换路由/改重试策略可能掩盖真实故障；先确认失败码分布再动。',
+    verify: '重跑 ./run.sh report，看 N4 的重试次数是否下降。',
+  },
   'behavior-drop-idle-skill': {
     risk: '删除 skill 不可撤销；先把目录备份或从 bundles 里移除而不是直接删。',
     verify: '重跑 ./run.sh report，A2 不再列出该 skill。',
@@ -515,6 +571,18 @@ const EXPLICIT_STEPS = {
     '用 ./run.sh show "<定位符>" 打开那几次失败的原始记录，看错误文本是什么',
     '按错误类型处理：权限不足 → 授权或换目录；命令不存在 → 换等价命令；网络 → 检查代理',
     '确认走不通时直接告诉 Agent：「这条路已验证不通，换方案，不要再重试同样的命令」',
+  ],
+  'behavior-approval-preset': [
+    '打开 ./run.sh report，看 N3 给出的"审批集中在哪些工具"（证据定位可逐条复核）',
+    '侧边栏 → 插件 → 找到权限/审批设置（Host 的 permission/preset 一类入口）',
+    '把这几个高频低风险工具加进允许列表，其余保持人工确认',
+    '改完重启 Harness 生效，下次跑 report 看 N3 的等待中位数是否下降',
+  ],
+  'behavior-retry-route': [
+    '打开 ./run.sh report，看 N4 给出的失败码分布与累计退避时间',
+    '集中在 TIMEOUT / TRANSPORT → 先查本机网络与代理；集中在 RATE_LIMIT / SERVER → 换时段或换路由',
+    '确认适配器行的 retryPolicy 是 normal（有界）而不是 always（无上限重试）',
+    '改完重启，下次跑 report 看 N4 的重试次数是否下降',
   ],
   'behavior-error-rate': [
     '用 ./run.sh show "<定位符>" 抽样 3~5 条失败记录',

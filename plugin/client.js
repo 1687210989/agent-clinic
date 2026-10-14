@@ -1104,6 +1104,10 @@ window.__ModuleLoader__.load({
         //    冒烟里有断言守住这一点。
         const d = live && live.data ? live.data : state.data;
         const hd = d.header;
+        // F16：汇总各分组里被否决的处方，稍后与"尚未实现"一起渲染
+        const skippedList = (d.groups || []).flatMap((g) =>
+          (g.skippedPrescriptions || []).map((s) => ({ ...s, findingId: g.id })),
+        );
         const configPath = (d.config && d.config.patchPath) || null;
         const stale = state.version !== CLIENT_VERSION;
         body = h(
@@ -1232,12 +1236,35 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { style: { marginTop: '16px' } },
-                h('h3', { style: S.sectionTitle }, '不可实现的维度（DSH 数据源缺失）'),
+                // 第二轮评估 F1：原来写「DSH 数据源缺失」—— 实测 E3/N3/N4 的数据都在日志里
+                // （已实现并移出本列表），剩下的 K1/K2 是隐私取舍下的方案未定，不是平台做不到。
+                h('h3', { style: S.sectionTitle }, '尚未实现的维度（原因见下，都不是"平台做不到"）'),
                 h(
                   'div',
                   { style: { fontSize: '11px', color: V.text3, lineHeight: '1.8' } },
                   d.unimplementable.map((d) =>
                     h('div', { key: d.id }, `${d.id} ${d.title} —— ${d.reason}`)),
+                ),
+              )
+            : null,
+
+          // F16：把"被否决的处方"也显示出来 —— 面板此前只显示给出来的处方，
+          // 用户无法区分"被规则挡掉"与"根本没有这条建议"。
+          skippedList.length
+            ? h(
+                'div',
+                { style: { marginTop: '16px' } },
+                h('h3', { style: S.sectionTitle }, `已评估但未给出的处方（${skippedList.length}）`),
+                h(
+                  'div',
+                  { style: { fontSize: '11px', color: V.text3, lineHeight: '1.8' } },
+                  skippedList.map((s, i) =>
+                    h(
+                      'div',
+                      { key: `${s.findingId}-${s.id}-${i}` },
+                      `${s.findingId} · ${s.title}${s.current ? `（当前：${s.current}）` : ''} —— 未给出原因：${s.reason}`,
+                    ),
+                  ),
                 ),
               )
             : null,

@@ -14,6 +14,9 @@ export const KIND = {
   USAGE: 'usage',
   APPROVAL: 'approval',
   TODO_WRITE: 'todo_write',
+  // 第二轮评估 F1：这三类数据一直在原始日志里，只是适配层没抽 —— 补上后
+  // E3（工具结果过大）/ N3（审批摩擦）/ N4（API 重试）不再"不可实现"。
+  RETRY: 'retry',
   META: 'meta',
 };
 

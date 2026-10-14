@@ -245,37 +245,72 @@ export const PLUGIN_CATALOG = [
 const CURATED = PLUGIN_CATALOG.map((e) => ({ ...e, origin: 'curated' }));
 
 /**
- * 读取同步快照（npm + GitHub；不存在或损坏都返回 null，绝不抛）。
- * @returns {{entries:Array, fetchedAt:string, source:string, file:string}|null}
+ * 读取同步快照（npm + GitHub）。
+ *
+ * 第二轮评估 F4：旧实现 `catch { return null; }` 把「没同步过」「文件损坏」
+ * 「没权限读」混成同一个 null，CLI 一律打印"快照不存在" —— 损坏与缺失不可区分。
+ * 现在返回 `{ snapshot, error }`：**只有 ENOENT 才算"没同步过"**，其余如实报错。
+ *
+ * @returns {{snapshot:object|null, error:{code:string|null, message:string}|null}}
  */
-export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
+export function readRegistrySnapshot(file = SNAPSHOT_PATH) {
+  let text;
   try {
-    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if (e?.code === 'ENOENT') return { snapshot: null, error: null }; // 没同步过：正常
+    return {
+      snapshot: null,
+      error: {
+        code: e?.code ?? null,
+        message:
+          e?.code === 'EACCES' || e?.code === 'EPERM'
+            ? `读快照没有权限（${e.code}）：${file}`
+            : `读快照失败：${e?.message ?? String(e)}（${file}）`,
+      },
+    };
+  }
+  try {
+    const doc = JSON.parse(text);
     const entries = Array.isArray(doc.entries) ? doc.entries : [];
     return {
-      entries: entries.map((e) =>
-        applyTranslation({
-          ...e,
-          origin: e.origin ?? 'npm-registry',
-          // 同步进来的条目没有人工读过的 targets，只靠能力与关键词命中
-          targets: e.targets ?? [],
-          risk:
-            e.risk ??
-            (e.origin === 'github'
-              ? `来自 GitHub（未发 npm；本工具只核实了仓库存在与 package.json 元数据，未审阅源码）。` +
-                `安装需按仓库 README 自行操作：${e.repo ?? ''}`
-              : `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
-                `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`),
-          verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
-        }),
-      ),
-      fetchedAt: doc.fetchedAt ?? null,
-      source: typeof doc.source === 'string' ? doc.source : JSON.stringify(doc.source ?? ''),
-      file,
+      snapshot: {
+        entries: entries.map((e) =>
+          applyTranslation({
+            ...e,
+            origin: e.origin ?? 'npm-registry',
+            // 同步进来的条目没有人工读过的 targets，只靠能力与关键词命中
+            targets: e.targets ?? [],
+            risk:
+              e.risk ??
+              (e.origin === 'github'
+                ? `来自 GitHub（未发 npm；本工具只核实了仓库存在与 package.json 元数据，未审阅源码）。` +
+                  `安装需按仓库 README 自行操作：${e.repo ?? ''}`
+                : `社区插件（来自 npm 同步，${e.hasDshBundlePatch ? '含 dsh.bundle.patch' : '未见 dsh.bundle.patch'}）。` +
+                  `未逐行审阅源码 —— 安装前请自行看仓库：${e.repo ?? '(未提供)'}`),
+            verify: e.verify ?? `装完重启，确认「${e.displayName}」在插件页处于已启用状态`,
+          }),
+        ),
+        fetchedAt: doc.fetchedAt ?? null,
+        source: typeof doc.source === 'string' ? doc.source : JSON.stringify(doc.source ?? ''),
+        file,
+      },
+      error: null,
     };
-  } catch {
-    return null;
+  } catch (e) {
+    return {
+      snapshot: null,
+      error: { code: 'EBADJSON', message: `快照文件存在但不是合法 JSON（已损坏，请重跑 catalog-sync）：${file}` },
+    };
   }
+}
+
+/**
+ * 兼容入口：只要快照，读不到就 null（调用方不需要区分原因时用）。
+ * 需要区分"没同步过"与"损坏/无权限"时请用 readRegistrySnapshot()。
+ */
+export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
+  return readRegistrySnapshot(file).snapshot;
 }
 
 /**
@@ -284,7 +319,11 @@ export function loadRegistrySnapshot(file = SNAPSHOT_PATH) {
  * @returns {{entries:Array, sources:Object}}
  */
 export function activeCatalog(opts = {}) {
-  const snap = opts.snapshot === null ? null : loadRegistrySnapshot(opts.snapshotPath ?? SNAPSHOT_PATH);
+  const read =
+    opts.snapshot === null
+      ? { snapshot: null, error: null }
+      : readRegistrySnapshot(opts.snapshotPath ?? SNAPSHOT_PATH);
+  const snap = read.snapshot;
   const curatedNames = new Set(CURATED.map((e) => e.package));
   const synced = (snap?.entries ?? []).filter((e) => !curatedNames.has(e.package));
   return {
@@ -296,6 +335,8 @@ export function activeCatalog(opts = {}) {
       snapshotAt: snap?.fetchedAt ?? null,
       snapshotSource: snap?.source ?? null,
       snapshotPath: snap?.file ?? (opts.snapshotPath ?? SNAPSHOT_PATH),
+      // F4：快照"没同步过"与"损坏/读不了"必须区分 —— 下游据此决定提示措辞
+      snapshotError: read.error,
     },
   };
 }

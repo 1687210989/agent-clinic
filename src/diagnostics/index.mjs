@@ -124,39 +124,67 @@ function median(arr) {
 }
 
 /**
- * C1 token 消耗过快
- * 单会话 output_tokens vs 自身其他会话的中位数，超 50%
+ * C1 token 消耗过快 —— **第二轮评估 F12 重写**
+ *
+ * 旧判据（"单会话 output 总量 > 全会话总量中位数 × 1.5"）有三处硬伤，
+ * 实测 13 个会话命中 6 个，测出来的是"这个会话干了多少活"而不是"浪费"：
+ *   1. 基线混入空会话：两个 0 值会话把中位数从 15,760 拉到 10,329；
+ *   2. 主会话与子代理会话混在一个中位数里 —— 子代理串行干活天然高于中位数；
+ *   3. 不做归一化：output 总量只反映会话长短，长会话必然上榜。
+ * 而且报告里写"自身基线"，那个数字其实与"自身"无关。
+ *
+ * 新判据：
+ *   - 基线只取**主会话**（非子代理、有 assistant 用量、output > 0）的单位请求 output 中位数
+ *   - 归一化：比较 output / 请求数，而不是会话总量
+ *   - 绝对量下限：会话 output 总量低于阈值不报（小会话凭比例上榜没有意义）
+ *   - 措辞如实说明"产出量大不必然是浪费"，并指向 E1/E5/C2 去看重复劳动
  */
 function detectC1(ctx, opts) {
-  const ratio = opts.c1BaselineRatio ?? 1.5;
-  const minSessions = 3; // 样本太少无法定义"基线"
-  const sessions = ctx.scan.sessions;
-  if (sessions.length < minSessions) return [];
+  const ratio = opts.c1BaselineRatio ?? 2;
+  const minSessions = opts.c1MinSessions ?? 3;
+  const minOutput = opts.c1MinOutputTokens ?? 20000;
+  if (ctx.scan.sessions.length < minSessions) return [];
 
-  const totals = sessions.map((s) =>
-    s.events
-      .filter((e) => e.kind === KIND.ASSISTANT_MSG)
-      .reduce((n, e) => n + (e.output_tokens ?? 0), 0),
-  );
-  const base = median(totals);
+  const stats = [];
+  for (const s of ctx.scan.sessions) {
+    const msgs = s.events.filter((e) => e.kind === KIND.ASSISTANT_MSG);
+    if (!msgs.length) continue;
+    const output = msgs.reduce((n, e) => n + (e.output_tokens ?? 0), 0);
+    stats.push({
+      session: s,
+      msgs,
+      output,
+      requests: msgs.length,
+      perRequest: output / msgs.length,
+      subagent: Boolean(s.isSubagent),
+    });
+  }
+
+  // 基线：主会话、有实际产出
+  const baselinePool = stats.filter((x) => !x.subagent && x.output > 0).map((x) => x.perRequest);
+  const base = median(baselinePool);
   if (!base || base <= 0) return [];
 
   const findings = [];
-  for (const [i, s] of sessions.entries()) {
-    const v = totals[i];
-    if (v <= base * ratio) continue;
-    const ev = s.events.find((e) => e.kind === KIND.ASSISTANT_MSG);
-    if (!ev) continue;
+  for (const x of stats) {
+    if (x.subagent) continue; // 子代理天然高于基线，单列（A4）而不是在这里报
+    if (x.output < minOutput) continue; // 绝对量下限
+    if (x.perRequest <= base * ratio) continue;
+    const worst = x.msgs.reduce((a, b) => ((b.output_tokens ?? 0) > (a.output_tokens ?? 0) ? b : a), x.msgs[0]);
     findings.push({
       id: 'C1',
       title: 'token 消耗过快',
       category: 'C',
       severity: SEVERITY.HIGH,
-      scope: s.sessionId,
-      summary: `本会话 output ${num(v)}，是自身基线 ${num(base)} 的 ${(v / base).toFixed(1)} 倍（阈值 ${ratio} 倍）`,
-      evidence: [{ locator: ev.locator, note: '首个 assistant 消息' }],
-      impact: `约多消耗 ${num(v - base)} output token`,
-      confidence: 0.7,
+      scope: x.session.sessionId,
+      summary:
+        `本会话单位请求 output ${num(x.perRequest)}（共 ${num(x.output)} / ${x.requests} 次请求），` +
+        `是主会话基线 ${num(base)} 的 ${(x.perRequest / base).toFixed(1)} 倍（阈值 ${ratio} 倍）`,
+      evidence: [{ locator: worst.locator, note: `单次 output 最高的一条（${num(worst.output_tokens ?? 0)} token）` }],
+      impact:
+        `相对基线约多消耗 ${num(Math.round((x.perRequest - base) * x.requests))} output token；` +
+        `注意：产出量大不必然是浪费，请结合 E1（死循环）/E5（冗余调用）/C2（上下文膨胀）判断`,
+      confidence: 0.6,
     });
   }
   return findings;
@@ -436,53 +464,299 @@ function detectN2(ctx) {
   return findings;
 }
 
+/** 事件时间戳 → 毫秒（拿不到返回 null） */
+function tsOf(ev) {
+  const t = ev?.ts ? Date.parse(ev.ts) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * N3 权限审批摩擦 —— **第二轮评估 F1：从"不可实现"变成可实现**
+ *
+ * 旧版本的定性理由是"DSH 只有 approval/policy，没有 approval/asked / approval/decided"。
+ * 实测这句话是错的：本机 23 次 asked + 23 次 decided 都在日志里，且 decided 通过
+ * `id` 与 asked 关联。适配层已补上这两类事件（只记 id / 工具名 / 结论，
+ * **不记 reason 正文**）。
+ *
+ * 现在能回答：审批多不多、卡在哪些工具上、等人批了多久、有没有被拒。
+ */
+function detectN3(ctx, opts) {
+  const minAsks = opts.n3MinAsks ?? 5;
+  const slowMs = opts.n3SlowDecisionMs ?? 60000;
+
+  const asked = new Map(); // id → { ev, tool }
+  const decided = new Map();
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) {
+      if (e.kind !== KIND.APPROVAL) continue;
+      if (e.approval_phase === 'asked' && e.approval_id) asked.set(e.approval_id, { ev: e, tool: e.tool_name });
+      if (e.approval_phase === 'decided' && e.approval_id) decided.set(e.approval_id, e);
+    }
+  }
+  if (asked.size < minAsks) {
+    return {
+      findings: [],
+      note: `窗口内审批请求 ${asked.size} 次（需 ${minAsks} 次）—— 低于阈值，不判定为摩擦`,
+    };
+  }
+
+  const byTool = new Map();
+  let denied = 0;
+  let unknown = 0;
+  const waits = [];
+  let slowest = null;
+  for (const [id, a] of asked) {
+    byTool.set(a.tool, (byTool.get(a.tool) ?? 0) + 1);
+    const d = decided.get(id);
+    if (!d) {
+      unknown += 1;
+      continue;
+    }
+    const outcome = String(d.outcome ?? '');
+    if (!/^allow/i.test(outcome)) denied += 1;
+    const gap = tsOf(d) !== null && tsOf(a.ev) !== null ? tsOf(d) - tsOf(a.ev) : null;
+    if (gap !== null && gap >= 0) {
+      waits.push(gap);
+      if (!slowest || gap > slowest.gap) slowest = { gap, ev: a.ev, tool: a.tool };
+    }
+  }
+  const topTools = [...byTool.entries()].sort((x, y) => y[1] - x[1]).slice(0, 3);
+  const medWait = median(waits);
+  const parts = [`审批请求 ${asked.size} 次`];
+  if (topTools.length) parts.push(`集中在 ${topTools.map(([t, n]) => `${t}(${n})`).join('、')}`);
+  if (medWait !== null) parts.push(`等待审批中位 ${(medWait / 1000).toFixed(1)} 秒`);
+  if (denied) parts.push(`被拒 ${denied} 次`);
+  if (unknown) parts.push(`无对应决定记录 ${unknown} 次`);
+
+  const first = [...asked.values()][0].ev;
+  const evidence = [{ locator: first.locator, note: `首次审批请求（${String(first.tool_name)}）` }];
+  if (slowest) {
+    evidence.push({
+      locator: slowest.ev.locator,
+      note: `等待最久的一次：${(slowest.gap / 1000).toFixed(1)} 秒（${String(slowest.tool)}）`,
+    });
+  }
+
+  return [
+    {
+      id: 'N3',
+      title: '权限审批摩擦',
+      category: 'N',
+      severity: medWait !== null && medWait > slowMs ? SEVERITY.MID : SEVERITY.LOW,
+      scope: (ctx.scan.sessions.find((s) => s.events.includes(first)) ?? {}).sessionId ?? null,
+      summary: parts.join('，'),
+      evidence,
+      impact: '反复审批会打断你的节奏；把常用且低风险的工具固化到权限预设可省掉这些往返',
+      confidence: 0.8,
+    },
+  ];
+}
+
+/**
+ * N4 API 重试频繁 —— **第二轮评估 F1：从"不可实现"变成可实现**
+ *
+ * 旧理由"DSH 会话日志中不存在 llm/retry 事件"实测是错的：
+ * `llm/retry` 携带失败码、重试序号、退避时长。适配层已补上。
+ */
+function detectN4(ctx, opts) {
+  const minRetries = opts.n4MinRetries ?? 3;
+
+  const retries = [];
+  for (const s of ctx.scan.sessions) {
+    for (const e of s.events) {
+      if (e.kind === KIND.RETRY) retries.push({ ev: e, session: s });
+    }
+  }
+  if (retries.length < minRetries) {
+    return {
+      findings: [],
+      note: `窗口内模型请求重试 ${retries.length} 次（需 ${minRetries} 次）—— 低于阈值，不判定为频繁`,
+    };
+  }
+
+  const codes = new Map();
+  let delaySum = 0;
+  for (const r of retries) {
+    codes.set(r.ev.failure_code ?? '(未标注)', (codes.get(r.ev.failure_code ?? '(未标注)') ?? 0) + 1);
+    delaySum += r.ev.delay_ms ?? 0;
+  }
+  const codeText = [...codes.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c}×${n}`).join('、');
+
+  return [
+    {
+      id: 'N4',
+      title: 'API 重试频繁',
+      category: 'N',
+      severity: retries.length >= minRetries * 2 ? SEVERITY.MID : SEVERITY.LOW,
+      scope: retries[0].session.sessionId,
+      summary: `发生 ${retries.length} 次模型请求重试，失败码：${codeText}，累计退避 ${(delaySum / 1000).toFixed(1)} 秒`,
+      evidence: retries.slice(0, 5).map((r) => ({
+        locator: r.ev.locator,
+        note: `${r.ev.provider ?? '?'} ${r.ev.failure_code ?? ''} 第 ${r.ev.retry_index ?? '?'}/${r.ev.max_retries ?? '?'} 次重试`,
+      })),
+      impact: '每次重试都是一次新的提供方请求，可能重复计费并增加等待',
+      confidence: 0.8,
+    },
+  ];
+}
+
+/**
+ * E3 工具结果过大 —— **第二轮评估 F1：从"不可实现"变成可实现**
+ *
+ * 旧理由"tool/result 只归一化 is_error，不含 content 原文与长度"是**适配层的自我描述错误**：
+ * 原始记录里 `data.message.content[].text` 就在手边（适配器算完长度把正文丢了）。
+ * 现在适配层记录 `text_len`（**只有长度，没有正文**），本指标据此判定。
+ */
+function detectE3(ctx, opts) {
+  const bigChars = opts.e3ResultChars ?? 8192;
+  const minCount = opts.e3MinCount ?? 5;
+  const maxFindings = opts.e3MaxFindings ?? 3; // 只列最严重的几个会话，避免刷屏
+  const candidates = [];
+  let sawSome = 0;
+  let totalBig = 0;
+
+  for (const s of ctx.scan.sessions) {
+    // tool/result 只有 callId，需要用 tool/call 把工具名接回来
+    const nameByCall = new Map();
+    for (const e of s.events) {
+      if (e.kind === KIND.TOOL_CALL && e.tool_call_id) nameByCall.set(e.tool_call_id, e.tool_name);
+    }
+    const results = s.events.filter((e) => e.kind === KIND.TOOL_RESULT);
+    if (!results.length) continue;
+
+    const big = results.filter((e) => (e.text_len ?? 0) > bigChars);
+    if (big.length) sawSome += big.length;
+    if (big.length < minCount) continue;
+
+    const chars = big.reduce((n, e) => n + (e.text_len ?? 0), 0);
+    totalBig += chars;
+    const byTool = new Map();
+    for (const e of big) {
+      const t = nameByCall.get(e.tool_call_id) ?? '(未知工具)';
+      const cur = byTool.get(t) ?? { n: 0, chars: 0 };
+      cur.n += 1;
+      cur.chars += e.text_len ?? 0;
+      byTool.set(t, cur);
+    }
+    const topTools = [...byTool.entries()].sort((a, b) => b[1].chars - a[1].chars).slice(0, 3);
+    const largest = big.reduce((a, b) => ((b.text_len ?? 0) > (a.text_len ?? 0) ? b : a), big[0]);
+
+    candidates.push({
+      chars,
+      finding: {
+        id: 'E3',
+        title: '工具结果过大',
+        category: 'E',
+        severity: big.length >= 10 ? SEVERITY.MID : SEVERITY.LOW,
+        scope: s.sessionId,
+        summary:
+          `工具结果 ${results.length} 条中有 ${big.length} 条超过 ${num(bigChars)} 字符` +
+          `（累计 ${num(chars)} 字符，最大一条 ${num(largest.text_len ?? 0)} 字符）` +
+          (topTools.length ? `，主要来自 ${topTools.map(([t, v]) => `${t}(${v.n} 条)`).join('、')}` : ''),
+        evidence: [{ locator: largest.locator, note: `最大一条工具结果（${num(largest.text_len ?? 0)} 字符）` }],
+        impact:
+          '超大工具结果会随历史反复重发并挤占上下文；用 compaction/prune 或落盘（spill）可省下这部分重复输入',
+        confidence: 0.8,
+      },
+    });
+  }
+
+  // 只留最严重的几个会话：E3 的处方是**一个全局配置**，列 6 个会话只是刷屏
+  const findings = candidates
+    .sort((a, b) => b.chars - a.chars)
+    .slice(0, maxFindings)
+    .map((c) => c.finding);
+
+  if (!findings.length) {
+    return {
+      findings,
+      note:
+        sawSome > 0
+          ? `窗口内有 ${sawSome} 条超大工具结果，但没有任何会话达到 ${minCount} 条阈值（已按会话过滤噪音）`
+          : `窗口内没有超过 ${num(bigChars)} 字符的工具结果`,
+    };
+  }
+  if (candidates.length > findings.length) {
+    findings[0] = {
+      ...findings[0],
+      impact:
+        `${findings[0].impact}（同类会话共 ${candidates.length} 个、累计 ${num(totalBig)} 字符，` +
+        `此处只列最大的 ${findings.length} 个）`,
+    };
+  }
+  return findings;
+}
+
 // ---------------------------------------------------------------------------
 // A 类：资产
 // ---------------------------------------------------------------------------
 
 /**
- * A3 高频手动序列
- * 同工具**相邻**序列模式复现 >=5 次
+ * A3 高频手动序列 —— **第二轮评估 F14 收窄**
  *
- * ⚠️ 必须是两个**不同**工具的相邻转换。
- * 实测踩过的坑：早期版本允许 `web_fetch→web_fetch`，结果把"连续抓取
- * 44 个 URL"当成高频手动序列报了 4 条 —— 那只是单一工具的重复使用，
- * 不是"序列",也没有可自动化的固定套路。
+ * 旧版本是"相邻工具对直方图"：相邻两个不同工具重复 ≥5 次就报"可考虑固化为技能"。
+ * 实测本机 18 条，其中一半是同一个对的镜像（grep→read 10 与 read→grep 9、
+ * pwsh→read 与 read→pwsh），而"读文件后编辑、编辑后跑命令"本来就是正规工作流。
+ *
+ * 三处收窄：
+ *   1. 去镜像：a→b 与 b→a 合成一次计数；
+ *   2. 排除含通用工具的对：任一端是通用工具（读 / 写 / 编辑 / grep / 命令 / 委派）
+ *      就不算"可固化套路"—— 任何任务都要走这些路，留下的是两端都很专门的序列；
+ *   3. 跨会话合并：同一个对只报一条，并给出会话数。
+ *
+ * ⚠️ 另有一条老约束：必须是两个**不同**工具的相邻转换。
+ *    早期版本允许 `web_fetch→web_fetch`，把"连续抓取 44 个 URL"报成 4 条 —— 那是
+ *    单一工具的重复使用（已由 E5 覆盖），不是"序列"。
  */
+const GENERIC_TOOLS = new Set([
+  'read', 'write', 'edit', 'grep', 'glob', 'pwsh', 'bash', 'sh', 'shell',
+  'todo_write', 'ask_user_question', 'compress', 'subagent', 'subagent_fork',
+  'list_agents', 'send_message', 'job_output', 'job_list', 'job_kill',
+]);
+
 function detectA3(ctx, opts) {
   const minRepeat = opts.a3MinRepeat ?? 5;
-  const findings = [];
 
+  const pairs = new Map();
   for (const s of ctx.scan.sessions) {
     const calls = s.events.filter((e) => e.kind === KIND.TOOL_CALL);
     const names = calls.map((e) => e.tool_name);
     if (names.length < minRepeat * 2) continue;
 
-    const counts = new Map();
-    const firstAt = new Map();
     for (let i = 0; i + 1 < names.length; i++) {
       const a = names[i];
       const b = names[i + 1];
-      if (a === b) continue; // 同一工具的连续使用不算"序列"
-      const key = `${a}→${b}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-      if (!firstAt.has(key)) firstAt.set(key, calls[i].locator);
+      if (!a || !b || a === b) continue; // 同一工具的连续使用不算"序列"
+      // 任一端是通用工具就不算"可固化套路"：任何任务都要读文件、跑命令，
+      // 「跑命令→搜网页」这种组合是任务形状，不是可复用的固定套路。
+      if (GENERIC_TOOLS.has(a) || GENERIC_TOOLS.has(b)) continue;
+      const key = [a, b].sort().join('\u0000');
+      let rec = pairs.get(key);
+      if (!rec) {
+        rec = { from: a, to: b, count: 0, first: calls[i].locator, sessions: new Set() };
+        pairs.set(key, rec);
+      }
+      rec.count += 1;
+      rec.sessions.add(s.sessionId);
     }
+  }
 
-    for (const [key, n] of counts) {
-      if (n < minRepeat) continue;
-      findings.push({
-        id: 'A3',
-        title: '高频手动序列',
-        category: 'A',
-        severity: SEVERITY.MID,
-        scope: s.sessionId,
-        summary: `工具序列「${key}」重复 ${n} 次，可考虑固化为技能`,
-        evidence: [{ locator: firstAt.get(key), note: `该序列首次出现` }],
-        impact: `${n - 1} 次重复的序列操作，可自动化`,
-        confidence: 0.7,
-      });
-    }
+  const findings = [];
+  for (const rec of pairs.values()) {
+    if (rec.count < minRepeat) continue;
+    findings.push({
+      id: 'A3',
+      title: '高频手动序列',
+      category: 'A',
+      severity: SEVERITY.LOW,
+      scope: [...rec.sessions].join(','),
+      summary:
+        `工具序列「${rec.from}↔${rec.to}」出现 ${rec.count} 次（跨 ${rec.sessions.size} 个会话），` +
+        `两端都不是通用读写/命令工具，可考虑固化`,
+      evidence: [{ locator: rec.first, note: '该序列首次出现' }],
+      impact: `约 ${rec.count} 次固定的两步操作，可合并为一次调用或固化为技能`,
+      confidence: 0.6,
+    });
   }
   return findings;
 }
@@ -563,25 +837,36 @@ function detectAssetIdle(ctx, opts) {
   }
 
   const skills = listInstalledSkills();
-  const usedTools = new Set(
+  // ⚠️ 第二轮评估 F13：DSH 的 skill 触发**不是**同名工具调用。
+  //    实测 22 个 distinct tool_name 里没有任何技能名，只有唯一的 `skill` 工具，
+  //    参数形如 {"name":"agent-clinic"}。旧代码拿 tool_name 比技能目录名，
+  //    于是 usedTools.has(name) 永不为真 → 窗口一到全部 skill 都被误报"闲置"。
+  const usedSkills = new Set(
     ctx.scan.sessions.flatMap((s) =>
-      s.events.filter((e) => e.kind === KIND.TOOL_CALL).map((e) => e.tool_name),
+      s.events.filter((e) => e.kind === KIND.TOOL_CALL && e.skill_name).map((e) => e.skill_name),
     ),
   );
-  const firstEv = ctx.scan.sessions.find((s) => s.events[0]);
+  // 证据：拿窗口内最早的一条事件作为"扫描范围"的复核锚点（旧版本这里是 []）
+  const windowStart = ctx.scan.sessions
+    .flatMap((s) => s.events)
+    .filter((e) => e.ts)
+    .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))[0];
+  const windowNote = `扫描窗口 ${Math.floor(spanDays)} 天，起点 ${windowStart?.ts ?? '未知'}`;
+
   for (const name of skills) {
-    // skill 在 DSH 里触发时表现为同名工具调用
-    if (usedTools.has(name)) continue;
+    if (usedSkills.has(name)) continue;
     findings.push({
       id: 'A2',
       title: 'skill 闲置',
       category: 'A',
       severity: SEVERITY.MID,
-      scope: null,
+      scope: `窗口 ${Math.floor(spanDays)} 天`,
       summary: `已装 skill「${name}」在 ${Math.floor(spanDays)} 天窗口内 0 次触发`,
-      evidence: [],
+      evidence: windowStart
+        ? [{ locator: windowStart.locator, note: `窗口起点（${windowNote}）` }]
+        : [],
       impact: '卸载可省启动时间与维护成本',
-      confidence: 0.7,
+      confidence: windowStart ? 0.7 : 0.5,
     });
   }
   if (findings.length === 0) {
@@ -679,6 +964,15 @@ export const REGISTRY = [
     desc: '同工具 + 同参数 + 无错误，重复 >=3 次（实测新增）',
     detect: detectE5,
   },
+  {
+    id: 'E3',
+    title: '工具结果过大',
+    category: 'E',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '单条 tool/result 文本超过 8192 字符（第二轮评估 F1：补记 text_len 后从"不可实现"变为可实现）',
+    detect: detectE3,
+  },
   // --- N 类：风险 ---
   {
     id: 'N1',
@@ -698,6 +992,24 @@ export const REGISTRY = [
     desc: '命令执行类工具命中高危模式（rm -rf / --force / reset --hard 等）',
     detect: detectN2,
   },
+  {
+    id: 'N3',
+    title: '权限审批摩擦',
+    category: 'N',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '审批请求 >=5 次，并给出等待时长与被拒（第二轮评估 F1：补记 approval/asked + decided 后变为可实现）',
+    detect: detectN3,
+  },
+  {
+    id: 'N4',
+    title: 'API 重试频繁',
+    category: 'N',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '模型请求重试 >=3 次，并给出失败码与累计退避（第二轮评估 F1：补记 llm/retry 后变为可实现）',
+    detect: detectN4,
+  },
   // --- A 类：资产 ---
   {
     id: 'A2',
@@ -712,9 +1024,9 @@ export const REGISTRY = [
     id: 'A3',
     title: '高频手动序列',
     category: 'A',
-    severity: SEVERITY.MID,
+    severity: SEVERITY.LOW,
     implemented: true,
-    desc: '同工具相邻序列模式复现 >=5 次',
+    desc: '非通用工具的两步序列复现 >=5 次（去镜像、跨会话合并；第二轮评估 F14 收窄）',
     detect: detectA3,
   },
   {
@@ -728,47 +1040,34 @@ export const REGISTRY = [
   },
   // --- M2+ 预留 ---
   { id: 'A1', title: 'MCP 闲置', category: 'A', severity: SEVERITY.MID, implemented: false, desc: '已配置 MCP 30 天 0 调用（本机未配置 MCP，暂无数据源）', detect: () => [] },
-  // --- 已废弃：数据源在 DSH 中不存在，非实现优先级问题 ---
-  // E3（工具结果过大）：tool/result 只归一化 is_error，不含 content/长度
-  // K1/K2（跨会话失忆 / 已解决重新排查）：user/message 只保留 text_len，无正文，
-  //   无法跨会话比对"同一个问题"
-  // N3（权限审批摩擦）：只有 approval/policy（策略快照），无 approval/asked/decided
-  // N4（API 重试频繁）：无 llm/retry 事件
+  // --- 第二轮评估：以下三项原本被列在"不可实现"，实为适配层没抽，已实现并移入上方 REGISTRY ---
+  //   E3（工具结果过大）：tool/result 补记 text_len（只记长度，不留正文）
+  //   N3（权限审批摩擦）：补记 approval/asked + approval/decided（按 id 关联）
+  //   N4（API 重试频繁）：补记 llm/retry（失败码 / 重试序号 / 退避时长）
   // I1/I2/I3（无用思考 / 反复澄清 / 不合偏好）：v4 已整体砍掉
 ];
 
 /**
- * 明确不可实现的指标。
+ * 尚未实现、且**原因需要如实说明**的指标。
  *
- * 与「未实现（排期中）」区分开：这些是**数据源在 DSH 里不存在**，
- * 不是优先级问题。报告必须把它们列出来，否则读者会以为
- * "没报 = 没问题"。
+ * ⚠️ 第二轮评估 F1 更正了这里的定性口径：
+ *    旧版写的是"数据源在 DSH 里不存在"（不可实现），但实测 E3/N3/N4 的数据都在日志里
+ *    —— 那是适配层没抽（已修）。剩下 K1/K2 同样**不是数据源缺失**：
+ *    user/message 的正文就在日志里，是适配层按隐私约束只记了长度。
+ *    所以这里描述的是"要用什么方案才能做"，而不是"平台做不到"。
  */
 export const UNIMPLEMENTABLE = [
   {
-    id: 'E3',
-    title: '工具结果过大',
-    reason: 'tool/result 只归一化 is_error，不含 content 原文与长度',
-  },
-  {
     id: 'K1',
     title: '跨会话失忆',
-    reason: 'user/message 只保留 text_len，无正文，无法跨会话比对你是否在重复问同一个问题',
+    reason:
+      '适配层按隐私约束只记 user/message 的 text_len、不留正文（正文在日志里，但本工具不落盘）。' +
+      '要做跨会话"你是不是又在问同一个问题"，需改为记录**规范化文本指纹**（hash，可复原性为零）—— 方案未定，未排期',
   },
   {
     id: 'K2',
     title: '已解决重新排查',
-    reason: '同上，缺少用户文本正文',
-  },
-  {
-    id: 'N3',
-    title: '权限审批摩擦',
-    reason: 'DSH 只有 approval/policy（策略快照），没有 approval/asked / approval/decided',
-  },
-  {
-    id: 'N4',
-    title: 'API 重试频繁',
-    reason: 'DSH 会话日志中不存在 llm/retry 事件',
+    reason: '同 K1：同样依赖用户文本指纹，未排期',
   },
 ];
 

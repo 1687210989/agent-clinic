@@ -69,9 +69,17 @@ node src/cli.mjs show "<file>#L101-L108"
 
 ---
 
-## 待实现（M1 Step 4）
+## 待实现（截至 2026-10-14）
 
-- [ ] `buildEvidencePackage(finding)` —— 为 Finding 生成完整证据包
+`show` 命令**已可用**（`node src/cli.mjs show "<file>#L1-L20"`，见 README 的复核示例）。
+下面这些仍未做：
+
+- [ ] `renderEvidence` 展开**完整区间** —— 目前只打 `range.start` 的 ±2 行，
+      而 E5 之类的证据带 `#L1733-L2688`（955 行跨度），报告里的"复核命令"看不到终点
+      （第二轮评估 F18）
+- [ ] 报告里的复核命令在 Windows 上可执行 —— 当前写的是 `./run.sh show`（bash-only），
+      应给 `node src/cli.mjs show`（同上）
+- [ ] `buildEvidencePackage(finding)` —— 为 Finding 生成完整证据包（当前是空桩）
 - [ ] 区间合并（同一结论的多段证据）
 - [ ] 终端 OSC 8 超链接（可点击）
 - [ ] HTML 报告的 `file://` 跳转

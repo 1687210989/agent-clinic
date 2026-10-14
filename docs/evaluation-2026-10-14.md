@@ -10,7 +10,27 @@
 
 ---
 
-## 0. 总评
+## 0. 整改情况（评估后已落地的部分）
+
+用户确认「需要，现在进行改进」后，P0 清单已落地并全部带上回归护栏（自检 182 → **207 项全绿**）：
+
+| 条目 | 状态 | 落地内容 |
+|---|---|---|
+| F12 C1 基线 | ✅ | 改**单位请求 output** 对比**仅主会话**基线（排除子代理与 0 产出会话）、加 2 万 token 绝对量下限、阈值 1.5→2、结论写明"产出量大不必然是浪费"。本机 6 处 → **1 处** |
+| F13 A2 前提 | ✅ | 适配层新增 `skill_name`（从 `skill` 工具参数取 `name`，只取这一个字段）；A2 据此判定并补上窗口起点证据。**已装 skill（含 `agent-clinic`）不再被误判闲置** |
+| F14 A3 噪声 | ✅ | 去镜像（`a↔b` 合并）+ 任一端是通用工具即排除 + 跨会话合并 + 严重度降为低。本机 18 条 → **1 条**（`web_search↔web_fetch` 28 次，确实可固化） |
+| F1 五项"不可实现" | ✅（3/5） | E3/N3/N4 **已实现**（适配层补 `text_len` / `approval_asked+decided` / `KIND.RETRY`），并各配可执行处方；K1/K2 的措辞改为"隐私取舍下的方案未定，**不是平台做不到**" |
+| F4 静默降级 | ✅ | `findSessionFilesDetailed()` 区分 ENOENT/EACCES；`readRegistrySnapshot()` 区分"没同步过"与"损坏"；`scan` 错误分 `kind=read`/`kind=parse`；CLI 与报告不再把"读不到"说成"没有数据" |
+| F16 处方撤销可见 | ✅ | 报告与面板新增「已评估但未给出的处方」段（含当前值）；`spill-tighten` 在"未设预算"时**不再被静默撤销**（与 `pruner-tighten` 行为统一）；全局处方上限 4 → 6（指标 12→15 项后 4 个名额会把 E3 的配置建议挤掉） |
+| F5 两条飘红断言 | ✅ | 行号一致性只在文件未被并发写入时比对，否则记"跳过"；只读断言改为内容一致 + 目录条目数不变 |
+| F6/F9/F10 文档漂移 | ✅ | `docs/diagnostics.md` 重写为代码镜像（15 项已实现 / 1 排期 / 2 未实现）；README/SKILL/remedies/report-format/evidence 的数字与措辞同步；**新增断言：文档指标清单 == 代码 REGISTRY**、README 不得再出现"零外部请求""5 项不可实现" |
+
+仍未动（P1/P2，待确认）：C3 不看 compaction、`reasoning-effort` 处方硬编码 provider、证据区间只展开起点、
+复核命令 bash-only、配置旋钮未接线、`install.sh` 不自带、`joinPath` 硬编码反斜杠、无 CI、死代码与重复实现。
+
+---
+
+## 1. 总评
 
 | 维度 | 评级 | 一句话 |
 |---|---|---|
@@ -27,7 +47,7 @@
 
 ---
 
-## 1. P0：指标判定与数据事实不符
+## 2. P0：指标判定与数据事实不符
 
 ### F12 C1「token 消耗过快」测的是"干了多少活"，不是"浪费" `[实测]`
 
@@ -65,7 +85,11 @@ distinct tool_name: 22 个；其中名为 skill 的调用 1 次，参数 = {"nam
 与 skill 目录同名的 tool_name：不存在
 ```
 
-**三重后果**：① `usedTools.has(技能名)` 永不为真 → 30 天窗口一到，**每个已装 skill 都被判"闲置"**（本机装的是 `agent-clinic`，而它确实被调用过）；② 代码读两个技能目录（`~/.agents/skills`、`~/.workbuddy/skills`），同名技能会**重复计入**；③ A2 的 findings 带 `evidence: []`、`scope: null`，与"每条结论都有可复核证据"直接矛盾。
+**三重后果**：① `usedTools.has(技能名)` 永不为真 → 30 天窗口一到，**每个已装 skill 都被判"闲置"**（本机装的是 `agent-clinic`，而它确实被调用过）；② A2 的 findings 带 `evidence: []`、`scope: null`，与"每条结论都有可复核证据"直接矛盾。
+
+> **⚠️ 本报告的一处更正（写作时未复核）**：初稿还写了"代码读两个技能目录、同名技能会重复计入"。
+> 这是**错的** —— `listInstalledSkills()` 末尾已有 `[...new Set(out)]` 去重（`src/diagnostics/index.mjs:609`）。
+> 子代理的这条指控未经复核就被采信，属评估方错误，在此更正。其余 F13 内容（判定前提错误、无证据）属实。
 
 **建议**：从 `skill` 调用的 `arguments.name` 取技能名，与工具名集合分开维护。
 
@@ -88,7 +112,7 @@ distinct tool_name: 22 个；其中名为 skill 的调用 1 次，参数 = {"nam
 
 ---
 
-## 2. P0：能力被自己误判 / 被自己掩盖
+## 3. P0：能力被自己误判 / 被自己掩盖
 
 ### F1 五项"不可实现"的判定是错的 —— 数据都在日志里 `[实测]`
 
@@ -151,7 +175,7 @@ distinct tool_name: 22 个；其中名为 skill 的调用 1 次，参数 = {"nam
 
 ---
 
-## 3. P0：处方层
+## 4. P0：处方层
 
 ### F16 最该给的那条处方被静默撤销，且"为什么没给"从不渲染 `[实测]`
 
@@ -186,7 +210,7 @@ suggest: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffor
 
 ---
 
-## 4. P1：配置、测试、文档的可信度
+## 5. P1：配置、测试、文档的可信度
 
 ### F7 三个配置旋钮是死的 `[实测]`
 
@@ -238,7 +262,7 @@ suggest: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffor
 
 ---
 
-## 5. P2：工程质量与交付
+## 6. P2：工程质量与交付
 
 ### 治理缺口 `[实测]`
 
@@ -285,7 +309,7 @@ suggest: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffor
 
 ---
 
-## 6. 值得肯定的地方
+## 7. 值得肯定的地方
 
 1. **零运行时依赖**，只靠 Node 原生 zstd；`node_modules/` 为空仍能完整运行
 2. **注释解释"为什么"**，并把踩过的坑写进代码（loop-guard 误报、内置包碾压社区插件、14.7s 预算超时）—— 这是本项目最稀缺的品质
@@ -297,7 +321,7 @@ suggest: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffor
 
 ---
 
-## 7. 建议路线图
+## 8. 建议路线图
 
 ### P0（做完才算"结论可信"）
 

@@ -113,23 +113,44 @@ function buildHeadline(id, list, tools) {
   };
 
   if (id === 'C1') {
+    // ⚠️ 第二轮评估 F12：这里原来写「远超自身基线」并把倍数重复两遍
+    //    （标题里的"最高 N 倍" + 冒号后又一次）。措辞与算法对齐：
+    //    基线是**同类主会话的单位请求 output 中位数**，不是会话自己的历史。
     const max = pick(/的\s*([\d.]+)\s*倍/);
-    const ratios = list
+    const perReq = list
       .slice(0, 3)
-      .map((f) => (f.summary.match(/的\s*([\d.]+)\s*倍/) ?? [, '?'])[1] + ' 倍')
+      .map((f) => {
+        const m = f.summary.match(/单位请求 output ([\d,.]+)/);
+        return m ? `每请求 ${m[1]} token` : null;
+      })
+      .filter(Boolean)
       .join(' / ');
-    return `${n} 个会话的 output 远超自身基线${max ? `（最高 ${max} 倍）` : ''}：${ratios}${n > 3 ? ` 等 ${n} 处` : ''}`;
+    return (
+      `${n} 个会话单位请求 output 高于同类会话基线${max ? `（最高 ${max} 倍）` : ''}` +
+      (perReq ? `：${perReq}` : '') +
+      (n > 3 ? ` 等 ${n} 处` : '')
+    );
   }
   if (id === 'C3') {
     const max = pick(/单会话\s*(\d+)\s*条消息/);
     return `${n} 个会话消息数超阈值${max ? `（最多 ${max} 条）` : ''}`;
   }
+  if (id === 'E3') {
+    // 结论里已经带了完整数字，标题只做概括，不重复抠数字
+    return `${n} 个会话存在超大工具结果（单条 >8K 字符）`;
+  }
+  if (id === 'N3') {
+    return list[0]?.summary ?? `${n} 处审批摩擦`;
+  }
+  if (id === 'N4') {
+    return list[0]?.summary ?? `${n} 处 API 重试`;
+  }
   if (id === 'A3') {
     const seqs = list
-      .map((f) => (f.summary.match(/「(.+?)」重复\s*(\d+)\s*次/) ?? []).slice(1))
+      .map((f) => (f.summary.match(/「(.+?)」出现\s*(\d+)\s*次/) ?? []).slice(1))
       .filter((x) => x.length === 2);
     if (seqs.length) {
-      return `${seqs.length} 类工具序列重复出现：${seqs
+      return `${seqs.length} 类可固化序列：${seqs
         .slice(0, 3)
         .map(([s, c]) => `${s} ${c} 次`)
         .join('、')}${seqs.length > 3 ? ` 等 ${seqs.length} 类` : ''}`;
@@ -641,8 +662,30 @@ export function renderReport(data) {
   }
 
   if (data.unimplementable.length) {
-    push('### 不可实现的维度（DSH 数据源缺失，非排期问题）');
+    // ⚠️ 第二轮评估 F1：这里原来写「DSH 数据源缺失，非排期问题」，
+    //    但实测 E3/N3/N4 的数据一直都在日志里（已实现并移出本列表）。
+    //    剩下的 K1/K2 同样不是"平台没有"，而是"隐私取舍下还没定方案" —— 如实写。
+    push('### 尚未实现的维度（原因见下，都不是"平台做不到"）');
     for (const d of data.unimplementable) push(`- ${d.id} ${d.title} —— ${d.reason}`);
+    push();
+  }
+
+  // F16：被否决的处方要写出来 —— 否则用户分不清"被规则挡掉"与"根本没有这条"。
+  // 典型例子：spill 预算被禁用时，最该给的那条建议恰好会被 skipIf 撤掉。
+  const skippedAll = [
+    ...(data.groups ?? []).flatMap((g) =>
+      (g.skippedPrescriptions ?? []).map((s) => ({ ...s, findingId: g.id })),
+    ),
+  ];
+  if (skippedAll.length) {
+    push(`### 已评估但未给出的处方（${skippedAll.length} 条）`);
+    push();
+    push('> 这些建议本可针对下面的问题，但按**你当前的配置**判断"已经达标或不需要" —— 列出来是为了让你能复核这个判断。');
+    push();
+    for (const s of skippedAll) {
+      const when = s.current ? `（当前：${s.current}）` : '';
+      push(`- ${s.findingId} · ${s.title}${when} —— 未给出原因：${s.reason}`);
+    }
     push();
   }
 

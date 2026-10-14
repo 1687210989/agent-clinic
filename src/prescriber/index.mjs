@@ -463,7 +463,22 @@ export function skippedFor(finding, opts = {}) {
   if (!snap) return out; // 没读到配置就不谈"否决"
   for (const remedy of REMEDIES.filter((r) => r.targets.includes(finding.id))) {
     const skip = typeof remedy.skipIf === 'function' ? remedy.skipIf(snap, finding) : null;
-    if (skip) out.push({ id: remedy.id, title: remedy.title, reason: skip });
+    if (!skip) continue;
+    // 把"为什么没给"讲清楚：带上当前值，用户才能复核这个判断
+    // （典型场景：spill 预算被禁用时最该给的建议恰好被撤掉）
+    let current = null;
+    const rowId = remedy.row?.id;
+    if (rowId && remedy.suggest && typeof remedy.suggest === 'object') {
+      const cur = snap?.rows?.[rowId]?.config ?? null;
+      if (cur) {
+        const keys = Object.keys(remedy.suggest);
+        const pairs = keys
+          .filter((k) => cur[k] !== undefined)
+          .map((k) => `${k}=${JSON.stringify(cur[k])}`);
+        if (pairs.length) current = pairs.join(', ');
+      }
+    }
+    out.push({ id: remedy.id, title: remedy.title, reason: skip, current });
   }
   return out;
 }
@@ -479,7 +494,9 @@ export function skippedFor(finding, opts = {}) {
  * @param {Object} [opts] { limit=4, rejected=[], perFinding=1, ctx }
  */
 export function matchPrescriptions(problem, opts = {}) {
-  const limit = opts.limit ?? 4;
+  // 上限 6（第二轮评估）：指标从 12 项增到 15 项后，7 类问题抢 4 个名额
+  // 会把最可执行的配置类建议挤掉 —— 例如 E3（工具结果过大）指向 spill 预算那一条。
+  const limit = opts.limit ?? 6;
   // 每个问题默认给 2 个名额：第 1 个是确定对症的处方，第 2 个留给插件目录检索结果，
   // 这样"能装的插件"不会被一句行为建议挤掉。
   const perFinding = opts.perFinding ?? 2;

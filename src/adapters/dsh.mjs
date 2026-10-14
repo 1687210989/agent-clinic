@@ -34,24 +34,42 @@ export function resolveSessionsRoot(opts = {}) {
   return path.join(resolveDshHome(opts.dshHome), 'sessions');
 }
 
-/** 递归找出所有会话文件，按路径排序（保证输出稳定可复现） */
-export function findSessionFiles(root) {
-  const out = [];
+/**
+ * 递归找出所有会话文件，按路径排序（保证输出稳定可复现）。
+ *
+ * 第二轮评估 F4：旧实现是 `catch { return; }` 静默跳过 —— 目录**不可读**与
+ * **本来就没有会话**在下游看起来一模一样，于是 CLI 会打印"未找到会话文件"，
+ * 把权限/路径问题伪装成"你机器上没有数据"。现在把读取失败如实带出去。
+ *
+ * @returns {{files:string[], errors:Array<{dir:string, code:string|null, message:string}>}}
+ */
+export function findSessionFilesDetailed(root) {
+  const files = [];
+  const errors = [];
   const walk = (dir) => {
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return; // 目录不可读：跳过，由上层报告
+    } catch (e) {
+      // ENOENT = 这个目录确实不存在（正常：没装过/没用过）；其余要报出来
+      if (e?.code !== 'ENOENT') {
+        errors.push({ dir, code: e?.code ?? null, message: e?.message ?? String(e) });
+      }
+      return;
     }
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (SESSION_FILE_RE.test(e.name)) out.push(p);
+      else if (SESSION_FILE_RE.test(e.name)) files.push(p);
     }
   };
   walk(root);
-  return out.sort();
+  return { files: files.sort(), errors };
+}
+
+/** 兼容入口：只要文件列表（不关心读取失败） */
+export function findSessionFiles(root) {
+  return findSessionFilesDetailed(root).files;
 }
 
 /** 会话文件版本（v4 / v3 …），未知返回 null */
@@ -179,7 +197,8 @@ function usageOf(data) {
   };
 }
 
-/** 累加 content 块中指定类型的文本长度 */function sumTextLen(blocks, type) {
+/** 累加 content 块中指定类型的文本长度 */
+function sumTextLen(blocks, type) {
   if (!Array.isArray(blocks)) return 0;
   let n = 0;
   for (const b of blocks) {
@@ -187,6 +206,33 @@ function usageOf(data) {
   }
   return n;
 }
+
+/**
+ * 从工具参数里只取出**技能名**（A2 需要）。
+ *
+ * ⚠️ 第二轮评估 F13 的根因：DSH 的 skill 触发**不是**同名工具调用，
+ * 而是唯一的 `skill` 工具 + 参数 `{"name":"<技能名>"}`。
+ * 旧代码拿 tool_name 去比技能目录名，于是永远匹配不上 → 窗口一到
+ * 所有已装 skill 都被误报为"闲置"。
+ *
+ * 只提炼 `name` 一个字段，不保留其它参数（隐私硬约束与 A2 的判据一致）。
+ */
+function skillNameOf(name, args) {
+  if (String(name ?? '') !== 'skill') return null;
+  let obj = args;
+  if (typeof args === 'string') {
+    try {
+      obj = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  const v = obj?.name;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/** 供冒烟测试直接验证技能名提取（不在生产路径上调用） */
+export const skillNameOfForTest = skillNameOf;
 
 function projectOf(meta) {
   const cwd = meta?.cwd;
@@ -277,6 +323,8 @@ export function parseSession(file) {
           tool_name: data.name ?? '(unknown)',
           tool_call_id: data.callId ?? null,
           tool_args_hash: hashArgs(data.arguments),
+          // A2：skill 触发是 `skill` 工具 + 参数 name（不是同名工具调用）
+          skill_name: skillNameOf(data.name, data.arguments),
           // N2：只对命令执行类工具检测，且只记命中的模式标签，
           // 不记原始参数（隐私硬约束 + 防 write/edit 内容误报）
           danger: dangerOf(data.name, data.arguments),
@@ -287,6 +335,9 @@ export function parseSession(file) {
         ev = makeEvent({ ...base, kind: KIND.TOOL_RESULT }, {
           tool_call_id: data.toolCallId ?? data.message?.source?.callId ?? null,
           is_error: isErrorResult(data),
+          // E3：工具结果过大。只记**长度**，不保留正文 ——
+          // 旧版本连长度都没记，于是 E3 被误判成"数据源缺失"。
+          text_len: sumTextLen(data.message?.content ?? data.content, 'text'),
         });
         break;
 
@@ -300,7 +351,42 @@ export function parseSession(file) {
         break;
 
       case 'approval/policy':
-        ev = makeEvent({ ...base, kind: KIND.APPROVAL }, { policy: data.policy ?? null });
+        ev = makeEvent({ ...base, kind: KIND.APPROVAL }, {
+          approval_phase: 'policy',
+          policy: data.policy ?? null,
+        });
+        break;
+
+      // N3 权限审批摩擦：asked 与 decided 用 id 关联 ——
+      // 旧版本只认 approval/policy，于是把 N3 判成"DSH 没有这些事件"。
+      // 这里记 id / 工具名 / 决定结果，**不记 reason 正文**（可能含用户上下文）。
+      case 'approval/asked':
+        ev = makeEvent({ ...base, kind: KIND.APPROVAL }, {
+          approval_phase: 'asked',
+          approval_id: data.id ?? null,
+          tool_name: data.toolName ?? null,
+          reason_len: typeof data.reason === 'string' ? data.reason.length : 0,
+        });
+        break;
+      case 'approval/decided':
+        ev = makeEvent({ ...base, kind: KIND.APPROVAL }, {
+          approval_phase: 'decided',
+          approval_id: data.id ?? null,
+          outcome: data.outcome ?? null,
+        });
+        break;
+
+      // N4 API 重试频繁：llm/retry 携带失败码、重试序号与退避时长
+      case 'llm/retry':
+        ev = makeEvent({ ...base, kind: KIND.RETRY }, {
+          retry_id: data.retryId ?? null,
+          provider: data.provider ?? null,
+          retry_mode: data.mode ?? null,
+          retry_index: Number.isFinite(data.retry) ? data.retry : null,
+          max_retries: Number.isFinite(data.maxRetries) ? data.maxRetries : null,
+          delay_ms: Number.isFinite(data.delayMs) ? data.delayMs : null,
+          failure_code: data.failure?.code ?? null,
+        });
         break;
 
       case 'session/title':
@@ -343,15 +429,24 @@ export function parseSession(file) {
 /** 扫描根目录下全部会话 */
 export function scanSessions(opts = {}) {
   const root = resolveSessionsRoot(opts);
-  const files = findSessionFiles(root);
+  const { files, errors: scanErrors } = findSessionFilesDetailed(root);
   const sessions = [];
-  const errors = [];
+  // 目录读取失败与文件解析失败**分开记**：前者让人以为"没数据"，后者让人以为"没问题"
+  const errors = scanErrors.map((e) => ({
+    kind: 'read',
+    file: e.dir,
+    code: e.code,
+    message:
+      e.code === 'EACCES' || e.code === 'EPERM'
+        ? `无权限读取目录（${e.code}）`
+        : `读取目录失败：${e.message}`,
+  }));
 
   for (const f of files) {
     try {
       sessions.push(parseSession(f));
     } catch (e) {
-      errors.push({ file: f, message: e?.message ?? String(e) });
+      errors.push({ kind: 'parse', file: f, code: e?.code ?? null, message: e?.message ?? String(e) });
     }
   }
 

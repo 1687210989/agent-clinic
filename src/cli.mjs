@@ -61,6 +61,13 @@ function doScan() {
   const { global: g, perSession } = summarize(scan);
 
   if (scan.fileCount === 0) {
+    // F4：区分"目录读不了"与"确实没有会话" —— 别把权限问题说成"你没数据"
+    const readErrs = (scan.errors ?? []).filter((e) => e.kind === 'read');
+    if (readErrs.length) {
+      process.stdout.write(`读不到会话目录（不是"没有会话"）：\n`);
+      for (const e of readErrs) process.stdout.write(`  ${e.file}\n    ${e.message}\n`);
+      return;
+    }
     process.stdout.write(`未找到会话文件。\n扫描目录：${root}\n`);
     return;
   }
@@ -100,9 +107,17 @@ function doScan() {
     process.stdout.write(`\n⚠ 数据完整性：坏帧 ${g.badFrames} / 坏行 ${g.badLines}\n`);
   }
   if (scan.errors.length) {
-    process.stdout.write(`\n⚠ ${scan.errors.length} 个会话解析失败：\n`);
-    for (const e of scan.errors) {
-      process.stdout.write(`  ${path.basename(path.dirname(e.file))}：${e.message}\n`);
+    const readErrs = scan.errors.filter((e) => e.kind === 'read');
+    const parseErrs = scan.errors.filter((e) => e.kind !== 'read');
+    if (readErrs.length) {
+      process.stdout.write(`\n⚠ ${readErrs.length} 个目录读不了（这部分数据没被统计到）：\n`);
+      for (const e of readErrs) process.stdout.write(`  ${e.file}\n    ${e.message}\n`);
+    }
+    if (parseErrs.length) {
+      process.stdout.write(`\n⚠ ${parseErrs.length} 个会话解析失败：\n`);
+      for (const e of parseErrs) {
+        process.stdout.write(`  ${path.basename(path.dirname(e.file))}：${e.message}\n`);
+      }
     }
   }
 }
@@ -210,9 +225,15 @@ function doCatalog() {
   process.stdout.write(`  npm 同步：${a.sources.registry} 条\n`);
   process.stdout.write(
     `  GitHub 核实：${a.sources.github} 条` +
-      (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : `（快照不存在：${snapPath}）`) +
+      (a.sources.snapshotAt ? `（快照 ${a.sources.snapshotAt}）` : '') +
       '\n',
   );
+  // F4：快照读不了 ≠ 没同步过。损坏/无权限必须说出来，否则用户以为要重跑同步就好了
+  if (a.sources.snapshotError) {
+    process.stdout.write(`  ⚠ ${a.sources.snapshotError.message}\n`);
+  } else if (!a.sources.snapshotAt) {
+    process.stdout.write(`  （还没有同步过快照：${snapPath}，可跑 catalog-sync 获取社区插件）\n`);
+  }
   process.stdout.write(`  社区插件 ${community} 条 · 官方内置包 ${bundled} 条（内置包一般不必再装）\n`);
   process.stdout.write(`  带热度数据：${withHeat} 条（star / 下载量，只用于同分排序）\n`);
   process.stdout.write(

@@ -117,7 +117,7 @@ node scripts/asar-extract.mjs "D:/dsh/resources/app.asar" --list /dsh/node_modul
 
 ### 二、社区插件（third-party）
 
-核实方式：`https://registry.npmjs.org/<包名>`（本工具不联网，条目录入时人工核实）。
+核实方式：`https://registry.npmjs.org/<包名>`（**这是目录录入时的核实动作**：体检本体默认不联网，只有 catalog-sync 与 report --live 会发出请求）。
 复核命令：`npm view <包名> version`。
 
 | 处方 | 包 | 核实到的事实 |
@@ -354,14 +354,15 @@ npm / GitHub 同步进来的插件描述大多是英文。处理办法是**人�
 - 同一 (处方, 指标) 组合不重复给
 
 旧版把上限压到 2 条，本意是"宁精勿滥"，但配合空靶池的结果是"看到问题却拿不到方案"。
-现在的取舍是：**每条都必须是可执行动作**，在这个前提下允许最多 4 条。
+现在的取舍是：**每条都必须是可执行动作**，在这个前提下允许最多 6 条。
+（原为 4 条；第二轮评估后指标从 12 项增到 15 项，7 类问题抢 4 个名额会把最可执行的配置类建议挤掉，例如 E3 → spill 预算那一条。）
 
 ---
 
 ## 自检
 
 ```bash
-./scripts/smoke.sh          # 114 项
+./scripts/smoke.sh          # 203 项
 ```
 
 处方层相关的关键断言：

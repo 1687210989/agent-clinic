@@ -230,6 +230,31 @@ A1 的实现前提是用户先接入本地 filesystem MCP server（配置写在
 它不参与运行、不影响使用者，但**GA 发布要从干净 tag 打包**：先提交 → 打 tag → 从该状态打包发布，
 避免再出现"发布物 ≠ tag"。
 
+### 6.5 rc.2 之后两次 run 变红：macOS runner 排队被取消（非代码问题）
+
+**现象**（来自 Actions API 原始数据，不是从 UI 猜的）：
+
+| job | runner | steps | 起止 | 结论 |
+|---|---|---|---|---|
+| smoke (macos-latest · node 24) | **（空）** | **0** | created 13:42:03 → started 13:42:03 → done 13:57:06 | **cancelled（15 分 03 秒）** |
+| smoke (macos-latest · node 22.15.0) | **（空）** | **0** | 同上 | **cancelled** |
+| 其余 6 个 job | GitHub Actions… | 16（隐私 job 5） | 都在 33 秒内跑完 | success |
+
+两个 macOS job **没拿到 runner、一步都没执行**，排队 15 分钟后被取消；
+同一份代码的上一次 run（`851cdab`）macOS 是 **55 秒绿**的。
+⇒ 结论：**不是代码失败**，是 GitHub 托管 macOS runner 的容量/额度
+（macOS 计费是 Linux 的 10 倍，当天共 22 次 workflow ≈ 44 个 macOS job）。
+
+**加固**（提交见 CI 文件头部注释）：`concurrency` 取消同 ref 旧 run；
+push 用轻量矩阵（macOS 只跑 node 24）、tag/手动触发用全量矩阵；
+每个 job 加 `timeout-minutes`（拿不到 runner 时快速失败并写明原因）。
+plan 步骤的 bash 已用本地 git bash 真跑三种触发验证（light 6 项 / full 7 项）。
+
+> ⚠️ 教训（写给自己）：我之前说"CI 徽章 passing"是**误读** —— shields 徽章反映最近**完成**的 run，
+> 最新 run 还在排队/被取消时它会显示缓存的旧结果。**判断 CI 状态要看 run 列表的逐个 job**，
+> 不能只看徽章。
+
+
 
 
 

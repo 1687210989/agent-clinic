@@ -4,7 +4,32 @@
 
 ## [Unreleased]
 
-（下一轮改动写在这里。本次发行的内容见下一个版本段。）
+### CI 加固：macOS runner 排队被取消（2026-10-15，非代码问题）
+
+**现象**：`e9c44cc` 与 `c63b2ea` 两次 run 红，但**不是断言失败** ——
+两个 `macos-latest` job 的 `steps: 0`、`runner` 字段为空、`started_at == created_at`，
+排队 **15 分 03 秒后被 `cancelled`**；同一 run 里其余 6 个 job 16 步全绿（7~33 秒）。
+也就是说 macOS job **一行代码都没执行过** —— 同一份代码的上一次 run（`851cdab`）macOS 是 55 秒绿的。
+原因是 GitHub 托管 macOS runner 的**容量/额度**（macOS 计费是 Linux 的 10 倍，
+当天触发了 22 次 workflow ≈ 44 个 macOS job）。
+
+**加固（三件事，都不削弱门槛）**：
+
+1. **`concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`** ——
+   同 ref 的新推送取消旧 run（连推几次不再各排一堆 macOS job；tag 与 main 互不取消）；
+2. **矩阵分档**：新增 `plan` job 按触发方式产出矩阵 ——
+   **push 用轻量矩阵**（macOS 只跑 node 24，6 项），
+   **tag / `workflow_dispatch` 用全量矩阵**（macOS 两个 node，7 项）；
+3. **每个 job 加 `timeout-minutes`**（20 / 5 / 10）—— 拿不到 runner 时快速失败并写明原因，
+   而不是静默排队 15 分钟被取消。
+
+过程中自己踩到一个真坑并已修：`GITHUB_OUTPUT` 写**多行值**必须用 heredoc 语法
+（`key<<EOF … EOF`），用 `printf 'matrix=%s'` 只会写进第一行，
+`fromJSON` 于是拿到半个 JSON 直接失败。plan 步骤的 bash 已在本地用 git bash **真跑三种触发**
+（push → light/6 项/macOS 仅 24；tag → full/7 项；workflow_dispatch → full/7 项）验证。
+新增 3 条基建断言守着这三件事（concurrency / timeout / 矩阵分档 + tag 条件）。
+
+### 0.2.0-rc.2 发行后的其余改动
 
 ## [0.2.0-rc.2] — 2026-10-15
 

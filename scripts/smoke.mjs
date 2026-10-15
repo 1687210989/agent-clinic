@@ -2345,6 +2345,27 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     '基建：CI 挂了 ubuntu-26.04 迁移探针（提前几周发现新镜像的兼容问题）',
     /ubuntu-26\.04/.test(ciEffective),
   );
+  // 2026-10-15 第二次加固（起因：两个 macos job 排队 15 分钟拿不到 runner 被 cancelled，
+  // 而其余 6 个 job 全绿 —— 是 macOS 容量/额度问题，不是代码问题）。三条护栏：
+  check(
+    '基建：CI 有 concurrency（同 ref 新推送取消旧 run —— 免得连推几次就排一堆 macOS job）',
+    /^concurrency:/m.test(ciEffective) &&
+      /cancel-in-progress:\s*true/.test(ciEffective) &&
+      /group:\s*ci-\$\{\{\s*github\.ref\s*\}\}/.test(ciEffective),
+  );
+  check(
+    '基建：CI 的 job 都设了 timeout-minutes（拿不到 runner 时要快速失败并写明原因，不静默排队）',
+    (ciEffective.match(/timeout-minutes:/g) ?? []).length >= 3,
+  );
+  check(
+    '基建：矩阵分档 —— push 用轻量矩阵（macOS 只跑 node 24），tag/手动触发才跑全量（macOS 计费 10×）',
+    /full=/.test(ciEffective) &&
+      /light=/.test(ciEffective) &&
+      /macos-latest","node":"22\.15\.0"/.test(ciEffective) &&
+      /refs\/tags\//.test(ciEffective) &&
+      /workflow_dispatch:/.test(ciEffective) &&
+      /matrix:\s*\$\{\{\s*fromJSON\(/.test(ciEffective),
+  );
   const actionMajors = [...ciEffective.matchAll(/uses:\s*actions\/(checkout|setup-node)@v(\d+)/g)].map(
     (m) => ({ name: m[1], major: Number(m[2]) }),
   );

@@ -29,25 +29,93 @@ name: CI
 #
 # 两个 action 用 v7（v4 跑在 Node 20 上，已被 GitHub 强制迁到 Node 24 并持续告警；
 # v7 是 ESM 迁移版，本项目只用默认参数，无破坏性影响）。
+#
+# 2026-10-15 第二次加固（起因：连续两次 run 红，但**不是代码失败**）：
+#   现象：两个 `macos-latest` job 的 `steps: 0`、`runner` 为空、
+#         `started_at == created_at`，排队 **15 分钟后被 cancelled**，
+#         其余 6 个 job 16 步全绿（7~33 秒）。也就是说 macOS job **一行代码都没跑**。
+#   原因：GitHub 托管 macOS runner 的容量/额度（macOS 计费是 Linux 的 **10 倍**，
+#         而当天触发了 22 次 workflow ≈ 44 个 macOS job）。
+#   于是这一轮加三件事（都不是削弱门槛，而是把资源用在刀刃上）：
+#     ① `concurrency` —— 同 ref 的新推送取消旧 run，避免"连推 4 次 = 排 8 个 macOS job"；
+#     ② **矩阵分档**：push 用轻量矩阵（macOS 只跑 node 24），
+#        tag / 手动触发用全量矩阵（macOS 两个 node 版本）—— 发行提交才需要跑满；
+#     ③ 每个 job 加 `timeout-minutes` —— 拿不到 runner 时**快速失败并写明原因**，
+#        而不是静默排队 15 分钟被取消（那种红在 UI 上看不出原因）。
 
 on:
   push:
     branches: [main]
   pull_request:
+  # 手动触发 = 全量矩阵（需要在某个提交上跑满三平台两个 node 版本时用）
+  workflow_dispatch:
+
+# 同一个 ref 上的新 run 取代旧 run：省 runner、也避免"旧 run 还在排队"的噪音。
+# 用 ref 分组，所以 tag 与 main 互不取消（发行 run 不会被普通推送打断）。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # 先算矩阵：push 轻量 / tag·手动 全量。写成 job 而不是在 matrix 里做条件，
+  # 是因为 GitHub 的 `matrix` 上下文在 `jobs.<id>.if` 里不可用。
+  plan:
+    name: 计划矩阵（push 轻量 / tag·手动 全量）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      scope: ${{ steps.pick.outputs.scope }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          # 全量：4 个 runner 标签 × 2 个 node（Ubuntu 26.04 只留 node 24 —— 它是迁移探针）
+          full='{"include":[
+          {"os":"ubuntu-24.04","node":"22.15.0"},
+          {"os":"ubuntu-24.04","node":"24"},
+          {"os":"ubuntu-26.04","node":"24"},
+          {"os":"macos-latest","node":"22.15.0"},
+          {"os":"macos-latest","node":"24"},
+          {"os":"windows-latest","node":"22.15.0"},
+          {"os":"windows-latest","node":"24"}]}'
+          # 轻量（push）：macOS 只跑 node 24 —— macOS 额度是 Linux 的 10 倍，
+          # 且实测会出现"排队 15 分钟拿不到 runner 被取消"。
+          light='{"include":[
+          {"os":"ubuntu-24.04","node":"22.15.0"},
+          {"os":"ubuntu-24.04","node":"24"},
+          {"os":"ubuntu-26.04","node":"24"},
+          {"os":"macos-latest","node":"24"},
+          {"os":"windows-latest","node":"22.15.0"},
+          {"os":"windows-latest","node":"24"}]}'
+          if [ "${GITHUB_REF#refs/tags/}" != "${GITHUB_REF}" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            # ⚠️ 多行值必须用 heredoc 语法写进 GITHUB_OUTPUT —— 用 `printf 'matrix=%s'`
+            #    只会写进第一行，`fromJSON` 于是拿到半个 JSON 直接失败（这里踩过一次）。
+            {
+              echo "matrix<<MATRIX_EOF"
+              echo "$full"
+              echo "MATRIX_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "scope=light" >> "$GITHUB_OUTPUT"
+            {
+              echo "matrix<<MATRIX_EOF"
+              echo "$light"
+              echo "MATRIX_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "本次矩阵档位：${{ github.ref }} / ${{ github.event_name }}"
+
   smoke:
     name: smoke (${{ matrix.os }} · node ${{ matrix.node }})
+    needs: plan
     runs-on: ${{ matrix.os }}
+    # 拿不到 runner 时快速失败并写明原因，而不是静默排队 15 分钟被取消
+    timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, ubuntu-26.04, macos-latest, windows-latest]
-        node: ['22.15.0', '24']
-        exclude:
-          # Ubuntu 26.04 只留一个 node 版本：它是**迁移探针**，不是主矩阵。
-          - os: ubuntu-26.04
-            node: '22.15.0'
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -119,6 +187,7 @@ jobs:
   privacy:
     name: 隐私与仓库卫生
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: 生成物不得入库

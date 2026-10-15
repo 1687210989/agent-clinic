@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-302%2F302-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-304%2F304-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -115,7 +115,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **302/302 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **304/304 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -338,7 +338,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
-./scripts/smoke.sh   # 自检（302 项）
+./scripts/smoke.sh   # 自检（304 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（65 项）
 ```
 

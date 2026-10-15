@@ -2669,7 +2669,27 @@ process.stdout.write('\n20) 决策项护栏（D4：K1/K2 指纹）\n');
 {
   const fpMod = await import('../src/privacy/fingerprints.mjs');
   const { scanSessions: scanFn } = await import('../src/adapters/dsh.mjs');
+  // import 副作用护栏：import 之前先记下 DEFAULT_OUT（.tmp/synth-home/sessions）的 mtime，
+  // import 之后再比一次。曾经 fixture 里裸 `await main()`，import 会以 DEFAULT_OUT 为目标
+  // 重新生成语料 —— 那正是开发者本地跑 smoke 时 DSH_HOME 常指的地方，于是语料在跑测中途
+  // 被删了又写回，产生间歇性假红（"扫描没有新增/删除任何会话文件 1 → 0"、随机 ENOENT、
+  // 断言总数在 288/303 之间跳）。这条断言 + fixture 末尾的入口守卫一起守住它。
+  const defaultSessionsRoot = path.join(
+    fileURLToPath(new URL('../.tmp/', import.meta.url)),
+    'synth-home',
+    'sessions',
+  );
+  const mtimeOf = (p) => (fs.existsSync(p) ? fs.statSync(p).mtimeMs : null);
+  const mtimeBeforeImport = mtimeOf(defaultSessionsRoot);
   const { writeCorpus } = await import('./fixtures/synth-dsh.mjs');
+  const mtimeAfterImport = mtimeOf(defaultSessionsRoot);
+  check(
+    'D4：import 合成语料模块没有副作用（不再顺手重写 DEFAULT_OUT 语料）',
+    mtimeBeforeImport === mtimeAfterImport,
+    mtimeBeforeImport === null
+      ? '本地没有 DEFAULT_OUT 语料；import 也没有把它造出来'
+      : `import 前后 mtime 未变（${mtimeBeforeImport}）`,
+  );
   const fpTmpDir = fileURLToPath(new URL('../.tmp/fp-guard/', import.meta.url));
   fs.rmSync(fpTmpDir, { recursive: true, force: true });
   fs.mkdirSync(fpTmpDir, { recursive: true });
@@ -2816,7 +2836,16 @@ process.stdout.write('\n20) 决策项护栏（D4：K1/K2 指纹）\n');
   );
   // ⑦ 写盘失败 ≠ 没判定（我第一版把两者混为一谈，报告会说假话）
   //    构造一个必然写不进去的路径：把 store 指到"一个普通文件"底下。
+  //    ⚠️ 跨平台（CI 的 matrix 抓出来的真实差异）：读这个路径时 Windows 报 ENOENT、
+  //    Linux/macOS 报 ENOTDIR。loadStore 把两者都当成"还没有快照"，
+  //    否则 Linux 上会落到 load 分支，这条断言就假红 —— 下面先钉住这个事实。
   //    注意用**独立**的临时目录 —— fpTmpDir 里放着本次测试的合成语料，不能删。
+  const fpSrc = fs.readFileSync(new URL('../src/privacy/fingerprints.mjs', import.meta.url), 'utf8');
+  check(
+    'D4：快照路径的"不存在"两种情况都当正常（ENOENT + ENOTDIR，跨平台一致）',
+    /ENOENT/.test(fpSrc) && /ENOTDIR/.test(fpSrc),
+    /ENOTDIR/.test(fpSrc) ? '两种都处理了' : '缺 ENOTDIR（Linux 上会把"没有快照"误报成"读不出来"）',
+  );
   const saveTmp = fileURLToPath(new URL('../.tmp/fp-guard-save/', import.meta.url));
   fs.rmSync(saveTmp, { recursive: true, force: true });
   fs.mkdirSync(saveTmp, { recursive: true });

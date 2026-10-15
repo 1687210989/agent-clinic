@@ -921,4 +921,18 @@ async function main() {
   printGenerated(writeCorpus(outDir));
 }
 
-await main();
+// ---------------------------------------------------------------------------
+// 只在**直接执行**时跑 CLI —— 被 import 时绝不能有副作用
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这里踩过一次真坑（自查时抓到的，症状很隐蔽）：
+//    原来写的是裸 `await main()`，于是 smoke 里 `import { writeCorpus }` 会**顺带执行 CLI**，
+//    以 DEFAULT_OUT（.tmp/synth-home）为目标重新生成语料 —— 那正是许多人跑 smoke 时
+//    用 DSH_HOME 指向的目录。结果：smoke 跑到一半，语料被删了又写回来，
+//    于是出现间歇性假红（"扫描没有新增/删除任何会话文件 1 → 0"、
+//    "ENOENT: 打不开某一个 session 文件"、断言总数在 288/303 之间跳）。
+//    守卫写成"入口文件路径 == 本文件路径"；用 fileURLToPath 比较，跨平台可靠。
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
+  await main();
+}

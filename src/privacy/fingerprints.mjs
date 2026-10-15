@@ -111,7 +111,13 @@ export function loadStore({ path: file = STORE_PATH } = {}) {
   try {
     raw = fs.readFileSync(file, 'utf8');
   } catch (e) {
-    if (e?.code === 'ENOENT') {
+    // 「还没有快照」的两种表现，都必须当成正常：
+    //   ENOENT  —— 文件不存在（Windows / 首次运行）
+    //   ENOTDIR —— 路径的某一级不是目录（Linux/macOS 上读 <文件>/sub/store.json 会这样报）
+    // ⚠️ 这是 CI 的跨平台 matrix 抓出来的真实差异：同一段"故意写不进去"的构造，
+    //    Windows 报 ENOENT 走到 save 阶段，Linux 报 ENOTDIR 被当成"读不出来"，
+    //    于是"写盘失败 ≠ 没判定"那条断言在 Linux 上假红。
+    if (e?.code === 'ENOENT' || e?.code === 'ENOTDIR') {
       // 没同步过：正常，用新盐建一份空快照（**不落盘**，等真正有观测再写）
       return {
         store: { version: STORE_VERSION, salt: makeSalt(), createdAt: null, updatedAt: null, observations: {} },

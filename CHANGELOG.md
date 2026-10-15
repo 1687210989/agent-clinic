@@ -55,6 +55,13 @@
   也没有 `~/.npmrc`），需要一个凭据（NPM_TOKEN 或在本机 `npm login`）。代码侧已就绪。
 - **D6 · A1（MCP 闲置）继续排期**：本机 `~/.dsh` 下没有任何 MCP 配置，没有可判定的数据源；
   不为凑指标用合成语料自证。
+- **修一处间歇性假红（自查 + CI matrix 抓到）**：`scripts/fixtures/synth-dsh.mjs` 末尾原本是
+  裸 `await main()`，导致 smoke 里 `import { writeCorpus }` 会**顺带执行 CLI**，以 `DEFAULT_OUT`
+  （`.tmp/synth-home`）为目标重写语料 —— 正是开发者本地 `DSH_HOME` 常指的地方。症状是
+  "扫描没有新增/删除任何会话文件 1 → 0"、随机 `ENOENT`、断言总数在 288/303 之间跳，
+  **单跑一次还是绿的**。现加直接执行守卫，并加"import 前后 `DEFAULT_OUT/sessions` mtime 不变"断言。
+  另一处跨平台差异：`readFileSync` 遇到"路径某一级不是目录"时报 `ENOTDIR`（Linux/macOS）而
+  Windows 报 `ENOENT` —— 指纹快照的"还没有快照"现在两种都当正常。
 
 ### 第四轮：第三方独立评估整改（依据 `agent-clinic-独立评估报告-实测版(1).md`，方案 `docs/plan-2026-10-15.md`）
 

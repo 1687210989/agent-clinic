@@ -64,7 +64,7 @@
 | C | CHANGELOG 从 `[Unreleased]` 切版 | ✅ 已完成 | 新增 `## [0.2.0-rc.1] — 2026-10-15` 段，累计 6 轮未发版改动归入其下；顶部保留空的 `[Unreleased]` |
 | D | README 安装地址随版本更新 | ✅ 已完成 | jsDelivr 备用地址 `@v0.1.1` → `@v0.2.0-rc.1`；`--ref` 示例同步；安装节顶部新增「当前版本 `0.2.0-rc.1`（预发布通道）」与 npm 通道待开放说明 |
 
-**A 的凭据用法**（三种任选其一，脚本会按顺序查找）：
+> **发行后仍待完成的唯一一件事**：npm 发布（见上表 A 项）。凭据用法（脚本按顺序查找，三种任选其一）：
 
 ```bash
 # ① 环境变量（推荐，不落盘）
@@ -96,9 +96,31 @@ node scripts/publish-npm.mjs --publish --otp 123456
 
 ## 5. 结论摘要（一句话给决策）
 
-**代码与质量门已具备发行条件**：21 项指标全部可复核、307 条自检全绿、三平台 CI 通过、
-零依赖、仓库无隐私泄漏。**"进入发行上线阶段"的唯一前置是你选一条凭据路径（A）**；
-其余三项（B/C/D）是发版例行动作，我可以在你点头后一次性做完。
+**RC 已经发出**：tag `v0.2.0-rc.1`（附注 tag → 发行提交 `8ffd724`）已推送，
+CHANGELOG 切版、安装地址更新、零依赖发布通道三件事都完成并各自验证过
+（远端 tag 直查、jsDelivr 实取 200、CI 8/8 job 全绿、自检 **313 条全绿**）。
+
+**剩下的唯一一件**是 npm 通道：它需要凭据，代码与执行路径已就绪
+（`scripts/publish-npm.mjs --publish`，打包部分已被 CI 在三平台验证）。
+
+---
+
+## 6. 发行执行记录（2026-10-15）
+
+| 项 | 结果 | 复核方式 |
+|---|---|---|
+| 发行提交 | `8ffd724`「release(0.2.0-rc.1): 切 CHANGELOG + 更新安装地址 + 零依赖发布通道」 | `git log --oneline -1` |
+| tag | 附注 tag `v0.2.0-rc.1` → 对象 `9e3ad3f2…` → commit `8ffd724e…`（= `refs/heads/main` 头） | `git ls-remote --tags origin`（直查远端） |
+| CHANGELOG 切版 | `## [0.2.0-rc.1] — 2026-10-15` 段已建，累计 6 轮未发版改动归入其下 | `git show v0.2.0-rc.1:CHANGELOG.md` |
+| 安装地址 | README 的 jsDelivr 备用地址改为 `@v0.2.0-rc.1`，`--ref` 示例同步 | **实取验证**：`https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.1/install.sh` → **HTTP 200（7,727 字节）** |
+| CI（发行提交） | run **38718200107** → **8/8 job success**（含 `ubuntu-26.04` 迁移探针） | GitHub Actions API |
+| 打包器跨平台 | 新增步骤「发布打包器自检（预演，不联网）」在 **windows-latest / macos-latest / ubuntu-24.04 / ubuntu-26.04** 全部 success | 同上（逐 job 步骤） |
+| 自检 | **313 条全绿**（新增 6 条发行护栏） | `node scripts/smoke.mjs` |
+
+> 环境限制如实记录：`raw.githubusercontent.com` 在本机被 hosts 拦（已知），
+> 因此"raw 直取安装脚本"这一步**没法在本机验证**；改用了两条不受影响的证据 ——
+> git 协议直查远端 tag/分支，以及 jsDelivr（走 CDN）实取 200。
+
 
 ---
 

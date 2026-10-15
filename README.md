@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-322%2F322-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-332%2F332-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -111,11 +111,11 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | **处方层（可执行：配置片段 / 命令 / 插件 / 设置 / 行为）** | ✅ **可用**（读本机真实配置，给出「当前值 → 建议值」；被撤掉的处方会写明原因） |
 | **体检报告 `report`** | ✅ **可用** |
 | **DSH 插件（侧边栏入口 + 报告面板 + 准实时角标）** | ✅ **可用** |
-| **处方反馈闭环**（记住已拒绝 / 感兴趣） | ⏳ 待实现 |
+| **处方反馈闭环**（记住已拒绝 / 感兴趣） | ✅ **可用**（`./run.sh rx reject <目标 ID>`；报告不再给出被拒处方，并写明"是你撤掉的"）。面板暂无反馈按钮，用 CLI 记 |
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **322/322 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **332/332 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -346,7 +346,12 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
-./scripts/smoke.sh   # 自检（322 项）
+./run.sh rx                      # 查看处方反馈（记住"这条别再给我看"）
+./run.sh rx reject <目标 ID> --reason "我不拆会话"   # 下次体检不再给这条，并写明是你撤掉的
+./run.sh rx interested <目标 ID> # 只标记（用户说感兴趣 ≠ 别再给我看）
+./run.sh rx remove <目标 ID>     # 恢复这一条
+./run.sh rx clear                # 清空全部反馈
+./scripts/smoke.sh   # 自检（332 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 项）
 ```
 
@@ -365,6 +370,18 @@ node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 
 若本工具跑在受限沙箱里（例如 DSH 的 workspace-write 模式），写 `~/.agent-clinic/` 可能被拒 ——
 报告会明确说"**已判定但没存下**"（本次照样判定了，只是跨会话历史没累积），
 而不是含糊地报一句"未判定"。
+
+**关于处方反馈**（M3.5）：`~/.agent-clinic/rx-feedback.json` 只存**处方 ID**、
+你标记的状态（已拒绝 / 感兴趣）与你**自己写的理由**（可选）—— 不含会话内容。
+每条处方在报告里都带「目标 ID」，直接复制就能用：
+
+```bash
+./run.sh rx reject behavior-split-session --reason "我不拆会话"
+```
+
+下次体检该条不再作为处方给出，**并会在报告里单独列出"已按你的反馈撤掉的处方"**
+（写明目标 ID、标记日期与理由）—— 静默消失会让人以为建议凭空没了。
+反馈读坏/写不进去都会如实报错（体检本身照常跑），`rx remove/clear` 可随时撤销。
 
 **自检两种跑法**（第三方评估 §3.1 的整改）：
 
@@ -438,8 +455,11 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 - 诊断**全流程本地**完成，会话文件**只读**
 - **默认零外发**（插件元数据打包在仓库内，体检本体不发起任何网络请求；联网只有两个显式动作：`catalog-sync` 与 `report --live`/面板的「联网现搜」按钮，检索词只含问题类型）
 - 无遥测、无崩溃上报
-- 状态文件只存"日期 + 一句话摘要"，不存对话原文
-- 删除状态文件即完全重置
+- 本工具只在 `~/.agent-clinic/` 下写**三份自己的状态**，都不含对话正文：
+  ① `catalog.snapshot.json`（插件目录快照，可联网同步）；
+  ② `text-fingerprints.json`（K1/K2 的加盐文本指纹，可 `fingerprints --clear`）；
+  ③ `rx-feedback.json`（处方反馈：处方 ID + 状态 + **你自己写的理由**，可 `rx clear`）
+- 三份状态删掉即完全重置；指纹一路还可用 `AGENT_CLINIC_NO_FINGERPRINT_STORE=1` 整体关闭
 
 ---
 

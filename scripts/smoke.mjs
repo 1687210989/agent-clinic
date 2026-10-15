@@ -3180,12 +3180,157 @@ process.stdout.write('\n22) 文档诚信与 CLI 行为\n');
       .join(' / ') || badResults.map((r) => `${r.label}:✓`).join(' '),
   );
   const help = cliMod.buildHelpText();
-  const cmds = ['scan', 'show', 'diagnose', 'report', 'catalog', 'catalog-sync', 'fingerprints'];
+  const cmds = ['scan', 'show', 'diagnose', 'report', 'catalog', 'catalog-sync', 'fingerprints', 'rx'];
   check(
     'CLI：help 文案覆盖全部子命令（与 dispatch 分支一致，漏一个就红）',
     cmds.every((c) => help.includes(`agent-clinic ${c}`)),
     cmds.filter((c) => !help.includes(`agent-clinic ${c}`)).join(' / ') || `${cmds.length} 个子命令都在 help 里`,
   );
+}
+
+// --- 23. 处方反馈闭环（M3.5）---
+//
+// 用户的原话式抱怨："每次体检都推同一批处方，有的我早就说过不要了。"
+// 这一节守住闭环的三件事：**记得住**（本地存储）、**真的生效**（从处方里剔除）、
+// **撤掉要看得到**（报告里写明是你撤掉的，不许悄悄消失）。
+process.stdout.write('\n23) 处方反馈闭环（M3.5）\n');
+{
+  const fbMod = await import('../src/prescriber/feedback.mjs');
+  const { analyze: analyzeFb, renderReport: renderFb } = reportMod;
+  const fbDir = fileURLToPath(new URL('../.tmp/rx-guard/', import.meta.url));
+  fs.rmSync(fbDir, { recursive: true, force: true });
+  fs.mkdirSync(fbDir, { recursive: true });
+  const fbFile = path.join(fbDir, 'rx-feedback.json');
+
+  // ① 存储往返
+  let { store } = fbMod.loadFeedback({ path: fbFile });
+  const rec1 = fbMod.recordFeedback(store, {
+    targetId: 'behavior-split-session',
+    state: 'rejected',
+    reason: '我不拆会话',
+    metric: 'C1',
+  });
+  store = rec1.store;
+  fbMod.recordFeedback(store, { targetId: 'spill-tighten', state: 'interested' });
+  const saved = fbMod.saveFeedback(store, { path: fbFile });
+  const reloaded = fbMod.loadFeedback({ path: fbFile });
+  check(
+    'M3.5：反馈能存能读（rejected / interested 两种状态分开记，理由与指标都保留）',
+    saved.ok &&
+      fbMod.feedbackIds(reloaded.store, 'rejected').join(',') === 'behavior-split-session' &&
+      fbMod.feedbackIds(reloaded.store, 'interested').join(',') === 'spill-tighten' &&
+      fbMod.feedbackEntries(reloaded.store).find((e) => e.targetId === 'behavior-split-session')?.reason === '我不拆会话',
+    `rejected=${fbMod.feedbackIds(reloaded.store, 'rejected')} interested=${fbMod.feedbackIds(reloaded.store, 'interested')}`,
+  );
+  check(
+    'M3.5：记录时把 targetId 放进条目本身（否则回显与渲染全是 undefined —— 这是我踩过的坑）',
+    rec1.entry.targetId === 'behavior-split-session',
+    `entry.targetId=${rec1.entry.targetId}`,
+  );
+
+  // ② 文件损坏 → 如实报错、不抛异常、不静默当"没有反馈"
+  fs.writeFileSync(fbFile, '{ 这不是 JSON', 'utf8');
+  const brokenFb = fbMod.loadFeedback({ path: fbFile });
+  check(
+    'M3.5：反馈文件损坏时如实报错（不是静默当成"你没有反馈过"）',
+    Boolean(brokenFb.error) && fbMod.feedbackEntries(brokenFb.store).length === 0,
+    brokenFb.error?.message ?? '(没报错)',
+  );
+  fs.rmSync(fbFile, { force: true });
+
+  // ③ 真的生效：rejected 从处方里剔除 + 出现在"已按你的反馈撤掉"里；interested 只标记不剔除
+  const mkFbSession = (id, out) => ({
+    sessionId: id,
+    file: `/tmp/${id}.zstd`,
+    totalLines: 6,
+    isMain: true,
+    events: Array.from({ length: 4 }, (_, i) => ({
+      kind: 'assistant_msg',
+      session_id: id,
+      locator: `/tmp/${id}.zstd#L${i + 2}`,
+      input_tokens: 1000,
+      output_tokens: out,
+      total_tokens: 1000 + out,
+    })),
+  });
+  const fbScan = {
+    sessions: [mkFbSession('rx-A', 5000), mkFbSession('rx-B', 5000), mkFbSession('rx-C', 20000)],
+    errors: [],
+  };
+  const fbCtx = { scan: fbScan, summary: { global: {} } };
+  const mkStore = (targetId, state) => {
+    const s = fbMod.loadFeedback({ path: path.join(fbDir, 'never.json') }).store;
+    fbMod.recordFeedback(s, { targetId, state });
+    return s;
+  };
+  const withReject = analyzeFb(fbCtx, { feedback: mkStore('behavior-split-session', 'rejected') });
+  const fx1 = withReject.feedbackEffect;
+  const c1Group = (withReject.groups ?? []).find((g) => g.id === 'C1');
+  check(
+    'M3.5：标了"已拒绝"的处方从处方层剔除（全局与问题卡都不再给）',
+    fx1.removed.some((r) => r.targetId === 'behavior-split-session') &&
+      !(withReject.prescriptions ?? []).some((r) => r.targetId === 'behavior-split-session') &&
+      !(c1Group?.prescriptions ?? []).some((r) => r.targetId === 'behavior-split-session'),
+    `removed=${fx1.removed.map((r) => r.targetId).join(',') || '(无)'} · 全局含它=${(withReject.prescriptions ?? []).some((r) => r.targetId === 'behavior-split-session')}`,
+  );
+  const fbText = renderFb(withReject);
+  check(
+    'M3.5：报告里写明"已被你撤掉"（含目标 ID 与理由）—— 静默消失会让人以为建议没了',
+    /已按你的反馈撤掉的处方/.test(fbText) &&
+      fbText.includes('behavior-split-session') &&
+      /我不拆会话|标记于/.test(fbText),
+    fbText.includes('已按你的反馈撤掉的处方') ? '有该小节' : '缺该小节',
+  );
+  check(
+    'M3.5：报告里每条处方都打印"目标 ID"（否则用户没法把 ID 填进 rx reject）',
+    /目标 ID：`/.test(fbText),
+  );
+  const withInterested = analyzeFb(fbCtx, { feedback: mkStore('behavior-split-session', 'interested') });
+  check(
+    'M3.5："感兴趣"只标记、不剔除（用户说感兴趣 ≠ 别再给我看）',
+    withInterested.feedbackEffect.interested.some((r) => r.targetId === 'behavior-split-session') &&
+      withInterested.feedbackEffect.removed.length === 0,
+    `interested=${withInterested.feedbackEffect.interested.map((r) => r.targetId).join(',') || '(无)'}`,
+  );
+
+  // ④ 读坏了报告也要照常出，并把这件事写出来
+  const withBroken = analyzeFb(fbCtx, {
+    feedback: brokenFb.store,
+    feedbackError: brokenFb.error,
+  });
+  check(
+    'M3.5：反馈读坏时报告仍能出，并明确写"处方反馈没读到"（不是"你没反馈过"）',
+    /处方反馈没读到/.test(renderFb(withBroken)),
+    withBroken.feedbackEffect?.error?.message ?? '(没有 error)',
+  );
+
+  // ⑤ CLI 参数解析（纯函数）
+  const cliMod2 = await import('../src/cli.mjs');
+  const rxOk = cliMod2.parseRxArgs(['reject', 'behavior-split-session', '--reason', '我不拆', '--metric', 'C1']);
+  const rxList = cliMod2.parseRxArgs([]);
+  const rxBad = cliMod2.parseRxArgs(['reject']);
+  const rxBad2 = cliMod2.parseRxArgs(['nonsense', 'x']);
+  check(
+    'M3.5：rx 参数解析（带理由/指标、list 默认、缺 ID 与未知动作都要报错）',
+    rxOk.ok &&
+      rxOk.action === 'reject' &&
+      rxOk.targetId === 'behavior-split-session' &&
+      rxOk.reason === '我不拆' &&
+      rxOk.metric === 'C1' &&
+      rxList.ok &&
+      rxList.action === 'list' &&
+      rxBad.ok === false &&
+      rxBad2.ok === false,
+    `ok=${JSON.stringify(rxOk)} · 缺 ID 被拒=${rxBad.ok === false} · 未知动作被拒=${rxBad2.ok === false}`,
+  );
+
+  // ⑥ 清空
+  const cleared2 = fbMod.clearFeedback({ path: fbFile });
+  check(
+    'M3.5：rx clear 能真的删掉反馈文件（反馈是可撤销的，不是只增不改）',
+    cleared2.ok && !fs.existsSync(fbFile),
+  );
+  fs.rmSync(fbDir, { recursive: true, force: true });
 }
 
 process.stdout.write('\n19) 自检自身完整性\n');

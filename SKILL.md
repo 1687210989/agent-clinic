@@ -60,11 +60,15 @@ license: MIT
 ./run.sh show "<file>#L2-L211" --limit 20 --offset 20   # 长区间显式分页（截断提示里给的就是这条命令）
 ./run.sh fingerprints            # 查看本地文本指纹快照（K1/K2 的数据基础；只存加盐哈希，正文不落盘）
 ./run.sh fingerprints --clear    # 删除该快照
+./run.sh rx                      # 查看处方反馈（记住"这条别再给我看"）
+./run.sh rx reject <目标 ID> --reason "我不拆会话"   # 下次体检不再给这条，并写明是你撤掉的
+./run.sh rx interested <目标 ID> # 只标记（感兴趣 ≠ 别再给我看）
+./run.sh rx remove <目标 ID>     # 恢复这一条 ／ rx clear 清空全部
 ./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步 + GitHub 核实，按热度排序）
 ./run.sh catalog-sync            # 同步插件目录（npm + GitHub）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
-./scripts/smoke.sh               # 自检（322 项）
+./scripts/smoke.sh               # 自检（332 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 条）
 ```
 

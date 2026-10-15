@@ -20,6 +20,12 @@
 import { runDiagnostics } from './diagnostics/index.mjs';
 import { KIND } from './adapters/base.mjs';
 import { prescribe, prescribeOne, skippedFor, tokenInventory, KIND_LABEL } from './prescriber/index.mjs';
+import {
+  FEEDBACK_STATE,
+  feedbackEntries,
+  feedbackIds,
+  summarizeFeedback,
+} from './prescriber/feedback.mjs';
 import { readEffectiveConfig } from './config/index.mjs';
 import { activeCatalog, applyTranslation, searchCatalog } from './catalog/index.mjs';
 import { searchPluginsLive } from './catalog/live.mjs';
@@ -294,6 +300,20 @@ export function analyze(ctx, opts = {}) {
     // 让处方层的插件检索也看到"本次生效的目录"（含联网现搜条目）
     catalog: effectiveEntries ?? undefined,
   };
+  // M3.5 处方反馈闭环：把用户标记过的处方应用进来。
+  //   - rejected  → 不再出现在处方里（但要在报告里**说出来**是你撤掉的，不能悄悄消失）
+  //   - interested → 不隐藏，只标记出来（用户说"感兴趣"≠"别再给我看"）
+  const feedbackStore = opts.feedback ?? null;
+  const rejectedIds = new Set([
+    ...(opts.rejected ?? []),
+    ...feedbackIds(feedbackStore, FEEDBACK_STATE.REJECTED),
+  ]);
+  const interestedIdSet = new Set([
+    ...(opts.interested ?? []),
+    ...feedbackIds(feedbackStore, FEEDBACK_STATE.INTERESTED),
+  ]);
+  const rejectedList = [...rejectedIds];
+
   // 每个问题各自挂上它的处方与插件检索命中（旧版只在末尾给全局列表，
   // 用户看不出"这条对应哪个问题"，也看不到"为什么推荐这个插件"）。
   // 这里存**完整处方对象**，面板展开问题时可以直接渲染成卡片。
@@ -302,11 +322,40 @@ export function analyze(ctx, opts = {}) {
   const perFinding = findings.map((f) => ({
     id: f.id,
     scope: f.scope ?? null,
-    full: prescribeOne(f, { ctx: rxCtx, rejected: opts.rejected }),
+    full: prescribeOne(f, { ctx: rxCtx, rejected: rejectedList }),
     skipped: skippedFor(f, { ctx: rxCtx }),
   }));
 
-  const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
+  const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx, rejected: rejectedList });
+
+  // 反馈带来的"撤掉"要单列出来：只有把**不带反馈时会给出的那批**算一遍，才知道
+  // 哪几条是被反馈撤掉的（而不是本来就不对症 / 名额不够）。纯函数，已带缓存语义，开销可忽略。
+  let feedbackEffect = { removed: [], interested: [], error: null, summary: null };
+  if (feedbackStore) {
+    const rawById = new Map();
+    for (const f of findings) {
+      for (const rx of prescribeOne(f, { ctx: rxCtx })) rawById.set(rx.targetId, rx);
+    }
+    for (const g of groupFindings(findings)) {
+      for (const rx of prescribeOne(g.meta, { ctx: rxCtx })) if (!rawById.has(rx.targetId)) rawById.set(rx.targetId, rx);
+    }
+    const entries = feedbackEntries(feedbackStore);
+    feedbackEffect = {
+      removed: entries
+        .filter((e) => e.state === FEEDBACK_STATE.REJECTED && rawById.has(e.targetId))
+        .map((e) => ({ ...e, title: rawById.get(e.targetId)?.title ?? null, kindLabel: rawById.get(e.targetId)?.kindLabel ?? null })),
+      interested: entries
+        .filter((e) => e.state === FEEDBACK_STATE.INTERESTED && rawById.has(e.targetId))
+        .map((e) => ({ ...e, title: rawById.get(e.targetId)?.title ?? null, kindLabel: rawById.get(e.targetId)?.kindLabel ?? null })),
+      // 标记过、但这次体检里根本没出现的（例如对应的指标没命中）—— 也要如实说，避免"我记的反馈去哪了"
+      notApplicable: entries
+        .filter((e) => !rawById.has(e.targetId))
+        .map((e) => ({ ...e })),
+      error: opts.feedbackError ?? null,
+      summary: summarizeFeedback(feedbackStore),
+    };
+  }
+
 
   // plan-2026-10-15 §3.1：名额不够时**不静默丢弃** —— 报出"本可给出、因名额未展示"的条数。
   // 口径：按 targetId 去重后的候选池大小 − 实际给出的条数（同一插件命中多类问题只算一条）。
@@ -333,7 +382,7 @@ export function analyze(ctx, opts = {}) {
     impact: grp.impact,
     confidence: grp.confidence,
     instances: grp.instances,
-    prescriptions: prescribeOne(grp.meta, { ctx: rxCtx, rejected: opts.rejected }),
+    prescriptions: prescribeOne(grp.meta, { ctx: rxCtx, rejected: rejectedList }),
     skippedPrescriptions: skippedFor(grp.meta, { ctx: rxCtx }),
   }));
 
@@ -406,6 +455,9 @@ export function analyze(ctx, opts = {}) {
     // 名额轮转语义（plan-2026-10-15 §3.1）：本可给出但因全局名额未展示的条数 —— 不静默丢弃
     prescriptionsOmitted,
     prescriptionsPoolSize: rxPoolSize,
+    // M3.5：处方反馈的效果（哪几条是被你标记"已拒绝"撤掉的、哪几条标了"感兴趣"、
+    // 哪些标记这次没对上任何处方）。**撤掉必须写出来** —— 静默消失会让人以为建议没了。
+    feedbackEffect,
     // 省 token 开关清单（陈列本机真实存在的旋钮，不是诊断结论）
     levers,
     // 插件目录检索：本地已装清单 + 命中到的插件（**按插件去重**，列全命中的指标）
@@ -630,8 +682,14 @@ export function renderReport(data) {
       push(`> 配置类处方改的是这份文件（本工具只读它，不代你改）：\`${data.config.patchPath}\``);
       push();
     }
+    // M3.5：每条处方都带 targetId —— 用户可以直接拿它做反馈，不用描述"是那条拆会话的建议"
+    push('> 不想再看到某条？`agent-clinic rx reject <目标 ID>` 记住它（下次不再给出，并写明是你撤掉的）；恢复用 `agent-clinic rx clear`。');
+    push();
     for (const [i, rx] of data.prescriptions.entries()) {
-      push(`${i + 1}. **【${rx.kindLabel}】${rx.title}** —— 针对 ${rx.findingId}`);
+      push(
+        `${i + 1}. **【${rx.kindLabel}】${rx.title}** —— 针对 ${rx.findingId}` +
+          `（目标 ID：\`${rx.targetId}\`${data.feedbackEffect?.interested?.some((x) => x.targetId === rx.targetId) ? ' · 你标记过「感兴趣」' : ''}）`,
+      );
       if (rx.steps?.length) {
         push('   - 具体怎么做：');
         for (const [n, s] of rx.steps.entries()) push(`     ${n + 1}. ${s}`);
@@ -798,6 +856,50 @@ export function renderReport(data) {
       push(`- ${s.findingId} · ${s.title}${when} —— 未给出原因：${s.reason}`);
     }
     push();
+  }
+
+  // M3.5 处方反馈闭环：把你标记过的反馈**写出来**。
+  // 撤掉的必须可见（否则用户以为"这条建议没了"），感兴趣的要标记，没对上的也要说。
+  const fx = data.feedbackEffect;
+  if (fx) {
+    if (fx.error) {
+      push('### ⚠ 处方反馈没读到');
+      push();
+      push(`- ${fx.error.message}`);
+      push('- 本次体检**没有应用你的反馈**（是"没读到"，不是"你没有反馈过"）。');
+      push();
+    }
+    if (fx.removed?.length) {
+      push(`### 已按你的反馈撤掉的处方（${fx.removed.length} 条）`);
+      push();
+      push('> 这些是你标记过 `rx reject` 的 —— 本次**没有**再作为处方给出。删掉标记：`agent-clinic rx clear`（或改成 `rx interested <目标 ID>`）。');
+      push();
+      for (const r of fx.removed) {
+        push(
+          `- ${r.kindLabel ? `【${r.kindLabel}】` : ''}${r.title ?? r.targetId}（目标 ID：\`${r.targetId}\`）` +
+            ` —— 标记于 ${String(r.at ?? '').slice(0, 10) || '未知日期'}${r.reason ? `：${r.reason}` : ''}`,
+        );
+      }
+      push();
+    }
+    if (fx.interested?.length) {
+      push(`### 你标记为「感兴趣」的处方（${fx.interested.length} 条）`);
+      push();
+      for (const r of fx.interested) {
+        push(`- ${r.kindLabel ? `【${r.kindLabel}】` : ''}${r.title ?? r.targetId}（目标 ID：\`${r.targetId}\`）`);
+      }
+      push();
+    }
+    if (fx.notApplicable?.length) {
+      push(`### 反馈里这次没对上的条目（${fx.notApplicable.length} 条）`);
+      push();
+      push('> 你标记过，但本次体检里没有出现对应的处方（可能那类问题这次没命中）—— 列出来免得你以为反馈丢了。');
+      push();
+      for (const r of fx.notApplicable) {
+        push(`- \`${r.targetId}\`（${r.state === 'rejected' ? '已拒绝' : '感兴趣'}）`);
+      }
+      push();
+    }
   }
 
   // 待优化报告 §4.2 / §4.4：同一个报告里混着三种口径（日志实测 / usage 实测 /

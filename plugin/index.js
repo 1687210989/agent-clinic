@@ -28,6 +28,22 @@ import { buildReport, analyze, analyzeLive } from '../src/report.mjs';
 // 插件进程若写不了 ~/.agent-clinic（沙箱/权限），beginFingerprintRun 会如实返回不可用，
 // K1/K2 于是带 note 出现在"未检测到异常"里说明"本次未采集指纹"——不静默装成"没问题"。
 import { beginFingerprintRun } from '../src/privacy/fingerprints.mjs';
+// M3.5 处方反馈闭环：面板路径也要应用"记住的拒绝"（否则 CLI 撤掉的处方会在面板里复活）
+import { feedbackOptions } from '../src/prescriber/feedback.mjs';
+
+/**
+ * 处方反馈 → analyze/buildReport 的选项。
+ * 读坏了不崩（反馈是附加信息），但把错误带出去，让报告如实写进"处方反馈没读到"一节。
+ */
+function feedbackOpts() {
+  const fb = feedbackOptions();
+  return {
+    rejected: fb.rejected,
+    interested: fb.interested,
+    feedback: fb.store,
+    feedbackError: fb.error,
+  };
+}
 
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
@@ -185,7 +201,7 @@ function runReport(opts = {}, config = {}) {
   const summary = summarize(scan);
   const text = buildReport(
     { scan, summary },
-    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan) },
+    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan), ...feedbackOpts() },
   );
   const notice = fingerprintNotice(fp.finish(scan));
   return notice ? `${text}\n\n> ⚠ ${notice}\n` : text;
@@ -202,7 +218,7 @@ function runAnalyze(opts = {}, config = {}) {
   // opts 必须传下去：否则 maxSessions / minRepeatCount 就是"改了没效果"的旋钮
   const data = analyze(
     { scan, summary },
-    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan) },
+    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan), ...feedbackOpts() },
   );
   const notice = fingerprintNotice(fp.finish(scan));
   // 面板已经会渲染 notDetected 的 note；这里再单独挂一个字段，供将来显式提示
@@ -489,13 +505,13 @@ export function apply(ctx, config = {}) {
             const summary = summarize(scan);
             const ctxReport = { scan, summary };
             const fpOpts = fp.diagnosticOpts(scan);
-            const fpData = analyze(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts });
+            const fpData = analyze(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts, ...feedbackOpts() });
             const fpNotice = fingerprintNotice(fp.finish(scan));
             send(200, {
               ok: true,
               version: API_VERSION,
               generatedAt: new Date().toISOString(),
-              report: buildReport(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts }),
+              report: buildReport(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts, ...feedbackOpts() }),
               data: fpNotice ? { ...fpData, fingerprintNotice: fpNotice } : fpData,
             });
           } catch (e) {

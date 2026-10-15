@@ -34,6 +34,19 @@ import {
   STORE_PATH,
   MIN_CHARS,
 } from './privacy/fingerprints.mjs';
+// M3.5 处方反馈闭环：记住"这条建议别再给我看"
+import {
+  FEEDBACK_PATH,
+  clearFeedback,
+  feedbackEntries,
+  feedbackOptions,
+  loadFeedback,
+  recordFeedback,
+  removeFeedback,
+  saveFeedback,
+  stateLabel,
+  summarizeFeedback,
+} from './prescriber/feedback.mjs';
 
 const argv = process.argv.slice(2);
 /** 取 `--flag value` 形式的参数值 */
@@ -172,11 +185,20 @@ function doDiagnose() {
   );
   const fpOutcome = fp.finish(scan);
 
+  // M3.5：把处方反馈读出来（读坏了如实说明，但不影响诊断本身）
+  const fb = feedbackOptions();
+
   process.stdout.write('运行诊断…\n\n');
   process.stdout.write(`发现 ${findings.length} 个问题\n`);
   for (const f of findings) {
     process.stdout.write(`  [${f.severity}] ${f.id} ${f.title} —— ${f.summary}\n`);
   }
+  if (fb.summary.total) {
+    process.stdout.write(
+      `\n处方反馈：已应用 ${fb.summary.total} 条（已拒绝 ${fb.summary.rejected} · 感兴趣 ${fb.summary.interested}）\n`,
+    );
+  }
+  if (fb.error) process.stdout.write(`⚠ 处方反馈读不出来（本次未应用）：${fb.error.message}\n`);
   if (notDetected.length) {
     process.stdout.write(`\n未检测到异常：${notDetected.map((d) => d.id).join('、') || '（无）'}\n`);
   }
@@ -235,6 +257,14 @@ async function doReport() {
   const fp = beginFingerprintRun();
   const scan = scanSessions({});
   const summary = summarize(scan);
+  // M3.5：处方反馈（rejected 会被处方层剔除；feedback 让报告能写出"哪几条是你撤掉的"）
+  const fb = feedbackOptions();
+  const fbOpts = {
+    rejected: fb.rejected,
+    interested: fb.interested,
+    feedback: fb.store,
+    feedbackError: fb.error,
+  };
 
   // --live：发现问题后**当场联网**去 npm / GitHub 找插件（默认关闭，联网是显式动作）
   if (argv.includes('--live')) {
@@ -244,6 +274,7 @@ async function doReport() {
     );
     const { text, live } = await buildReportLive({ scan, summary }, {
       ...fp.diagnosticOpts(scan),
+      ...fbOpts,
       liveOptions: { budgetMs: Number(budget) || 12000 },
     });
     process.stdout.write(text);
@@ -267,7 +298,7 @@ async function doReport() {
     return;
   }
 
-  const text = buildReport({ scan, summary }, fp.diagnosticOpts(scan));
+  const text = buildReport({ scan, summary }, { ...fp.diagnosticOpts(scan), ...fbOpts });
   const fpOutcome = fp.finish(scan);
 
   process.stdout.write(text);
@@ -282,6 +313,119 @@ async function doReport() {
   }
 }
 
+
+/**
+ * 解析 `rx` 子命令 —— 纯函数，便于自检直接断言。
+ *
+ * 用法：
+ *   rx                                  列出已记录的反馈
+ *   rx reject <目标 ID> [--reason "..."] [--metric C1]
+ *   rx interested <目标 ID> [--reason "..."]
+ *   rx remove <目标 ID>                 只删这一条
+ *   rx clear                            清空全部
+ *
+ * @param {string[]} args `rx` 之后的参数
+ * @returns {{ok:true, action:string, targetId?:string, reason?:string, metric?:string}|{ok:false, error:string}}
+ */
+export function parseRxArgs(args) {
+  const list = Array.isArray(args) ? args : [];
+  const get = (name) => {
+    const i = list.indexOf(name);
+    return i >= 0 && list[i + 1] !== undefined ? list[i + 1] : null;
+  };
+  const action = list[0] ?? 'list';
+  const reason = get('--reason');
+  const metric = get('--metric');
+  if (action === 'list' || action === 'clear') {
+    return { ok: true, action, reason, metric };
+  }
+  if (!['reject', 'interested', 'remove'].includes(action)) {
+    return {
+      ok: false,
+      error: `用法：agent-clinic rx [reject|interested|remove <目标 ID>] [--reason "..."] [--metric C1] | rx clear`,
+    };
+  }
+  const targetId = list[1];
+  if (!targetId || String(targetId).startsWith('--')) {
+    return { ok: false, error: `rx ${action} 需要目标 ID（处方后面括号里那个，例如 behavior-split-session）` };
+  }
+  return { ok: true, action, targetId, reason, metric };
+}
+
+function doRx() {
+  const parsed = parseRxArgs(argv.slice(1));
+  if (!parsed.ok) fail(parsed.error);
+
+  if (parsed.action === 'clear') {
+    const r = clearFeedback({ path: FEEDBACK_PATH });
+    if (!r.ok) fail(`清空反馈失败：${r.error.message}`);
+    process.stdout.write(`已清空处方反馈：${FEEDBACK_PATH}\n`);
+    return;
+  }
+
+  const { store, error } = loadFeedback({ path: FEEDBACK_PATH });
+  if (error) {
+    // 读坏了不能装作没事：否则"记反馈"会覆盖掉用户已有的反馈记录
+    process.stdout.write(`⚠ 现有的反馈文件读不出来：${error.message}\n`);
+    process.stdout.write('  （继续写会覆盖它。建议先备份或删除该文件再重试。）\n');
+  }
+
+  if (parsed.action === 'list') {
+    const entries = feedbackEntries(store);
+    process.stdout.write(`处方反馈：${FEEDBACK_PATH}\n`);
+    if (!entries.length) {
+      process.stdout.write('（还没有记录。用 `agent-clinic rx reject <目标 ID>` 记一条。）\n');
+      return;
+    }
+    const summary = summarizeFeedback(store);
+    process.stdout.write(
+      `共 ${summary.total} 条（已拒绝 ${summary.rejected} · 感兴趣 ${summary.interested}）` +
+        `${summary.updatedAt ? ` · 最近更新 ${summary.updatedAt}` : ''}\n`,
+    );
+    for (const e of entries) {
+      process.stdout.write(
+        `  [${stateLabel(e.state)}] ${e.targetId}` +
+          `${e.metric ? ` (${e.metric})` : ''}${e.reason ? ` —— ${e.reason}` : ''}` +
+          `${e.at ? ` · ${String(e.at).slice(0, 10)}` : ''}\n`,
+      );
+    }
+    process.stdout.write('\n恢复某条：agent-clinic rx remove <目标 ID>；全部清空：agent-clinic rx clear\n');
+    return;
+  }
+
+  if (parsed.action === 'remove') {
+    const { existed } = removeFeedback(store, parsed.targetId);
+    if (!existed) fail(`没有这条反馈：${parsed.targetId}`);
+    const saved = saveFeedback(store, { path: FEEDBACK_PATH });
+    if (!saved.ok) {
+      fail(
+        `反馈写入失败：${saved.error.message}\n` +
+          '（注意：本工具在受限沙箱里可能写不了 ~/.agent-clinic/ —— 那就换到非沙箱环境再试）',
+      );
+    }
+    process.stdout.write(`已删除反馈：${parsed.targetId}\n`);
+    return;
+  }
+
+  const state = parsed.action === 'reject' ? 'rejected' : 'interested';
+  const { entry } = recordFeedback(store, {
+    targetId: parsed.targetId,
+    state,
+    reason: parsed.reason,
+    metric: parsed.metric,
+  });
+  const saved = saveFeedback(store, { path: FEEDBACK_PATH });
+  if (!saved.ok) {
+    fail(
+      `反馈写入失败：${saved.error.message}\n` +
+        `（${FEEDBACK_PATH} 写不了 —— 受限沙箱里这是常见情况，换到非沙箱环境再试）`,
+    );
+  }
+  process.stdout.write(
+    `已记录：${entry.targetId} → ${stateLabel(state)}${entry.reason ? `（理由：${entry.reason}）` : ''}\n` +
+      `  影响：下次体检不再把它作为处方给出（并会写明是你撤掉的）。恢复：agent-clinic rx remove ${entry.targetId}\n`,
+  );
+}
 
 /**
  * 指纹快照的查看 / 清除（决策 D4 的隐私出口）。
@@ -409,11 +553,15 @@ export function buildHelpText() {
       '                                    --source npm|github|both（默认 both）',
       '  agent-clinic fingerprints         查看本人文本指纹快照（K1/K2 的数据基础）',
       '                                    --clear  删除该快照',
+      '  agent-clinic rx                   查看/记录**处方反馈**（记住"这条别再给我看"）',
+      '                                    rx reject <目标 ID> [--reason "..."] [--metric C1]',
+      '                                    rx interested <目标 ID> · rx remove <目标 ID> · rx clear',
       '',
       '只读 · 零依赖 · 默认零外发',
-      '会话文件只读；本工具只在自己目录 ~/.agent-clinic/ 下写两份状态：目录快照、文本指纹快照',
+      '会话文件只读；本工具只在自己目录 ~/.agent-clinic/ 下写三份状态：目录快照、文本指纹快照、处方反馈',
       '指纹快照只存加盐哈希（正文不落盘），可用 fingerprints --clear 删除或',
       'AGENT_CLINIC_NO_FINGERPRINT_STORE=1 关闭',
+      '处方反馈只存处方 ID 与你自己写的理由，可用 rx clear 清空',
       '联网动作只有两个，都需显式指定：catalog-sync（同步目录）、report --live（现搜插件）',
       'report --live 只发送问题类型关键词，不发送任何会话内容（报告里会列出实际发出的检索词）',
     ].join('\n') + '\n'
@@ -506,6 +654,9 @@ if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
       break;
     case 'fingerprints':
       doFingerprints();
+      break;
+    case 'rx':
+      doRx();
       break;
     case 'help':
     case '--help':

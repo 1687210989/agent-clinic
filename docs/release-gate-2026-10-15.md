@@ -38,7 +38,7 @@ npm 发布结果与三个真实教训见 §6.1。
 |---|---|---|
 | 自检总条数 | `DSH_HOME=<语料> DSH_SMOKE_REQUIRE_DATA=1 AGENT_CLINIC_SKILL_DIRS=… node scripts/smoke.mjs` | **通过 307 · 失败 0 · 跳过 0**，exit 0 |
 | 语料覆盖率 | `node scripts/fixtures/synth-dsh.mjs --verify` | **命中 21/21 个指标**（会话 27 个），exit 0 |
-| 插件面板测试 | `node scripts/plugin-dom.test.mjs` | **通过 76 · 失败 0**，exit 0 |
+| 插件面板测试 | `node scripts/plugin-dom.test.mjs` | **通过 106 · 失败 0**，exit 0（并自带"文档条数声称"核对） |
 | 空数据降级 | `DSH_HOME=<空目录> node scripts/smoke.mjs` | 退出码 0（不冒充全绿） |
 | 空数据报告 | `DSH_HOME=<空目录> node src/cli.mjs report` | exit 0 |
 | 指纹命令 | `node src/cli.mjs fingerprints` | exit 0（可读、可 `--clear`） |

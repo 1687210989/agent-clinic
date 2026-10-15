@@ -2047,4 +2047,55 @@ section('F) 交互路径');
 section('汇总');
 process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
 if (failures.length) process.stdout.write(`失败项：\n${failures.map((f) => `  - ${f}`).join('\n')}\n`);
-process.exitCode = fail === 0 ? 0 : 1;
+
+// ---------------------------------------------------------------------------
+// 条数声称守护：文档里写的"面板测试 N 条/项"必须与本文件实际条数一致
+// ---------------------------------------------------------------------------
+//
+// 与 scripts/smoke.mjs 的徽章守护同一个道理：README / SKILL 里写死的条数没有任何东西
+// 看着，加了几条断言之后它会安静地变成假话（这个仓库已经吃过两次亏：smoke 声称 249
+// 而实测 247；本文件声称 76 而实际已经不是）。放在这里而不是 smoke 里，是因为
+// **只有本文件知道自己的条数**。
+//
+// 用法：node scripts/plugin-dom.test.mjs --write-badge    # 全绿后回写文档
+const claimedFiles = [
+  new URL('../README.md', import.meta.url),
+  new URL('../SKILL.md', import.meta.url),
+];
+const claimRe = /(插件面板的零依赖 DOM 桩测试（)(\d+)( (?:条|项)）)/g;
+const total = pass + fail;
+const writeBadge = process.argv.includes('--write-badge');
+const badgeIssues = [];
+const rewrote = [];
+for (const f of claimedFiles) {
+  const label = path.basename(fileURLToPath(f));
+  let src;
+  try {
+    src = fs.readFileSync(f, 'utf8');
+  } catch (e) {
+    badgeIssues.push(`${label} 读不到：${e.message}`);
+    continue;
+  }
+  const claims = [...src.matchAll(claimRe)].map((m) => Number(m[2]));
+  if (claims.length === 0) {
+    badgeIssues.push(`${label} 里找不到"插件面板的零依赖 DOM 桩测试（N 条/项）"这句声称`);
+    continue;
+  }
+  const stale = claims.filter((n) => n !== total);
+  if (stale.length === 0) continue;
+  if (writeBadge && fail === 0) {
+    fs.writeFileSync(f, src.replace(claimRe, (_, a, __, b) => `${a}${total}${b}`), 'utf8');
+    rewrote.push(`${label}（${stale.join('/')} → ${total}）`);
+    continue;
+  }
+  badgeIssues.push(`${label}：声称 ${stale.join('/')}，实际 ${total}`);
+}
+if (rewrote.length) process.stdout.write(`已回写条数声称：${rewrote.join('、')}\n`);
+if (badgeIssues.length) {
+  process.stdout.write(`\n✗ 条数声称与实际不一致：\n${badgeIssues.map((s) => `  - ${s}`).join('\n')}\n`);
+  process.stdout.write('  修法：确认全绿（失败 0）后执行 `node scripts/plugin-dom.test.mjs --write-badge`。\n');
+} else if (rewrote.length === 0) {
+  process.stdout.write(`条数声称已核对：文档与实际一致（${total} 条）。\n`);
+}
+
+process.exitCode = fail === 0 && badgeIssues.length === 0 ? 0 : 1;

@@ -347,7 +347,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
 ./scripts/smoke.sh   # 自检（322 项）
-node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 项）
+node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 项）
 ```
 
 **关于 `show` 的翻页**（决策 D8）：区间超过 200 行时默认只展开一页，并直接给出**可复制**的下一条命令：
@@ -486,13 +486,28 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 
 ### 测试空白（明确列出，不吹全覆盖）
 
-- **面板**：真实计时器（6 秒轮询、复制按钮 1.4 秒复位）、CSS 布局（`var(--x, fallback)` 不解析）、
-  `liveBusy` 中间态、watch 签名变化后面板自动刷新、`CatalogRow` 展开态的其它分支、
-  Escape 关闭（`client.js` 里没有键盘处理）、异常响应形状（非 JSON / 非 200 / `r.json()` reject）。
+> 面板测试（`scripts/plugin-dom.test.mjs`，106 条）**自己核对**文档里写的条数：
+> 数字对不上就以退出码 1 结束（与 smoke 的徽章守护同一套做法），
+> 全绿后可 `--write-badge` 回写。
+
+- **面板 —— 已覆盖**：面板/角标渲染、问题卡与处方卡的折叠与合并、交互（关闭、刷新、
+  联网现搜的成功与失败路径）、`liveBusy` 中间态（含失败后按钮恢复，不会永久卡死）、
+  **watch 签名变化 → 面板内容级自动刷新**（新报告文本出现、旧文本消失，不只是"请求 +1"）、
+  异常响应形状（HTTP 500 + HTML、200 + 标量、200 + `null`、`/report` 非 JSON、`/watch` 非 JSON）。
+- **面板 —— 仍未覆盖**：**真实计时**（6 秒轮询节奏、复制按钮 1.4 秒复位 —— 桩只记录
+  `setInterval`/`setTimeout` 的注册与间隔，不真的等）、CSS/布局（`var(--x, fallback)` 不解析，
+  无 `getComputedStyle`/`offsetWidth`，看不出错位与遮挡）、真实 React 语义（StrictMode 双调用、
+  依赖数组漏写、并发渲染、错误边界）、真实事件系统（capture/once/passive、键盘与 focus、
+  Escape 关闭 —— `client.js` 本身没有键盘处理）、网络细节（AbortSignal/CORS/流式、
+  **watch tick 与在飞 `/report` 的竞态**、连点「刷新」）、`CatalogRow` 其余展开分支、
+  处方 kind 的其它类型（command/plugin/setting）、多面板实例共存、localStorage/history/无障碍树。
 - **CLI 端到端**：`report` / `catalog` / `fingerprints` 的真实执行由 CI 步骤覆盖（只看退出码）；
-  参数校验现在有断言（`parseShowOptions`）。
+  `show` 的参数解析与 help 文案现在有断言（`parseShowOptions` / `buildHelpText`）。
 - **证据层与适配层部分 helper**：`stableStringify`、`makeEvent` 等没有直接断言
   （它们的稳定性由 E1/E5 的哈希断言间接覆盖）。
+- **一处测试保真度隐患（已修）**：面板测试的 fixture 曾长期硬编码宿主版本 `'14'`，
+  而 `plugin/client.js` 的 `CLIENT_VERSION` 已升到 `'15'` —— 于是**所有渲染断言都跑在
+  "宿主版本落后"的横幅分支上**。现已改成从源码读版本号，并断言非落后分支。
 
 
 ### ⚠️ 关于 DSH 数据格式

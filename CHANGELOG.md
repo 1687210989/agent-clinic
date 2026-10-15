@@ -30,21 +30,28 @@
 原因是 GitHub 托管 macOS runner 的**容量/额度**（macOS 计费是 Linux 的 10 倍，
 当天触发了 22 次 workflow ≈ 44 个 macOS job）。
 
-**加固（三件事，都不削弱门槛）**：
+**加固（最终态，当天分三轮收紧）**：
 
 1. **`concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`** ——
    同 ref 的新推送取消旧 run（连推几次不再各排一堆 macOS job；tag 与 main 互不取消）；
-2. **矩阵分档**：新增 `plan` job 按触发方式产出矩阵 ——
-   **push 用轻量矩阵**（macOS 只跑 node 24，6 项），
-   **tag / `workflow_dispatch` 用全量矩阵**（macOS 两个 node，7 项）；
-3. **每个 job 加 `timeout-minutes`**（20 / 5 / 10）—— 拿不到 runner 时快速失败并写明原因，
-   而不是静默排队 15 分钟被取消。
+2. **矩阵分档**：新增 `plan` job 按触发方式产出矩阵；每个 job 加 `timeout-minutes`
+   （拿不到 runner 时快速失败并写明原因，不静默排队）；
+3. **macOS 从 push 矩阵里移除**（只在 tag / 手动触发时跑），并把 macOS 也改成**显式标签** `macos-15`。
 
-过程中自己踩到一个真坑并已修：`GITHUB_OUTPUT` 写**多行值**必须用 heredoc 语法
-（`key<<EOF … EOF`），用 `printf 'matrix=%s'` 只会写进第一行，
-`fromJSON` 于是拿到半个 JSON 直接失败。plan 步骤的 bash 已在本地用 git bash **真跑三种触发**
-（push → light/6 项/macOS 仅 24；tag → full/7 项；workflow_dispatch → full/7 项）验证。
-新增 3 条基建断言守着这三件事（concurrency / timeout / 矩阵分档 + tag 条件）。
+⚠️ 第三步是被实测逼出来的：先试了"push 时让 macOS 容忍失败"（`continue-on-error: true`），
+结果那次 run **仍然是红的** —— 因为 GitHub 对"排队 15 分钟拿不到 runner"的处理是
+**cancelled（取消）**，而 `continue-on-error` 只对**失败**有效，**对取消无效**。
+只要 macOS 排在 push 矩阵里，它拿不到机器就会把整次运行判红、掩盖真实失败。
+于是最终策略是：**日常 push 覆盖 ubuntu + windows；发行 tag / 手动触发覆盖三平台（含 macOS）**。
+
+过程中自己踩到并修掉的两个真坑：
+① `GITHUB_OUTPUT` 写**多行值**必须用 heredoc 语法（`key<<EOF … EOF`），
+用 `printf 'matrix=%s'` 只会写进第一行，`fromJSON` 于是拿到半个 JSON 直接失败；
+② "tag → 全量矩阵"那条分支原本是**死代码** —— `on.push` 只写了 `branches: [main]`，
+而 `branches` 会把 tag 排除，推 tag 根本不触发 workflow。已补 `tags: ['v*']` 并加断言。
+plan 步骤的 bash 已在本地用 git bash **真跑三种触发**验证（push/tag/dispatch）。
+新增 4 条基建断言守着：concurrency、timeout、矩阵分档（push 不含 macOS + tag 含 macos-15 ×2）、
+push 触发器必须显式包含 tags。
 
 ### 上线材料与发布后的打磨
 

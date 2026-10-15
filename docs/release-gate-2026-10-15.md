@@ -246,10 +246,21 @@ A1 的实现前提是用户先接入本地 filesystem MCP server（配置写在
 ⇒ 结论：**不是代码失败**，是 GitHub 托管 macOS runner 的容量/额度
 （macOS 计费是 Linux 的 10 倍，当天共 22 次 workflow ≈ 44 个 macOS job）。
 
-**加固**（提交见 CI 文件头部注释）：`concurrency` 取消同 ref 旧 run；
-push 用轻量矩阵（macOS 只跑 node 24）、tag/手动触发用全量矩阵；
+**加固**（最终态，当天分三轮收紧；提交见 CI 文件头部注释）：`concurrency` 取消同 ref 旧 run；
+矩阵分档（`plan` job 计算）——**push 不含 macOS**、tag/手动触发跑全量（含 `macos-15` ×2）；
 每个 job 加 `timeout-minutes`（拿不到 runner 时快速失败并写明原因）。
-plan 步骤的 bash 已用本地 git bash 真跑三种触发验证（light 6 项 / full 7 项）。
+plan 步骤的 bash 已用本地 git bash 真跑三种触发验证（light 5 项 / full 7 项 / dispatch full）。
+
+**⚠️ 第三步是被实测逼出来的（值得单独记）**：先试的方案是"push 时让 macOS 容忍失败"
+（`continue-on-error: true`），但那次 run **仍然是红的** —— 因为 GitHub 对
+"排队 15 分钟拿不到 runner"的处理是 **cancelled（取消）**，而 `continue-on-error`
+**只对失败有效、对取消无效**。只要 macOS 排在 push 矩阵里，它拿不到机器就会把整次运行判红、
+掩盖真实失败。最终策略：**日常 push 覆盖 ubuntu + windows；发行 tag / 手动触发覆盖三平台**。
+（macOS 同时从 `macos-latest` 改为显式 `macos-15` —— `*-latest` 会随镜像迁移漂移，
+与 ubuntu 不 pin latest 的理由相同。）
+
+> ⚠️ 另一条教训：`on.push` 里只写 `branches: [main]` 时，**推 tag 不会触发 workflow** ——
+> `branches` 会把 tag 排除，于是"tag → 全量矩阵"是**死代码**。已补 `tags: ['v*']` 并加断言。
 
 > ⚠️ 教训（写给自己）：我之前说"CI 徽章 passing"是**误读** —— shields 徽章反映最近**完成**的 run，
 > 最新 run 还在排队/被取消时它会显示缓存的旧结果。**判断 CI 状态要看 run 列表的逐个 job**，

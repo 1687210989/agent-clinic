@@ -2330,8 +2330,15 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
   check(
     '基建：CI 工作流覆盖三平台（ubuntu / macos / windows）',
     /ubuntu-\d+\.\d+/.test(ciEffective) &&
-      /macos-latest/.test(ciEffective) &&
+      /macos-\d+/.test(ciEffective) &&
       /windows-latest/.test(ciEffective),
+    `ubuntu=${/ubuntu-\d+\.\d+/.test(ciEffective)} macos=${/macos-\d+/.test(ciEffective)} windows=${/windows-latest/.test(ciEffective)}`,
+  );
+  // macOS 也钉版本：`*-latest` 会随镜像迁移漂移，且容量表现不可预期（与 ubuntu 同一条理由）
+  check(
+    '基建：macOS runner 也显式钉版本（不用会漂移的 macos-latest）',
+    !/macos-latest/.test(ciEffective.replace(/^.*#.*$/gm, '')),
+    `生效行里出现 macos-latest=${/macos-latest/.test(ciEffective.replace(/^.*#.*$/gm, ''))}`,
   );
   // runner 标签必须显式写版本：actions/runner-images#14748 说 `ubuntu-latest` 会在
   // 2026-10-19 ~ 11-19 分几周切到 Ubuntu 26.04。用 latest 等于让 CI 环境在灰度窗口里
@@ -2358,13 +2365,18 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     (ciEffective.match(/timeout-minutes:/g) ?? []).length >= 3,
   );
   check(
-    '基建：矩阵分档 —— push 用轻量矩阵（macOS 只跑 node 24），tag/手动触发才跑全量（macOS 计费 10×）',
+    '基建：矩阵分档 —— push 不含 macOS（容量问题会把 run 判红），tag/手动触发才跑 macOS 全量',
     /full=/.test(ciEffective) &&
       /light=/.test(ciEffective) &&
-      /macos-latest","node":"22\.15\.0"/.test(ciEffective) &&
+      /macos-15","node":"22\.15\.0"/.test(ciEffective) &&
       /refs\/tags\//.test(ciEffective) &&
       /workflow_dispatch:/.test(ciEffective) &&
-      /matrix:\s*\$\{\{\s*fromJSON\(/.test(ciEffective),
+      /matrix:\s*\$\{\{\s*fromJSON\(/.test(ciEffective) &&
+      // 轻量矩阵里不得出现 macOS —— 这条是"实测 continue-on-error 对取消无效"之后的结论
+      !/"light"[\s\S]*?macos/.test(
+        ciEffective.slice(ciEffective.indexOf("light='"), ciEffective.indexOf("light='") + 400),
+      ),
+    '轻量矩阵不含 macOS、全量矩阵含 macos-15 ×2',
   );
   // ⚠️ 只写 `branches: [main]` 的话推 tag **不会触发 workflow**，"tag → 全量矩阵"就成了死代码
   //（我加完矩阵分档后自查发现的）。这条断言把 `tags: ['v*']` 钉住。
@@ -2372,15 +2384,6 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     '基建：push 触发器显式包含 tags（否则推 tag 不触发 workflow，全量矩阵永远走不到）',
     /^\s{4}tags:\s*\[/m.test(ciEffective) && /['"]v\*['"]/.test(ciEffective),
     /^\s{4}tags:\s*\[/m.test(ciEffective) ? '已显式列 tags' : '缺 tags 条目',
-  );
-  // GitHub 的 macOS 容量问题（排队 15 分钟被取消）不该把 push 的 CI 判红 ——
-  // 但也不能假装 macOS 永远没问题：push 容忍、tag/手动触发严格。两条一起钉。
-  check(
-    '基建：push 时 macOS 容忍失败（GitHub 容量问题 ≠ 代码问题），但 tag/全量矩阵里仍然严格',
-    /"tolerant":true/.test(ciEffective) &&
-      /continue-on-error:\s*\$\{\{\s*matrix\.tolerant\s*==\s*true\s*\}\}/.test(ciEffective) &&
-      (/macos-latest","node":"22\.15\.0"\}/.test(ciEffective) || !/"tolerant":true[^}]*\}\},\s*$/m.test(ciEffective)),
-    '轻量矩阵 macOS 带 tolerant:true，全量矩阵不带',
   );
   const actionMajors = [...ciEffective.matchAll(/uses:\s*actions\/(checkout|setup-node)@v(\d+)/g)].map(
     (m) => ({ name: m[1], major: Number(m[2]) }),

@@ -2315,11 +2315,37 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     misuseRejected = e instanceof TypeError;
   }
   check('基建：fetchJson 拒绝旧的数字参数（迁移漏改时报错而不是静默忽略超时）', misuseRejected);
+  // 只看"生效行"（去掉注释）：ci.yml 的注释里会引用 ubuntu-latest 作为说明文字。
+  const ciSrc = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const ciEffective = ciSrc
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
   check(
-    '基建：CI 工作流存在且覆盖三平台',
-    /ubuntu-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')) &&
-      /macos-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')) &&
-      /windows-latest/.test(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')),
+    '基建：CI 工作流覆盖三平台（ubuntu / macos / windows）',
+    /ubuntu-\d+\.\d+/.test(ciEffective) &&
+      /macos-latest/.test(ciEffective) &&
+      /windows-latest/.test(ciEffective),
+  );
+  // runner 标签必须显式写版本：actions/runner-images#14748 说 `ubuntu-latest` 会在
+  // 2026-10-19 ~ 11-19 分几周切到 Ubuntu 26.04。用 latest 等于让 CI 环境在灰度窗口里
+  // 自己漂移 —— 红了都分不清是代码坏了还是镜像换了。这里钉住"钉版本"这件事。
+  check(
+    '基建：Linux runner 显式钉版本，不用会漂移的 ubuntu-latest',
+    !/ubuntu-latest/.test(ciEffective),
+    `生效行里出现 ubuntu-latest=${/ubuntu-latest/.test(ciEffective)}`,
+  );
+  check(
+    '基建：CI 挂了 ubuntu-26.04 迁移探针（提前几周发现新镜像的兼容问题）',
+    /ubuntu-26\.04/.test(ciEffective),
+  );
+  const actionMajors = [...ciEffective.matchAll(/uses:\s*actions\/(checkout|setup-node)@v(\d+)/g)].map(
+    (m) => ({ name: m[1], major: Number(m[2]) }),
+  );
+  check(
+    '基建：checkout / setup-node 不再用跑在 Node 20 上的 v4（免弃用告警 + 强制迁移）',
+    actionMajors.length >= 2 && actionMajors.every((a) => a.major >= 5),
+    actionMajors.map((a) => `${a.name}@v${a.major}`).join(' '),
   );
   const installSrc = fs.readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
   check(

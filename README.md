@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-304%2F304-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-307%2F307-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -115,7 +115,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **304/304 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **307/307 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -338,7 +338,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
-./scripts/smoke.sh   # 自检（304 项）
+./scripts/smoke.sh   # 自检（307 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 项）
 ```
 
@@ -501,6 +501,15 @@ DSH 会话文件是**多帧 zstd 拼接**（单个文件实测含 60~233 个帧�
   ⑦修 `matchPrescriptions` 名额轮转 bug（每类问题第 2 个位次丢失的根因）。
   偏差说明：徽章核对**未**做成独立的 `scripts/badge.mjs`，而是内建进 smoke 随 CI 一起跑
   （最终条数只有跑完才知道；且沙箱内 spawn 捕获输出会 EPERM）
+- **M3.10 ✅ 第七轮：CI 加固（action 升 v7 + runner 钉版本）**（2026-10-15）：
+  ①`actions/checkout` / `actions/setup-node` 由 v4 升到 **v7** —— v4 跑在 Node 20 上，
+  已被 GitHub 强制迁到 Node 24 并每次运行都告警（v7 是 ESM 迁移版，本项目只用默认参数，
+  无破坏性影响）；②Linux runner 由会自己漂移的 `ubuntu-latest` 改为**显式钉版本**
+  `ubuntu-24.04`，并加挂 `ubuntu-26.04` **迁移探针**（只配 node 24 控成本）——
+  依据 [actions/runner-images#14748](https://github.com/actions/runner-images/issues/14748)：
+  `ubuntu-latest` 从 2026-10-19 起分几周切到 Ubuntu 26.04、11-19 完成，
+  官方给的缓解办法就是显式写标签；③自检新增 3 条断言守着"三平台覆盖 + Linux 显式版本 +
+  不得回退到 ubuntu-latest + action 主版本 ≥5"。CI 由 7 job 变 8 job。
 - M3.5 ⏳ 处方四重过滤 + 反馈闭环（记住已拒绝 / 感兴趣）
 - M4 体检报告卡片（可分享）
 - M5 ✅ 开源发布（SKILL.md / install.sh / 文档）

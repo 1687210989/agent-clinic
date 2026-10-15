@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### 第七轮：CI 加固 —— action 升 v7 + runner 钉版本（2026-10-15）
+
+> 起因是每次 CI 都带 7 条告警，以及 `ubuntu-latest` 即将在 10-19 ~ 11-19 分几周切到
+> Ubuntu 26.04（[actions/runner-images#14748](https://github.com/actions/runner-images/issues/14748)）。
+> 这一轮只动 CI 配置与守着 CI 配置的断言，**不改任何指标口径**。
+
+- **两个 action 由 v4 升到 v7**：`actions/checkout@v7`、`actions/setup-node@v7`。
+  v4 的目标运行时是 Node 20，已被 GitHub 强制跑在 Node 24 上并每次运行都告警；
+  v7 是 ESM 迁移版（checkout 另加了"不为 pull_request_target / workflow_run 检出 fork PR"）。
+  本项目只用默认参数与 `node-version`，无破坏性影响。
+- **Linux runner 显式钉版本**：`ubuntu-latest` → `ubuntu-24.04`。理由：`ubuntu-latest`
+  会在 10-19 ~ 11-19 的灰度窗口里**自己漂移**到 Ubuntu 26.04，届时 CI 变红都分不清
+  是代码坏了还是镜像换了。官方给的缓解办法正是显式写标签。
+- **加挂 `ubuntu-26.04` 迁移探针**（只配 node 24，控成本）：提前几周知道新镜像会不会
+  踩到我们，而不是等 11-19 被动变红。差异主要在 OS 24.04.5 → 26.04.1、
+  内核 6.17 → 7.0、systemd 255 → 259（Rust/Java/各 CLI 版本一致）。
+  CI 因此由 **7 job 变 8 job**（smoke 7 + 隐私卫生 1）。
+- **自检新增 3 条基建断言**（304 → **307** 条）：CI 覆盖三平台；Linux runner 显式钉版本、
+  不得回退到 `ubuntu-latest`（只看生效行，注释里的说明文字不算）；挂了 `ubuntu-26.04` 探针；
+  `checkout` / `setup-node` 主版本 ≥ 5。徽章已用 `--write-badge` 回写。
+
 ### 第六轮：面板反馈缺陷修复 + 通知自激修复（2026-10-15，进度对账后的继续整改）
 
 > 出处：`docs/status-2026-10-15-d1-d11.md` §2.2 登记的产品缺陷。这一轮只动 `plugin/client.js`

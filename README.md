@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-332%2F332-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-340%2F340-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -46,7 +46,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 
 ## 诊断维度
 
-**21 项已实现**
+**22 项已实现**
 
 | ID | 名称 | 判定 | 严重度 |
 |---|---|---|---|
@@ -77,9 +77,13 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 > 本机实测：压缩释放 **638,171** token、工具 schema **29,779** 字符/请求、
 > 注入 **158,393** 字符、辅助调用 **96** 次。定义与阈值见 [docs/diagnostics.md](docs/diagnostics.md)。
 
-**1 项排期中**：A1 MCP 闲置（本机未配置 MCP，暂无数据源）
+**0 项排期中、0 项尚未实现** —— 最后两项（A1、K1/K2）都于 2026-10-15 实现：
 
-**0 项尚未实现**（K1/K2 已于 2026-10-15 按决策 D4 实现，见下表）
+| ID | 名称 | 判定 | 说明 |
+|---|---|---|---|
+| A1 | MCP 闲置 | profile patch 里已配置 MCP 服务器，但观察窗口（≥30 天）内工具名 `mcp__<serverName>__*` **0 次调用** | 配置驱动；窗口不足只报"还差多久"，证据指向**配置行号**（`show` 可展开） |
+| K1 | 跨会话失忆 | 同一用户文本指纹出现在 **≥3 个**不同会话 | 需要加盐哈希快照 `~/.agent-clinic/text-fingerprints.json`（正文不落盘，`fingerprints --clear` 可删） |
+| K2 | 已解决重新排查 | 同一指纹在 ≥2 个会话出现，较晚那次之后有失败/重试，而最早那次之后没有 | **软信号**：只给"低"+措辞"疑似" |
 
 | ID | 名称 | 判定 | 隐私代价 |
 |---|---|---|---|
@@ -107,15 +111,15 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | 统一事件模型 | ✅ 可用 |
 | 聚合统计 | ✅ 可用 |
 | 证据层 `show` | ✅ 可用 |
-| **诊断指标 21 项** | ✅ **可用**（见上表） |
+| **诊断指标 22 项** | ✅ **可用**（见上表） |
 | **处方层（可执行：配置片段 / 命令 / 插件 / 设置 / 行为）** | ✅ **可用**（读本机真实配置，给出「当前值 → 建议值」；被撤掉的处方会写明原因） |
 | **体检报告 `report`** | ✅ **可用** |
 | **DSH 插件（侧边栏入口 + 报告面板 + 准实时角标）** | ✅ **可用** |
 | **处方反馈闭环**（记住已拒绝 / 感兴趣） | ✅ **可用**（`./run.sh rx reject <目标 ID>`；报告不再给出被拒处方，并写明"是你撤掉的"）。面板暂无反馈按钮，用 CLI 记 |
-| A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
+| A1 MCP 闲置 | ✅ **可用**（读 profile patch 的 MCP 配置行 + 按 `mcp__<serverName>__*` 统计窗口内调用次数；窗口不足 30 天时只报"还差多久"） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **332/332 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **340/340 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -187,7 +191,7 @@ token（**仅主对话**：assistant/message 的 usage）：input 791,000 · out
 
 ### 尚未实现的维度
 
-- 没有 —— 21 项已实现，1 项（A1 MCP 闲置）排期中（本机未配置 MCP，没有可判定的数据源）。
+- 没有 —— **22 项全部已实现**，0 项排期。这一节保留为空是刻意的：报告里会如实显示"没有"，而不是被删掉（删掉就没人能确认"确实查过了"）。
 
 ---
 
@@ -204,7 +208,7 @@ token（**仅主对话**：assistant/message 的 usage）：input 791,000 · out
 
 ## 安装
 
-**当前版本：`0.2.0-rc.1`（预发布通道）** —— 版本以 git tag 为准（`v0.2.0-rc.1`）。
+**当前版本：`0.2.0-rc.2`（预发布通道）** —— 版本以 git tag 为准（`v0.2.0-rc.2`）。
 npm 通道已开放：`npm i -g agent-clinic@next`（该 RC 目前也是 `latest`，因为这是首个发布版本）。
 放行检查记录见 [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
 
@@ -231,7 +235,7 @@ curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/instal
 >
 > 中国大陆网络下 `raw.githubusercontent.com` 可能不稳定，可用 jsDelivr（**必须带 tag**，分支 `@main` 会被重定向回 raw，起不到加速作用）：
 > ```bash
-> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.1/install.sh | bash
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.2/install.sh | bash
 > ```
 > 若遇到 `curl: (35)` 证书吊销检查错误（常见于国内网络），加 `--ssl-no-revoke`：
 > ```bash
@@ -253,7 +257,7 @@ cd agent-clinic
 ./install.sh --dsh-only         # 只装 DSH
 ./install.sh --workbuddy-only   # 只装 WorkBuddy
 ./install.sh --target ~/my/skills   # 指定目录
-./install.sh --ref v0.2.0-rc.1  # 指定版本（以 git tag 为准）
+./install.sh --ref v0.2.0-rc.2  # 指定版本（以 git tag 为准）
 ```
 
 ### 另：作为 DSH Plugin（原生工具 + UI 面板）
@@ -351,7 +355,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh rx interested <目标 ID> # 只标记（用户说感兴趣 ≠ 别再给我看）
 ./run.sh rx remove <目标 ID>     # 恢复这一条
 ./run.sh rx clear                # 清空全部反馈
-./scripts/smoke.sh   # 自检（332 项）
+./scripts/smoke.sh   # 自检（340 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 项）
 ```
 
@@ -389,7 +393,7 @@ node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（106 
   再要求"跳过数必须为 0"—— 无数据时"跳过"会直接变成失败，降级不得冒充全绿：
 
   ```bash
-  node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home   # 覆盖 21 项指标，固定时间戳
+  node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home   # 覆盖全部 22 项已实现指标，固定时间戳
   node scripts/fixtures/synth-dsh.mjs --verify                # 每项指标都要被触达，命中 0 即非零退出
   DSH_HOME=.tmp/synth-home DSH_SMOKE_REQUIRE_DATA=1 \
     AGENT_CLINIC_SKILL_DIRS=.tmp/synth-home/agents-skills node scripts/smoke.mjs
@@ -467,7 +471,7 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 
 - **只支持 DSH v4 会话格式**；v3 / 无压缩格式兼容待验证
 - 需要 Node ≥ 22.15（低版本会明确报错，不会静默跳过数据）；node 不在 PATH 上也没关系，会自动定位
-- **21 项诊断指标已实现**，1 项排期（A1 MCP 闲置），**0 项尚未实现**（K1/K2 于 2026-10-15 按决策 D4 实现）
+- **22 项诊断指标全部已实现**，0 项排期、0 项尚未实现（K1/K2 于 2026-10-15 按决策 D4 实现；A1 同日接入本地 MCP 服务器后实现）
 - 处方里的「随附默认值」是一份**抄录表**（出处 `@deepseek-ai/dsh-base` 的 `cordis.patch.yml`），
   升级 DSH 后若随附默认值变了，需要同步这份表；用户 profile 的真实覆盖值一律现读，不靠猜
 - 配置层只解析 `cordis.patch.yml` 里用到的那个 YAML 子集（顶层 `- id/name/config` + 标量与列表），

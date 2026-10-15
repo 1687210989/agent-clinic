@@ -105,6 +105,9 @@ export const CAPABILITY_BY_METRIC = {
   A2: ['skill-asset'],
   A3: ['skill-asset', 'automation'],
   A4: ['subagent-control', 'cost'],
+  // 2026-10-15：A1（MCP 闲置）成为已实现指标 → 给它自己的能力标签（而不是落到 A 类兜底
+  // 的 skill-asset 上，那会把"MCP 管理"错搜成"技能管理"）
+  A1: ['mcp-ops'],
   // 决策 D4：K1/K2 成为已实现指标 → 明确它们需要什么能力
   // （K 类**没有**插件能解决：跨会话记忆要靠把结论写进项目文件，所以只给"知识沉淀"类能力标签）
   K1: ['knowledge-capture'],

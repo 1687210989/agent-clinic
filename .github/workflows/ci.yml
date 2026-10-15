@@ -75,6 +75,9 @@ jobs:
           # 上恰好装了什么，等于把断言绑在宿主机上（第三方评估 §4.2 那类病）。
           # 语料自带一个必然闲置的 demo skill，这里显式指向它。
           AGENT_CLINIC_SKILL_DIRS: ${{ runner.temp }}/dsh-home/agents-skills
+          # A1（MCP 闲置）是**配置驱动**指标：干净 runner 上没有 profile 目录，
+          # 同样指向语料自带的 patch（里面配了两个 MCP 服务器且窗口内 0 调用）。
+          AGENT_CLINIC_PROFILE_PATCH: ${{ runner.temp }}/dsh-home/cordis.patch.yml
 
       # 降级必须是"优雅降级"而不是"崩"：无数据时只做能做的检查，
       # 如实列出未验证的维度，并以退出码 0 结束。

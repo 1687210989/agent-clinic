@@ -116,6 +116,39 @@ const SESSION_FILE = 'session.v4.jsonl.zstd';
  */
 const SKILLS_DIRNAME = 'agents-skills';
 const IDLE_SKILL_NAME = 'demo-idle-skill';
+
+/**
+ * 语料自带的 profile patch —— A1（MCP 闲置）的输入。
+ *
+ * A1 是**配置驱动**指标：先要知道"配了哪些 MCP 服务器"，再数 `mcp__<serverName>__*` 调用。
+ * 语料里的会话没有任何 mcp 调用，所以"配了不用"这个最典型的场景可以确定性命中。
+ * 由环境变量 AGENT_CLINIC_PROFILE_PATCH 指向本文件（干净 runner 上没有真实 profile）。
+ */
+const PATCH_FILENAME = 'cordis.patch.yml';
+const CORPUS_PATCH = [
+  '# 合成语料自带的 profile patch（A1 的输入）',
+  '- id: agent-default-model',
+  '  name: "@deepseek-ai/dsh-agent-default-model"',
+  '  config:',
+  '    provider: demo-provider',
+  '    model: demo-model',
+  '- id: mcp-demo-files',
+  '  name: "@deepseek-ai/dsh-mcp-client"',
+  '  config:',
+  '    serverName: demo-files',
+  '    transport: stdio',
+  '    command: /usr/bin/false',
+  '    args:',
+  '      - /tmp/never-used-mcp-server.js',
+  '- id: mcp-demo-http',
+  '  name: "@deepseek-ai/dsh-mcp-resources"',
+  '  config:',
+  '    serverName: demo-http',
+  '    transport: streamable-http',
+  '    url: http://127.0.0.1:9/mcp',
+  '',
+].join('\n');
+
 const IDLE_SKILL_MD = [
   '---',
   `name: ${IDLE_SKILL_NAME}`,
@@ -130,12 +163,12 @@ const IDLE_SKILL_MD = [
   '',
 ].join('\n');
 
-/** 本语料必须覆盖的 21 个已实现指标（A1 未实现，不在内） */
+/** 本语料必须覆盖的 22 个已实现指标（A1 于 2026-10-15 实现后加入） */
 export const METRIC_IDS = [
   'C1', 'C2', 'C3', 'C5', 'C6', 'C7',
   'E1', 'E2', 'E3', 'E4', 'E5',
   'N1', 'N2', 'N3', 'N4',
-  'A2', 'A3', 'A4', 'A5',
+  'A1', 'A2', 'A3', 'A4', 'A5',
   // 决策 D4：K1/K2 从"未实现"变为已实现（本地加盐指纹），语料必须覆盖
   'K1', 'K2',
 ];
@@ -772,7 +805,14 @@ export function writeCorpus(outDir) {
   fs.mkdirSync(idleSkillDir, { recursive: true });
   fs.writeFileSync(path.join(idleSkillDir, 'SKILL.md'), IDLE_SKILL_MD, 'utf8');
 
-  return { outDir, workspaceDir, skillsDir, sessions: written };
+  // ---- 语料自带的 profile patch（A1 的输入）----
+  // A1 是**配置驱动**指标：要知道"配了哪些 MCP 服务器"。干净 runner 上没有 profile 目录，
+  // 所以这里造一份 patch，由 AGENT_CLINIC_PROFILE_PATCH 指过来（与 A2 的 skill 目录同一套路）。
+  // 语料里的会话**没有任何** mcp__* 调用 → A1 必然命中（这正是"配了不用"的真实场景）。
+  const patchFile = path.join(outDir, PATCH_FILENAME);
+  fs.writeFileSync(patchFile, CORPUS_PATCH, 'utf8');
+
+  return { outDir, workspaceDir, skillsDir, patchFile, sessions: written };
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +879,9 @@ async function runVerify() {
   // 而不是继承调用方/宿主机的取值（确定性优先）。覆盖会打印在输出里。
   const inherited = process.env.AGENT_CLINIC_SKILL_DIRS ?? '';
   process.env.AGENT_CLINIC_SKILL_DIRS = result.skillsDir;
+  // A1（MCP 闲置）同理：指向本次生成的 profile patch，不读宿主机的真实 profile
+  const inheritedPatch = process.env.AGENT_CLINIC_PROFILE_PATCH ?? '';
+  process.env.AGENT_CLINIC_PROFILE_PATCH = result.patchFile;
 
   const { scanSessions } = await import('../../src/adapters/dsh.mjs');
   const { summarize } = await import('../../src/summary.mjs');

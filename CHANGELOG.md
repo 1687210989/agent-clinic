@@ -4,6 +4,39 @@
 
 ## [Unreleased]
 
+（下一轮改动写在这里。本次发行的内容见下一个版本段。）
+
+## [0.2.0-rc.2] — 2026-10-15
+
+> **这次是"补全最后一块"的版本**：诊断指标 **21 → 22 项，0 项排期、0 项尚未实现**。
+>
+> ```bash
+> npm i -g agent-clinic@next        # 预发布通道（rc.2）
+> curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash
+> ```
+>
+> 质量门：自检 **340 条全绿** · 面板测试 **106 条** · 语料覆盖率 **22/22** · CI 三平台全绿。
+
+### A1 MCP 闲置 —— 最后一个"排期中"指标实现（配置驱动）
+
+A1 长期排期的原因是**缺数据源**：判定需要 ①配置了哪些 MCP 服务器、②窗口内调用次数，
+而本机 `~/.dsh` 下没有任何 MCP 配置。2026-10-15 接入本地 filesystem MCP server 后两个输入都有了，
+于是实现并**用真实配置验收**（不是合成数据）：
+
+- **服务器清单**：读 profile patch 里 `name: '@deepseek-ai/dsh-mcp-client'`（或 `-resources`）
+  且未 disabled 的行 → `config.serverName`；
+- **调用次数**：按 DSH 的固定工具命名 `mcp__<serverName>__<rawName>` 统计
+  （该插件 README「工具命名与共存」：公开名是 (serverName, rawName) 的纯函数，重启/HMR 后稳定）；
+- **观察窗口**：与 A2 同口径（`今天 − 首次会话`）；不足 30 天只报"还差多久"，**不下闲置结论**；
+- **证据是配置行号**（`<profile>/cordis.patch.yml#L34`）—— `show` 能展开非 zstd 文件，照样可复核；
+- 缺 `serverName` 的配置行单独报出来（配置本身有问题），不静默忽略；
+- 测试/CI 用新环境变量 `AGENT_CLINIC_PROFILE_PATCH` 指向语料自带的 patch
+  （干净 runner 上没有 profile 目录 —— 与 `AGENT_CLINIC_SKILL_DIRS` 同一套路）。
+
+配套：新增对症处方（"闲置的 MCP 服务器：要么用起来，要么卸掉"，含分步操作）、
+能力标签 `mcp-ops`、语料新增 patch 与 A1 用例、自检新增第 24 段（7 条 = 读配置/计数/窗口/缺省分支）、
+`parsePatch` 现在记录**行号**（配置类结论的证据基础）。
+
 ### M3.5 处方反馈闭环 + 发行收尾（2026-10-15）
 
 - **处方反馈闭环（M3.5）实现** —— 解决"每次体检都推同一批处方，有的我早就说过不要了"：

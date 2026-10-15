@@ -490,6 +490,27 @@ export const REMEDIES = [
     }),
   }),
 
+  // --- 2026-10-15：A1（MCP 闲置）实现后补的对症处方 ---
+  P({
+    id: 'behavior-mcp-idle',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 85,
+    // A1 是"配置了 MCP 服务器但窗口内 0 调用"
+    targets: ['A1'],
+    title: '闲置的 MCP 服务器：要么用起来，要么卸掉',
+    solves: 'MCP 服务器的工具 schema 会随工具面一起每请求重发，配了不用就是纯成本',
+    build: (f) => ({
+      detail:
+        `确认「${f.scope ?? '该服务器'}」是否还需要：**需要** → 把任务明确交给它（在指令里点名用它，` +
+        `否则模型更倾向用内置工具）；**不需要** → 从 profile patch 里删掉那一行（证据里的行号就是它）。` +
+        `两种都比留着强。实测：${f.summary}`,
+      because: '窗口内 0 次调用是可核验的事实（按 mcp__<serverName>__ 前缀统计），不是猜测。',
+    }),
+    risk: '删掉配置后该服务器提供的工具立即消失；若还有在跑的任务依赖它，会报"工具不存在"。先确认没人用它。',
+    verify: '重跑 ./run.sh report：A1 里不再出现这个 serverName（若改成用起来，调用次数会从 0 变 >0）。',
+  }),
+
   // --- 决策 D4（2026-10-15）：K1/K2 变成已实现指标 → 必须有对症处方 ---
   P({
     id: 'behavior-cross-session-note',
@@ -634,6 +655,13 @@ for (const r of REMEDIES) {
  * 需要带上真实文件路径），这里只写行为类。
  */
 const EXPLICIT_STEPS = {
+  'behavior-mcp-idle': [
+    '打开报告里 A1 的证据定位（形如 <profile>/cordis.patch.yml#L34），确认那一行就是它',
+    '想留：下次相关任务里**点名**用它的工具（例如「用 files 的 read_file 看 X」），否则模型倾向用内置工具',
+    '想删：用编辑器删掉 `- id: mcp-<名字>` 起的整块（name/config 那几行一起删）',
+    '保存后重启 Harness（MCP 配置改动需要重启才生效；编辑同一行会原地重载）',
+    '重跑 ./run.sh report：A1 里不再出现这个 serverName',
+  ],
   'behavior-split-session': [
     '在当前会话里说一句：「先把进度写成交接文件：当前目标、已完成、已确认的结论、下一步、涉及的文件路径」',
     '让 Agent 把交接写到工作区的一个固定文件（例如 HANDOFF.md），确认文件真的写出来了',

@@ -185,7 +185,8 @@ export function parsePatch(text) {
   let configChildIndent = null;
 
   const lines = String(text ?? '').split(/\r?\n/);
-  for (const raw of lines) {
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const raw = lines[idx];
     if (!raw.trim() || raw.trim().startsWith('#')) continue;
     const indent = raw.length - raw.trimStart().length;
     const trimmed = raw.trim();
@@ -200,7 +201,9 @@ export function parsePatch(text) {
         const key = kv[1];
         const val = kv[2];
         if (key === 'id' && indent <= 6 && !val.startsWith('!')) {
-          cur = { id: unquote(val), name: null, disabled: null, config: {} };
+          // line：该行在 patch 文件里的 1-based 行号 —— 用来给"配置类"结论做证据定位
+          // （A1「MCP 闲置」的证据就是配置本身，不是某条会话事件）
+          cur = { id: unquote(val), name: null, disabled: null, config: {}, line: idx + 1 };
           rows.push(cur);
           continue;
         }
@@ -257,20 +260,61 @@ export function parsePatch(text) {
 
 /**
  * 读取用户 profile patch（只读；不存在不算错）。
+ *
+ * 路径可被 `AGENT_CLINIC_PROFILE_PATCH` 覆盖 —— 为了自检/CI 能在**确定性输入**上
+ * 断言 A1（MCP 闲置）这类"配置驱动"的指标：干净 runner 上没有 profile 目录，
+ * 真读宿主只会得到"没配置"，覆盖不足就会假红（与 `AGENT_CLINIC_SKILL_DIRS` 同一套路）。
  */
 export function readProfilePatch(env = process.env) {
   const dir = resolveProfileDir(env);
-  const file = dir ? path.join(dir, 'cordis.patch.yml') : null;
+  const override = env?.AGENT_CLINIC_PROFILE_PATCH ? String(env.AGENT_CLINIC_PROFILE_PATCH) : null;
+  const file = override ?? (dir ? path.join(dir, 'cordis.patch.yml') : null);
   if (!file) {
     return { path: null, exists: false, rows: [], warnings: ['未找到 profile 目录（DSH_HOME/profiles）'], profileDir: dir };
   }
   try {
     const text = fs.readFileSync(file, 'utf8');
     const { rows, warnings } = parsePatch(text);
-    return { path: file, exists: true, rows, warnings, profileDir: dir };
+    return {
+      path: file,
+      exists: true,
+      rows,
+      warnings,
+      profileDir: dir,
+      overridden: Boolean(override),
+    };
   } catch (e) {
-    return { path: file, exists: false, rows: [], warnings: [`读取失败：${e.message}`], profileDir: dir };
+    return {
+      path: file,
+      exists: false,
+      rows: [],
+      warnings: [`读取失败：${e.message}`],
+      profileDir: dir,
+      overridden: Boolean(override),
+    };
   }
+}
+
+/** 从 patch 行里挑出 MCP 服务器配置（A1 用） */
+export function mcpServersFromRows(rows, { patchPath = null } = {}) {
+  const MC = {
+    '@deepseek-ai/dsh-mcp-client': 'client',
+    '@deepseek-ai/dsh-mcp-resources': 'resources',
+  };
+  return (rows ?? [])
+    .filter((r) => MC[r.name] && r.disabled !== true)
+    .map((r) => ({
+      rowId: r.id,
+      plugin: r.name,
+      kind: MC[r.name],
+      serverName: r.config?.serverName ?? null,
+      transport: r.config?.transport ?? null,
+      command: r.config?.command ?? null,
+      url: r.config?.url ?? null,
+      toolTimeoutMs: r.config?.toolCallTimeoutMs ?? null,
+      locator: patchPath && Number.isInteger(r.line) ? `${patchPath}#L${r.line}` : null,
+      line: r.line ?? null,
+    }));
 }
 
 /**

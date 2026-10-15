@@ -1326,7 +1326,13 @@ process.stdout.write('\n13) 全维度覆盖与误报防护\n');
     ),
     `${implemented.length} 项`,
   );
-  check('排期中的指标有记录', pending.length > 0, pending.join(','));
+  // 2026-10-15：A1 实现后**排期项归零** —— 这条断言原本要求"必须有一个排期中指标"，
+  // 现在改成断言"排期集合与 REGISTRY 一致"，无论它是 0 个还是 N 个（不再逼着人不实现）。
+  check(
+    '排期中的指标有记录（可为 0 —— 全部实现时如实为空，而不是硬留一个凑数）',
+    Array.isArray(pending) && pending.every((id) => !implemented.includes(id)),
+    pending.length ? pending.join(',') : '（0 项：全部已实现）',
+  );
   // 第二轮评估 F1：E3/N3/N4 的数据一直在日志里（是适配层没抽），已实现并移出本列表。
   // 剩下的 K1/K2 也**不是**"数据源缺失"，而是隐私取舍下的方案未定 —— 断言这一点，
   // 防止将来又退化成"平台做不到"的说法。
@@ -3331,6 +3337,150 @@ process.stdout.write('\n23) 处方反馈闭环（M3.5）\n');
     cleared2.ok && !fs.existsSync(fbFile),
   );
   fs.rmSync(fbDir, { recursive: true, force: true });
+}
+
+// --- 24. A1 MCP 闲置（配置驱动指标）---
+//
+// A1 长期"排期中"的原因是缺数据源：要知道"配了哪些 MCP 服务器" + "窗口内调用了几次"。
+// 2026-10-15 用户接入了本地 filesystem MCP server，两个输入就都有了。
+// 这一节守住三件事：**读配置**（含行号，供 show 复核）、**按 mcp__<serverName>__ 前缀计数**、
+// **窗口不足时不下结论**（拿 3 天数据说"闲置 30 天"比不报更糟）。
+process.stdout.write('\n24) A1 MCP 闲置（配置驱动）\n');
+{
+  const { runDiagnostics: runA1 } = await import('../src/diagnostics/index.mjs');
+  const cfgMod = await import('../src/config/index.mjs');
+  const a1Dir = fileURLToPath(new URL('../.tmp/a1-guard/', import.meta.url));
+  fs.rmSync(a1Dir, { recursive: true, force: true });
+  fs.mkdirSync(a1Dir, { recursive: true });
+  const patchFile = path.join(a1Dir, 'cordis.patch.yml');
+  fs.writeFileSync(
+    patchFile,
+    [
+      '# guard patch',
+      '- id: mcp-a',
+      '  name: "@deepseek-ai/dsh-mcp-client"',
+      '  config:',
+      '    serverName: alpha',
+      '    transport: stdio',
+      '- id: mcp-b',
+      '  name: "@deepseek-ai/dsh-mcp-resources"',
+      '  config:',
+      '    serverName: beta',
+      '    transport: streamable-http',
+      '- id: mcp-broken',
+      '  name: "@deepseek-ai/dsh-mcp-client"',
+      '  config:',
+      '    transport: stdio',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  // ① 配置解析 + 行号（A1 的证据就是配置行，必须能 show 展开）
+  const patch = cfgMod.readProfilePatch({ AGENT_CLINIC_PROFILE_PATCH: patchFile });
+  const parsed = cfgMod.mcpServersFromRows(patch.rows, { patchPath: patch.path });
+  check(
+    'A1：能从 profile patch 读出 MCP 服务器（含客户端/资源两类插件），并带可复核的行号',
+    patch.exists &&
+      parsed.length === 3 &&
+      parsed.some((s) => s.serverName === 'alpha' && s.kind === 'client' && s.line === 2 && /#L2$/.test(s.locator ?? '')) &&
+      parsed.some((s) => s.serverName === 'beta' && s.kind === 'resources' && s.line === 7) &&
+      parsed.some((s) => s.serverName === null && s.line === 12),
+    `解析出 ${parsed.length} 行：${parsed.map((s) => `${s.serverName ?? '(缺)'}@L${s.line}`).join(' ')}`,
+  );
+
+  // ② 观测：造一个 ≥30 天的窗口
+  const mkA1Session = (id, ts, tools = []) => ({
+    sessionId: id,
+    file: `/tmp/${id}.zstd`,
+    totalLines: 5,
+    events: [
+      { kind: 'user_msg', session_id: id, ts, locator: `/tmp/${id}.zstd#L2`, text_len: 20 },
+      ...tools.map((t, i) => ({
+        kind: 'tool_call',
+        session_id: id,
+        tool_name: t,
+        ts,
+        locator: `/tmp/${id}.zstd#L${i + 3}`,
+      })),
+    ],
+  });
+  const oldTs = '2026-06-01T00:00:00.000Z';
+  const nowTs = Date.parse('2026-10-15T00:00:00.000Z');
+  const idleScan = { sessions: [mkA1Session('a1-idle', oldTs), mkA1Session('a1-now', new Date(nowTs).toISOString())] };
+  const idle = runA1({ scan: idleScan, summary: { global: {} } }, { mcpPatch: patch, now: nowTs });
+  const idleFindings = idle.findings.filter((f) => f.id === 'A1');
+  check(
+    'A1：已配置但窗口内 0 调用 → 命中，且证据指向配置行（可 show 复核）',
+    idleFindings.length === 2 &&
+      idleFindings.every((f) => f.evidence?.[0]?.locator?.includes('cordis.patch.yml#L')),
+    `命中 ${idleFindings.length} 处（alpha/beta）· 证据 ${idleFindings[0]?.evidence?.[0]?.locator ?? '(无)'}`,
+  );
+  check(
+    'A1：缺 serverName 的配置行单独报出来（配置本身有问题，不静默忽略）',
+    /缺少 serverName/.test(idle.notDetected.find((d) => d.id === 'A1')?.note ?? '') === false &&
+      /缺少 serverName/.test(idleFindings.map((f) => f.impact).join(' ')) === false,
+    `note=${idle.notDetected.find((d) => d.id === 'A1')?.note ?? idleFindings.map((f) => f.summary).join(' | ')}`.slice(0, 120),
+  );
+
+  // ③ 有调用 → 不报（"配了且在用"不该被判闲置）
+  const usedScan = {
+    sessions: [
+      mkA1Session('a1-used', oldTs, ['mcp__alpha__read_file', 'mcp__alpha__list_directory']),
+      mkA1Session('a1-now', new Date(nowTs).toISOString()),
+    ],
+  };
+  const used = runA1({ scan: usedScan, summary: { global: {} } }, { mcpPatch: patch, now: nowTs });
+  const usedA1 = used.findings.filter((f) => f.id === 'A1');
+  check(
+    'A1：按 mcp__<serverName>__ 前缀计数 —— 有调用就不报（alpha 在用、beta 仍闲置）',
+    usedA1.length === 1 && usedA1[0].scope === 'beta',
+    `命中 ${usedA1.map((f) => f.scope).join(',') || '(无)'}（期望只剩 beta）`,
+  );
+
+  // ④ 窗口不足 → 明确不报，并说"还差多久"
+  const shortScan = { sessions: [mkA1Session('a1-short', new Date(nowTs - 3 * 86400000).toISOString())] };
+  const short = runA1({ scan: shortScan, summary: { global: {} } }, { mcpPatch: patch, now: nowTs });
+  check(
+    'A1：观察窗口不足 30 天时只报"窗口不够、还差多久"，不下闲置结论',
+    short.findings.filter((f) => f.id === 'A1').length === 0 &&
+      /样本不足|还差|再过约/.test(short.notDetected.find((d) => d.id === 'A1')?.note ?? ''),
+    (short.notDetected.find((d) => d.id === 'A1')?.note ?? '(无说明)').slice(0, 90),
+  );
+
+  // ⑤ 没有任何 MCP 配置 → 如实说"没有 MCP 配置行"，而不是"没问题"
+  const barePatch = cfgMod.parsePatch('- id: x\n  name: "@deepseek-ai/dsh-x"\n  config:\n    a: 1\n');
+  const bare = runA1(
+    { scan: idleScan, summary: { global: {} } },
+    { mcpPatch: { path: '/tmp/bare.yml', exists: true, rows: barePatch.rows, warnings: [] }, now: nowTs },
+  );
+  check(
+    'A1：没有 MCP 配置行时如实说明（"没有配置"≠"已确认无异常"）',
+    bare.findings.filter((f) => f.id === 'A1').length === 0 &&
+      /没有 MCP 服务器配置行/.test(bare.notDetected.find((d) => d.id === 'A1')?.note ?? ''),
+    (bare.notDetected.find((d) => d.id === 'A1')?.note ?? '(无)').slice(0, 80),
+  );
+
+  // ⑥ 没读到 patch（干净环境）→ 明确"无法判断"，不许假装查过
+  const missing = runA1(
+    { scan: idleScan, summary: { global: {} } },
+    { mcpPatch: { path: '/nope/cordis.patch.yml', exists: false, rows: [], warnings: [] }, now: nowTs },
+  );
+  check(
+    'A1：读不到 profile patch 时写明"无法判断 MCP 配置"（并提示可用 AGENT_CLINIC_PROFILE_PATCH）',
+    missing.findings.filter((f) => f.id === 'A1').length === 0 &&
+      /AGENT_CLINIC_PROFILE_PATCH/.test(missing.notDetected.find((d) => d.id === 'A1')?.note ?? ''),
+    (missing.notDetected.find((d) => d.id === 'A1')?.note ?? '(无)').slice(0, 80),
+  );
+
+  // ⑦ 指标表里 A1 已是"已实现"，且不再出现在排期/未实现列表
+  check(
+    'A1：已从"排期中"移入已实现集合（报告不再把 MCP 闲置列为未实现）',
+    !missing.notImplemented.some((x) => x.id === 'A1') && !missing.unimplementable.some((x) => x.id === 'A1'),
+    `notImplemented=${JSON.stringify(missing.notImplemented.map((x) => x.id))} · unimplementable=${JSON.stringify(missing.unimplementable.map((x) => x.id))}`,
+  );
+
+  fs.rmSync(a1Dir, { recursive: true, force: true });
 }
 
 process.stdout.write('\n19) 自检自身完整性\n');

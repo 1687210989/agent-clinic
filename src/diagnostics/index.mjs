@@ -15,6 +15,7 @@ import path from 'node:path';
 import { KIND } from '../adapters/base.mjs';
 import { num, pct } from '../summary.mjs';
 import { observationsFromScan, observationsFromStore, MIN_CHARS } from '../privacy/fingerprints.mjs';
+import { readProfilePatch, mcpServersFromRows } from '../config/index.mjs';
 
 /** 严重度 */
 export const SEVERITY = { HIGH: '高', MID: '中', LOW: '低' };
@@ -1525,7 +1526,7 @@ export const REGISTRY = [
     detect: detectK2,
   },
   // --- M2+ 预留 ---
-  { id: 'A1', title: 'MCP 闲置', category: 'A', severity: SEVERITY.MID, implemented: false, desc: '已配置 MCP 30 天 0 调用（本机未配置 MCP，暂无数据源）', detect: () => [] },
+  { id: 'A1', title: 'MCP 闲置', category: 'A', severity: SEVERITY.MID, implemented: true, desc: 'profile patch 里已配置 MCP 服务器，但观察窗口（≥30 天）内 0 次调用（工具名 mcp__<serverName>__*）', detect: detectA1 },
   // --- 第二轮评估：以下三项原本被列在"不可实现"，实为适配层没抽，已实现并移入上方 REGISTRY ---
   //   E3（工具结果过大）：tool/result 补记 text_len（只记长度，不留正文）
   //   N3（权限审批摩擦）：补记 approval/asked + approval/decided（按 id 关联）
@@ -1612,6 +1613,115 @@ function fingerprintNoteSuffix(opts) {
     parts.push(`本次有 ${opts.fingerprintMissing} 条用户消息未参与指纹（过短或未采集）`);
   }
   return parts.length ? `；${parts.join('；')}` : '';
+}
+
+/**
+ * A1 MCP 闲置 —— **配置驱动**指标（2026-10-15 实现）
+ *
+ * 为什么它长期"排期中"：判定需要两个输入 —— ①**配置了哪些 MCP 服务器**、
+ * ②窗口内对它们的**调用次数**。本机此前 `~/.dsh` 下没有任何 MCP 配置，两个输入都拿不到，
+ * 于是如实写成"没有可判定的数据源"，而不是拿合成数据自证。
+ *
+ * 2026-10-15：用户接入本地 filesystem MCP server（配置写进 profile patch），
+ * 两个输入就都有了 —— A1 可以实现，并且**用真实配置验收**。
+ *
+ * 判定口径：
+ *   - 服务器清单来自 profile patch 里 `name: '@deepseek-ai/dsh-mcp-client'`
+ *     （或 `@deepseek-ai/dsh-mcp-resources`）且未被 disabled 的行，取 `config.serverName`；
+ *   - 调用次数按 DSH 的**固定工具命名** `mcp__<serverName>__<rawName>` 统计
+ *     （`dsh-mcp-client` README「工具命名与共存」：公开名是 (serverName, rawName) 的纯函数，
+ *     重启 / HMR / 重连后保持稳定，所以按前缀统计不会漏也不会串台）；
+ *   - 观察窗口与 A2 同口径：`今天 − 首次会话时间`（日历跨度）。不足 `a1MinDays`（默认 30 天）
+ *     时**只报"窗口不够，还差 N 天"**，不下闲置结论；
+ *   - 缺 `serverName` 的配置行单独报出来（配置本身有问题），不静默忽略。
+ *
+ * 证据用**配置文件的行号**（`<patch>#L<行>`）：这个指标的证据是"你配置了什么"，
+ * 不是某条会话事件 —— 而 `show` 能展开任何文件（非 zstd 按明文读），所以照样可复核。
+ */
+function detectA1(ctx, opts) {
+  const minDays = opts.a1MinDays ?? 30;
+  const patch = opts.mcpPatch ?? readProfilePatch(opts.env ?? process.env);
+  if (!patch.exists) {
+    return {
+      findings: [],
+      note:
+        `没有读到 profile patch（${patch.path ?? '未知路径'}）—— 无法判断 MCP 配置，本项不下结论。` +
+        `（测试/CI 可用 AGENT_CLINIC_PROFILE_PATCH 指定一份 patch）`,
+    };
+  }
+  const servers = mcpServersFromRows(patch.rows, { patchPath: patch.path });
+  if (servers.length === 0) {
+    return {
+      findings: [],
+      note: `已读 profile patch（${patch.path}），其中没有 MCP 服务器配置行（@deepseek-ai/dsh-mcp-client / -resources）`,
+    };
+  }
+
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const times = (ctx.scan?.sessions ?? [])
+    .flatMap((s) => s.events ?? [])
+    .map((e) => (e.ts ? Date.parse(e.ts) : NaN))
+    .filter((t) => Number.isFinite(t));
+  if (!times.length) {
+    return { findings: [], note: '窗口内没有带时间戳的事件，无法判断 MCP 是否闲置' };
+  }
+  const calendarDays = Math.max(0, (now - Math.min(...times)) / 86400000);
+  if (calendarDays < minDays) {
+    const need = Math.ceil(minDays - calendarDays);
+    return {
+      findings: [],
+      note:
+        `观察窗口只有 ${calendarDays.toFixed(1)} 天（自首次会话算起，需 ${minDays} 天）—— ` +
+        `样本不足，无法判定 MCP 闲置；再过约 ${need} 天本项才会开始生效`,
+    };
+  }
+
+  // 调用计数：mcp__<serverName>__*
+  const calls = new Map(servers.filter((s) => s.serverName).map((s) => [s.serverName, 0]));
+  for (const s of ctx.scan?.sessions ?? []) {
+    for (const e of s.events ?? []) {
+      if (e.kind !== KIND.TOOL_CALL || typeof e.tool_name !== 'string') continue;
+      const m = /^mcp__(.+?)__/.exec(e.tool_name);
+      if (!m || !calls.has(m[1])) continue;
+      calls.set(m[1], calls.get(m[1]) + 1);
+    }
+  }
+
+  const findings = [];
+  for (const s of servers) {
+    if (!s.serverName) continue;
+    if ((calls.get(s.serverName) ?? 0) > 0) continue;
+    findings.push({
+      id: 'A1',
+      title: 'MCP 闲置',
+      category: 'A',
+      severity: SEVERITY.MID,
+      scope: s.serverName,
+      summary:
+        `MCP 服务器「${s.serverName}」已配置（${s.transport ?? '未知传输'}），` +
+        `但在 ${calendarDays.toFixed(0)} 天观察窗口内 **0 次调用** —— 它的工具每次请求都随工具面重发`,
+      evidence: s.locator
+        ? [{ locator: s.locator, note: `配置行：${s.rowId}（serverName=${s.serverName}）` }]
+        : [],
+      impact: '闲置的 MCP 服务器不产生价值，只增加工具面与维护成本（工具 schema 每随请求重发）',
+      confidence: 0.8,
+    });
+  }
+
+  const misconfigured = servers.filter((s) => !s.serverName);
+  const notes = [
+    `观察窗口 ${calendarDays.toFixed(0)} 天 · 已配置 ${servers.length} 个 MCP 服务器：` +
+      servers
+        .map((s) => `${s.serverName ?? '(缺 serverName)'}=${calls.get(s.serverName) ?? 0} 次`)
+        .join('、'),
+  ];
+  if (misconfigured.length) {
+    notes.push(
+      `⚠ ${misconfigured.length} 行 MCP 配置缺少 serverName（配置本身有问题）：${misconfigured.map((s) => s.rowId).join('、')}`,
+    );
+  }
+  if (patch.overridden) notes.push('（配置路径由 AGENT_CLINIC_PROFILE_PATCH 指定）');
+  return { findings, note: notes.join('；') };
 }
 
 function detectK1(ctx, opts) {

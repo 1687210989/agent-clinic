@@ -1,6 +1,6 @@
 {
   "name": "agent-clinic",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "description": "Agent 体检诊所 —— 用可复核证据诊断 Agent 使用体验问题，并开出可执行处方",
   "type": "module",
   "main": "plugin/index.js",

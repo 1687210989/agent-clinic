@@ -46,6 +46,10 @@ name: CI
 on:
   push:
     branches: [main]
+    # ⚠️ 必须显式列出 tags —— 否则**推 tag 不会触发本 workflow**（`branches` 会把 tag 排除），
+    #    plan 里"tag → 全量矩阵"那条分支就永远走不到（这是我加完矩阵分档后自查发现的坑）。
+    #    发行提交值得跑满：tag 推送走全量矩阵。
+    tags: ['v*']
   pull_request:
   # 手动触发 = 全量矩阵（需要在某个提交上跑满三平台两个 node 版本时用）
   workflow_dispatch:

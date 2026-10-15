@@ -255,6 +255,35 @@ plan 步骤的 bash 已用本地 git bash 真跑三种触发验证（light 6 项
 > 最新 run 还在排队/被取消时它会显示缓存的旧结果。**判断 CI 状态要看 run 列表的逐个 job**，
 > 不能只看徽章。
 
+### 6.6 0.2.0 正式版（GA）发行 —— 2026-10-15
+
+上线清单（谁做 / 命令 / 证据）见 [docs/release-checklist-0.2.0.md](release-checklist-0.2.0.md)，
+可粘贴的发布说明见 [docs/release-notes-0.2.0.md](release-notes-0.2.0.md)。执行结果：
+
+| 项 | 结果 | 复核方式 |
+|---|---|---|
+| GA = rc.1 + rc.2 + CI 加固 | **不夹带新功能**（避免"转正时偷偷加东西"） | `git diff v0.2.0-rc.2..v0.2.0 --stat` |
+| 版本 | `package.json` → **0.2.0** | `node -e "console.log(require('./package.json').version)"` |
+| CHANGELOG | 新增 `## [0.2.0] — 2026-10-15`（GA 摘要 + CI 加固 + 上线材料） | `git show v0.2.0:CHANGELOG.md` |
+| tag | 附注 tag `v0.2.0` → `9cc0470`（= 当时 `main` 头，工作区干净） | `git ls-remote --tags origin` |
+| **打包纪律** | 从**干净 tag 状态**打包（rc.2 的偏差不再出现：本地打包与发布物**逐字节一致**） | `--verify` 输出"与本地打包逐字节一致" |
+| npm 发布 | `dist-tags { latest: 0.2.0, next: 0.2.0 }`；`PUT` 返回 **202（已接受）**→ 约 2 分钟后自动放行 | registry packument |
+| 安装验证 | `npm install agent-clinic`（不带 tag）→ **0.2.0**；`help/scan/catalog/fingerprints/rx/report` **六个子命令 exit 0**；`.bin` 生成三个 shim | 本机实跑 |
+| 镜像 | jsDelivr `@v0.2.0/install.sh` → **HTTP 200（8,097 字节）** | 实取 |
+| 本地验收 | 自检 **343** · 面板 **106** · 语料 **22/22** · 空数据降级 exit 0 · 真机 report exit 0 | 本机实跑 |
+
+**GA 前顺手做的隐私打磨**：确认 `npm token` **从未出现在任何提交里**（`git log -S` 全历史检索为空）；
+把公开文档里的 token id 与 `bypass_2fa` 属性擦掉（id 不能用于认证，但没必要公开）。
+
+**又发现并修掉一个设计缺口（值得单独记）**：矩阵分档里"tag → 全量矩阵"那条分支**永远走不到** ——
+因为 `on.push` 只写了 `branches: [main]`，而 `branches` 过滤会把 **tag 排除**，
+推 tag 根本不会触发 workflow。已补 `tags: ['v*']` 并加断言钉住
+（"push 触发器必须显式包含 tags"），否则这类"配置看起来支持、实际是死代码"的问题只会靠人偶然发现。
+
+**仍未由机器验证的一项（如实标明）**：GitHub Release 需要网页操作
+（本机无 `GITHUB_API` 凭据、未装 `gh`），由用户用 §6.6 的发布说明创建。
+
+
 
 
 

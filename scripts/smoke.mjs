@@ -2366,6 +2366,13 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
       /workflow_dispatch:/.test(ciEffective) &&
       /matrix:\s*\$\{\{\s*fromJSON\(/.test(ciEffective),
   );
+  // ⚠️ 只写 `branches: [main]` 的话推 tag **不会触发 workflow**，"tag → 全量矩阵"就成了死代码
+  //（我加完矩阵分档后自查发现的）。这条断言把 `tags: ['v*']` 钉住。
+  check(
+    '基建：push 触发器显式包含 tags（否则推 tag 不触发 workflow，全量矩阵永远走不到）',
+    /^\s{4}tags:\s*\[/m.test(ciEffective) && /['"]v\*['"]/.test(ciEffective),
+    /^\s{4}tags:\s*\[/m.test(ciEffective) ? '已显式列 tags' : '缺 tags 条目',
+  );
   const actionMajors = [...ciEffective.matchAll(/uses:\s*actions\/(checkout|setup-node)@v(\d+)/g)].map(
     (m) => ({ name: m[1], major: Number(m[2]) }),
   );

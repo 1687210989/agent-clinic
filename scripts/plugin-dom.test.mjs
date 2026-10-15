@@ -733,6 +733,11 @@ const world = {
   reportError: null,
   live: null,
   liveError: null,
+  // liveGate：一个待兑现的 Promise。设置后 /live 请求会**停在飞行中**，
+  // 用来观察 liveBusy 中间态（按钮 disabled + 文案「检索中…」）。
+  liveGate: null,
+  // liveRes：自定义响应对象。用来喂异常响应形状（非 200 / body 不是 JSON / json() 直接 reject）。
+  liveRes: null,
   // 真实宿主的首个 /watch 响应签名必然非空（否则客户端永远不建立基线）
   watch: { ok: true, version: '14', count: 1, ids: ['C1'], signature: 'sig-1', generatedAt: 't' },
   calls: [],
@@ -758,7 +763,8 @@ function installFetch() {
     }
     if (u.endsWith('/live')) {
       if (world.liveError) return Promise.reject(new Error(world.liveError));
-      return Promise.resolve(jsonRes(world.live));
+      const respond = () => (world.liveRes ? world.liveRes : jsonRes(world.live));
+      return world.liveGate ? world.liveGate.then(respond) : Promise.resolve(respond());
     }
     if (u.endsWith('/watch')) return Promise.resolve(jsonRes(world.watch));
     return Promise.reject(new Error(`未知端点：${u}`));
@@ -770,6 +776,8 @@ function resetWorld(overrides = {}) {
   world.reportError = null;
   world.live = null;
   world.liveError = null;
+  world.liveGate = null;
+  world.liveRes = null;
   world.watch = { ok: true, version: '14', count: 1, ids: ['C1'], signature: 'sig-1', generatedAt: 't' };
   world.calls = [];
   copied.length = 0;
@@ -1417,16 +1425,17 @@ section('E) 无数据 / 请求失败降级（④）');
     `含提示=${t.includes('当前环境不提供 fetch，无法从宿主取数')} 异常=${renderErrors.length}`,
   );
 
-  // ⚠️ 待修产品缺陷（**不是**测试问题，本轮不允许改 plugin/client.js，故此处记录现状）：
-  //   runLive 的无 fetch 降级分支本身是有的 —— plugin/client.js:1014-1017
+  // ✅ 已修（本轮）：错误态下点「联网现搜」必须有可见反馈。
+  //   背景：runLive 的无 fetch 降级分支本身一直是有的 —— plugin/client.js runLive()
   //     if (typeof fetch !== 'function') { setLiveErr('当前环境不提供 fetch，无法联网检索'); return; }
-  //   但 liveErr 的**唯一**渲染点在 plugin/client.js:1166-1182，
-  //   而它位于 `} else {`（即 state.data 存在的 OK 分支，见 plugin/client.js:1091/1097）之内。
-  //   当报告请求本身失败（state.status === 'error'，body 见 plugin/client.js:1080-1090）时，
-  //   头部按钮仍然可点（plugin/client.js:1392-1402 只在 liveBusy 时 disabled），
-  //   点击会 setLiveErr 并触发重渲染，可错误分支根本不读 liveErr → **用户点了毫无反馈**。
-  //   下面两条断言如实记录这一现状：点击前后渲染文本完全一致（没有任何降级提示）。
-  //   缺陷修复后第一条断言应翻面（应当出现「联网检索失败：当前环境不提供 fetch，无法联网检索」）。
+  //   但旧版 liveErr 的**唯一**渲染点落在 `} else {`（state.data 存在的 OK 分支）之内；
+  //   报告请求失败时走 state.status === 'error' 的 body，根本不读 liveErr，
+  //   而头部按钮照样可点（只在 liveBusy 时 disabled）→ 点击后状态更新了、
+  //   界面一个字都不变，用户只会以为按钮坏了。
+  //   修法：把状态行抽成 ClinicPanel 内的 liveStatus()，**每个 body 分支都渲染**
+  //   （plugin/client.js 的 error 分支与 data 分支各挂一处）。
+  //   于是下面这条断言**翻面**了：此前要求"点击前后逐字相同"（如实记录缺陷），
+  //   现在要求"点击后必须出现降级提示" —— 翻面本身就是修复的证据。
   const liveBtn = buttonByText(env.container, '联网现搜插件');
   check(
     '报告请求失败态下「联网现搜插件」按钮仍存在且可点',
@@ -1437,9 +1446,19 @@ section('E) 无数据 / 请求失败降级（④）');
   await flush();
   const tAfter = text(env.container);
   check(
-    '⚠ 待修缺陷：报告请求失败态下点「联网现搜」无任何反馈（liveErr 被设置但错误分支不渲染它）',
-    tAfter === t && !tAfter.includes('联网检索失败') && !tAfter.includes('无法联网检索'),
-    `点击后是否与点击前逐字相同=${tAfter === t} 含「联网检索失败」=${tAfter.includes('联网检索失败')} 尾部=${tAfter.slice(-90)}`,
+    '已修：报告请求失败态下点「联网现搜」给出降级提示（不再"点了毫无反应"）',
+    tAfter !== t && tAfter.includes('联网检索失败：当前环境不提供 fetch，无法联网检索'),
+    `点击前后不再逐字相同=${tAfter !== t} 含降级提示=${tAfter.includes('联网检索失败：当前环境不提供 fetch，无法联网检索')}`,
+  );
+  check(
+    '已修：错误态下的降级提示不吞掉原本的取数失败原因（两条信息并存）',
+    tAfter.includes('未能取得报告：') && tAfter.includes('当前环境不提供 fetch，无法从宿主取数'),
+    `含原取数错误=${tAfter.includes('未能取得报告：')}`,
+  );
+  check(
+    '已修：错误态下点「联网现搜」不产生渲染期异常',
+    renderErrors.length === 0,
+    `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`,
   );
   installFetch();
 }
@@ -1485,6 +1504,136 @@ section('E) 无数据 / 请求失败降级（④）');
   check('未检测到维度为空时显示「（无）」而不是空白', t.includes('未检测到异常的维度') && t.includes('（无）'), `含（无）=${t.includes('（无）')}`);
   check('无分组且无 finding 时显示「未发现问题」', t.includes('未发现问题') && t.includes('所有已实现的指标均未检测到异常'), `含未发现问题=${t.includes('未发现问题')}`);
   check('空数据时无渲染期异常', renderErrors.length === 0, `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`);
+}
+
+// --- E2. 「联网现搜」状态机与异常响应形状（补齐 D9 已知空白）---------------
+//
+// status 文档 §2.3 如实列了面板测试的空白，这里补掉其中与「联网现搜」相关的几块：
+//   liveBusy 中间态、异常响应形状（非 JSON body / 非 200）、
+//   以及 watch 签名变化后面板自动重拉。
+section('E2) 联网现搜：中间态与异常响应形状');
+{
+  // ① liveBusy 中间态：请求已发出、尚未返回（用 liveGate 把请求停在飞行中）。
+  //    按钮必须 disabled 且文案变「检索中…」—— 否则用户会连点，重复联网。
+  //    状态行同时要说明"只发送问题类型关键词"：联网前必须让用户知道发出去的是什么。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  let release = () => {};
+  world.liveGate = new Promise((r) => {
+    release = r;
+  });
+  world.live = makeLivePayload('L');
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  check(
+    '联网前按钮可点（零外发面板不会自己联网）',
+    Boolean(liveBtn) && liveBtn.disabled === false,
+    `按钮=${liveBtn ? `text=${text(liveBtn)} disabled=${liveBtn.disabled}` : '(未找到)'}`,
+  );
+  if (liveBtn) liveBtn.click();
+  await flush();
+  const busyBtn = buttonByText(env.container, '检索中…');
+  const busyText = text(env.container);
+  check(
+    'liveBusy 中间态：按钮文案变「检索中…」且 disabled（防连点）',
+    Boolean(busyBtn) && busyBtn.disabled === true,
+    `按钮=${busyBtn ? `text=${text(busyBtn)} disabled=${busyBtn.disabled}` : '(未找到)'}`,
+  );
+  check(
+    'liveBusy 中间态：状态行说明只发送问题类型关键词（联网前的告知）',
+    busyText.includes('只发送问题类型关键词') && busyText.includes('不发送会话内容'),
+    `含告知=${busyText.includes('只发送问题类型关键词')}`,
+  );
+  release();
+  await flush();
+  await flush();
+  const afterBtn = buttonByText(env.container, '联网现搜插件');
+  check(
+    '请求返回后按钮恢复可点、文案复原（不卡在 disabled / 检索中…）',
+    Boolean(afterBtn) && afterBtn.disabled === false,
+    `按钮=${afterBtn ? `text=${text(afterBtn)} disabled=${afterBtn.disabled}` : '(未找到)'}`,
+  );
+}
+{
+  // ② 响应体不是 JSON：r.json() 直接 reject（网关返回 HTML 错误页是最常见的一种）
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  world.liveRes = {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/html' },
+    json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON at position 0')),
+    text: () => Promise.resolve('<html>502 Bad Gateway</html>'),
+  };
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+  const t = text(env.container);
+  check(
+    '响应体不是 JSON 时给出降级提示（不静默失败、不抛渲染期异常）',
+    t.includes('联网检索失败：') && renderErrors.length === 0,
+    `含降级提示=${t.includes('联网检索失败：')} 异常=${renderErrors.map((e) => e.message).join(';') || renderErrors.length}`,
+  );
+  check(
+    '响应体不是 JSON 时保留原有报告数据（不因为一次现搜失败把面板清空）',
+    t.includes('【A】token 消耗过快'),
+    `含 A 数据=${t.includes('【A】token 消耗过快')}`,
+  );
+}
+{
+  // ③ 非 200 但 body 是 JSON：客户端不检查 r.ok，靠 dd.ok 判定 —— 必须把宿主给的原因显示出来
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  world.liveRes = {
+    ok: false,
+    status: 502,
+    headers: { get: () => 'application/json' },
+    json: () => Promise.resolve({ ok: false, error: '网关 502' }),
+    text: () => Promise.resolve('{"ok":false,"error":"网关 502"}'),
+  };
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+  const t = text(env.container);
+  check(
+    '非 200 + ok:false 时把宿主给的原因原样显示（不写成"未知错误"）',
+    t.includes('联网检索失败：网关 502'),
+    `含原因=${t.includes('联网检索失败：网关 502')}`,
+  );
+}
+{
+  // ④ 轮询发现签名变化 → 面板自动重拉报告（用户不用手点「刷新」）。
+  //
+  // ⚠️ 这条断言抓出过一个**会让界面卡死的真缺陷**（本轮修复）：
+  //    requestPanelRefresh() 原本直接 `panelRefreshListeners.forEach(...)`，
+  //    而面板的监听器注册在 useEffect([isOpen, nonce]) 里 —— 它一被调用就
+  //    setNonce → 重渲染 → 退订旧监听器 + 注册新监听器。
+  //    Set.forEach 会继续访问**遍历期间新增**的条目，于是新监听器当场又被调用：
+  //    无限自激。真实 React 因为 setState 是异步调度而侥幸没暴露，但同步渲染
+  //    （本测试的迷你渲染器）立刻表现为一次 tick 打出上万次 /report 请求并耗尽内存。
+  //    修法：遍历前先 `[...set]` 快照。
+  //    所以这里断的是**恰好 +1**，而不是 `after > before` —— 后者在自激时也是"真"的。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  const before = world.calls.filter((c) => c.url.endsWith('/report')).length;
+  world.watch = { ok: true, version: '14', count: 3, ids: ['C1', 'E1', 'C1'], signature: 'sig-2', generatedAt: 't2' };
+  await tickWatcher(0);
+  await flush();
+  await flush();
+  const after = world.calls.filter((c) => c.url.endsWith('/report')).length;
+  check(
+    '轮询发现签名变化时面板自动重拉报告（不用用户手点刷新）',
+    after === before + 1,
+    `/report 调用 ${before} → ${after}（恰好 1 次；>1 即刷新通知自激）`,
+  );
+  check('自动重拉不产生渲染期异常', renderErrors.length === 0, `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`);
 }
 
 // --- F. 交互路径 ---------------------------------------------------------

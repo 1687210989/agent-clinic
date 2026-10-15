@@ -63,13 +63,16 @@ window.__ModuleLoader__.load({
     function setOpen(next) {
       if (open === next) return;
       open = next;
-      listeners.forEach((l) => {
+      // 先快照再遍历：订阅者可能在通知过程中退订 + 重订阅，
+      // 直接 forEach 一个"正在被增删的 Set"会把**新加的**监听器也算进本次遍历
+      // （Set.forEach 会访问遍历期间新增的条目）。
+      for (const l of [...listeners]) {
         try {
           l();
         } catch {
           /* 单个订阅者出错不影响其他 */
         }
-      });
+      }
     }
     function subscribe(listener) {
       listeners.add(listener);
@@ -95,13 +98,13 @@ window.__ModuleLoader__.load({
 
     function setWatchSnap(next) {
       watchSnap = next;
-      watchListeners.forEach((l) => {
+      for (const l of [...watchListeners]) {
         try {
           l();
         } catch {
           /* ignore */
         }
-      });
+      }
     }
     function subscribeWatch(l) {
       watchListeners.add(l);
@@ -112,13 +115,22 @@ window.__ModuleLoader__.load({
     }
     /** 通知面板重新拉取报告（面板内部用 nonce 触发） */
     function requestPanelRefresh() {
-      panelRefreshListeners.forEach((l) => {
+      // ⚠️ 必须**先快照**再遍历 —— 这里踩过一个会让整个界面卡死的坑：
+      //    面板的刷新监听器是在 useEffect 里注册的（依赖 [isOpen, nonce]），
+      //    它一被调用就会 setNonce → 重渲染 → 先退订自己再注册一个新的监听器。
+      //    如果直接 `panelRefreshListeners.forEach(...)`，Set 的 forEach 会继续
+      //    访问**遍历期间新加入**的条目，于是刚注册的新监听器立刻又被调用 →
+      //    再 setNonce → 再注册…… 无限自激（同步渲染下立刻表现为内存暴涨/页面卡死；
+      //    真实 React 只是被"异步调度"掩盖了，同样是颗雷）。
+      //    自检里由「轮询发现签名变化时面板自动重拉报告」那条断言守住：
+      //    修复前它会一次 tick 触发上万次 /report 请求。
+      for (const l of [...panelRefreshListeners]) {
         try {
           l();
         } catch {
           /* ignore */
         }
-      });
+      }
     }
 
     /** 在常驻的侧边栏按钮里启动唯一轮询器 */
@@ -1073,20 +1085,55 @@ window.__ModuleLoader__.load({
       if (!isOpen) return null;
       const close = () => setOpen(false);
 
+      /**
+       * 「联网现搜」的状态行（busy / 失败 / 成功三态）。
+       *
+       * ⚠️ 它必须挂在**每一个** body 分支上，而不是只挂在"有数据"那一支：
+       *    报告请求失败（state.status === 'error'）时头部按钮照样可点，
+       *    但旧版把这一行只渲染在 `} else {`（state.data 分支）里 ——
+       *    于是错误态下点按钮 = 状态更新了、界面一个字都不变，
+       *    连"当前环境不提供 fetch"这种提示都看不到，用户只会以为按钮坏了。
+       *    现在抽成函数，错误分支同样渲染；下方测试有断言守住这件事。
+       */
+      const liveStatus = () =>
+        liveBusy || live || liveErr
+          ? h(
+              'div',
+              { style: { ...S.howTo, marginTop: '10px' } },
+              liveBusy
+                ? '正在联网检索插件（npm + GitHub，只发送问题类型关键词，不发送会话内容）…'
+                : liveErr
+                  ? `联网检索失败：${liveErr}。若提示 404，说明宿主进程还在跑旧插件代码，完全退出并重启 Harness 后重试。`
+                  : `本次联网现搜：新发现 ${(live.info && live.info.stats && live.info.stats.kept) || 0} 条候选，` +
+                    `耗时 ${(((live.info && live.info.elapsedMs) || 0) / 1000).toFixed(1)}s` +
+                    `${live.info && live.info.degraded ? '（部分通道降级，见下）' : ''}。` +
+                    `实际发出的检索词：${((live.info && live.info.sent) || []).join('、') || '(无)'}` +
+                    (live.info && live.info.errors && live.info.errors.length
+                      ? ` ⚠ ${live.info.errors.join('；')}`
+                      : ''),
+            )
+          : null;
+
       let body;
       if (state.status === 'loading') {
         body = h('div', { style: S.note }, '正在读取本地会话并生成体检报告…');
       } else if (state.status === 'error') {
         body = h(
           'div',
-          { style: S.note },
-          h('div', null, '未能取得报告：', h('code', { style: { fontFamily: V.mono } }, state.error)),
+          null,
           h(
             'div',
-            { style: { marginTop: '10px' } },
-            '若提示 404 或服务不可用，说明宿主进程还在跑**旧插件代码**，请完全退出并重启 Harness；',
-            '此时仍可在会话里直接说「体检一下」，由模型调用工具产出报告。',
+            { style: S.note },
+            h('div', null, '未能取得报告：', h('code', { style: { fontFamily: V.mono } }, state.error)),
+            h(
+              'div',
+              { style: { marginTop: '10px' } },
+              '若提示 404 或服务不可用，说明宿主进程还在跑**旧插件代码**，请完全退出并重启 Harness；',
+              '此时仍可在会话里直接说「体检一下」，由模型调用工具产出报告。',
+            ),
           ),
+          // 错误态下按钮仍可点，所以状态行也必须在这儿渲染（否则点了没反应）
+          liveStatus(),
         );
       } else if (!state.data) {
         body = h(
@@ -1163,23 +1210,8 @@ window.__ModuleLoader__.load({
             );
           })(),
 
-          liveBusy || live || liveErr
-            ? h(
-                'div',
-                { style: { ...S.howTo, marginTop: '10px' } },
-                liveBusy
-                  ? '正在联网检索插件（npm + GitHub，只发送问题类型关键词，不发送会话内容）…'
-                  : liveErr
-                    ? `联网检索失败：${liveErr}。若提示 404，说明宿主进程还在跑旧插件代码，完全退出并重启 Harness 后重试。`
-                    : `本次联网现搜：新发现 ${(live.info && live.info.stats && live.info.stats.kept) || 0} 条候选，` +
-                      `耗时 ${(((live.info && live.info.elapsedMs) || 0) / 1000).toFixed(1)}s` +
-                      `${live.info && live.info.degraded ? '（部分通道降级，见下）' : ''}。` +
-                      `实际发出的检索词：${((live.info && live.info.sent) || []).join('、') || '(无)'}` +
-                      (live.info && live.info.errors && live.info.errors.length
-                        ? ` ⚠ ${live.info.errors.join('；')}`
-                        : ''),
-              )
-            : null,
+          // 「联网现搜」状态行 —— 与错误分支共用同一份实现（见上方 liveStatus）
+          liveStatus(),
 
           (d.groups && d.groups.length) || d.findings.length === 0
             ? (d.groups || []).length === 0

@@ -65,7 +65,7 @@ license: MIT
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
 ./scripts/smoke.sh               # 自检（304 项）
-node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（65 条）
+node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 条）
 ```
 
 **K1/K2 的隐私开关**：`AGENT_CLINIC_NO_FINGERPRINT_STORE=1` 可整体关闭指纹采集；

@@ -339,7 +339,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
 ./scripts/smoke.sh   # 自检（304 项）
-node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（65 项）
+node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 项）
 ```
 
 **关于 `show` 的翻页**（决策 D8）：区间超过 200 行时默认只展开一页，并直接给出**可复制**的下一条命令：

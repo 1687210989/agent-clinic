@@ -4,7 +4,24 @@
 
 ## [Unreleased]
 
-### CI 加固：macOS runner 排队被取消（2026-10-15，非代码问题）
+（下一轮改动写在这里。本次 GA 见下一个版本段。）
+
+## [0.2.0] — 2026-10-15
+
+> **第一个正式版（GA）。** `0.2.0` = `0.2.0-rc.1` + `0.2.0-rc.2` + 下面这轮的 CI 加固 ——
+> 换言之：把 rc 阶段验证过的东西原样转正，**没有夹带新功能**。
+> 上线清单见 [docs/release-checklist-0.2.0.md](docs/release-checklist-0.2.0.md)，
+> 发布说明见 [docs/release-notes-0.2.0.md](docs/release-notes-0.2.0.md)。
+>
+> ```bash
+> npm i -g agent-clinic                    # 正式版（latest）
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0/install.sh | bash
+> ```
+>
+> **本版能力基线**：诊断指标 **22 项全部已实现、0 项排期、0 项尚未实现**；
+> 自检 **343 条** · 面板测试 **106 条** · 语料覆盖率 **22/22**；CI 三平台 × node 22.15/24。
+
+### CI 加固：macOS runner 排队被取消（非代码问题）
 
 **现象**：`e9c44cc` 与 `c63b2ea` 两次 run 红，但**不是断言失败** ——
 两个 `macos-latest` job 的 `steps: 0`、`runner` 字段为空、`started_at == created_at`，
@@ -29,7 +46,12 @@
 （push → light/6 项/macOS 仅 24；tag → full/7 项；workflow_dispatch → full/7 项）验证。
 新增 3 条基建断言守着这三件事（concurrency / timeout / 矩阵分档 + tag 条件）。
 
-### 0.2.0-rc.2 发行后的其余改动
+### 上线材料与发布后的打磨
+
+- 新增 [docs/release-checklist-0.2.0.md](docs/release-checklist-0.2.0.md)（上线 runbook：谁做、命令、证据）
+  与 [docs/release-notes-0.2.0.md](docs/release-notes-0.2.0.md)（可直接粘贴成 GitHub Release 的说明）；
+- **隐私自查**：确认 `npm token` **从未出现在任何提交里**（`git log -S` 全历史检索为空）；
+  并把公开文档里的 token id 与 2FA 属性擦掉（id 不能用于认证，但没必要公开）。
 
 ## [0.2.0-rc.2] — 2026-10-15
 

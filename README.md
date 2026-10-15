@@ -208,9 +208,10 @@ token（**仅主对话**：assistant/message 的 usage）：input 791,000 · out
 
 ## 安装
 
-**当前版本：`0.2.0-rc.2`（预发布通道）** —— 版本以 git tag 为准（`v0.2.0-rc.2`）。
-npm 通道已开放：`npm i -g agent-clinic@next`（该 RC 目前也是 `latest`，因为这是首个发布版本）。
-放行检查记录见 [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
+**当前版本：`0.2.0`（正式版）** —— 版本以 git tag 为准（`v0.2.0`）。
+npm 通道：`npm i -g agent-clinic`（正式版走 `latest`；预发布通道是 `@next`，目前指向 rc.2）。
+上线清单见 [docs/release-checklist-0.2.0.md](docs/release-checklist-0.2.0.md)，
+发布说明见 [docs/release-notes-0.2.0.md](docs/release-notes-0.2.0.md)。
 
 ### 一行安装（推荐）
 
@@ -235,7 +236,7 @@ curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/instal
 >
 > 中国大陆网络下 `raw.githubusercontent.com` 可能不稳定，可用 jsDelivr（**必须带 tag**，分支 `@main` 会被重定向回 raw，起不到加速作用）：
 > ```bash
-> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.2/install.sh | bash
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0/install.sh | bash
 > ```
 > 若遇到 `curl: (35)` 证书吊销检查错误（常见于国内网络），加 `--ssl-no-revoke`：
 > ```bash
@@ -257,7 +258,7 @@ cd agent-clinic
 ./install.sh --dsh-only         # 只装 DSH
 ./install.sh --workbuddy-only   # 只装 WorkBuddy
 ./install.sh --target ~/my/skills   # 指定目录
-./install.sh --ref v0.2.0-rc.2  # 指定版本（以 git tag 为准）
+./install.sh --ref v0.2.0  # 指定版本（以 git tag 为准）
 ```
 
 ### 另：作为 DSH Plugin（原生工具 + UI 面板）

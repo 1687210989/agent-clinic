@@ -294,6 +294,15 @@ plan 步骤的 bash 已用本地 git bash 真跑三种触发验证（light 5 项
 **仍未由机器验证的一项（如实标明）**：GitHub Release 需要网页操作
 （本机无 `GITHUB_API` 凭据、未装 `gh`），由用户用 §6.6 的发布说明创建。
 
+**2026-10-15 17:57 UTC 更新：GitHub Release 已由用户发布并核验通过**
+（`releases/tag/v0.2.0`）：标题 `agent-clinic 0.2.0` · `draft: false` · `prerelease: false` ·
+正文 2,564 字符 / 76 行（含"22 项"、npm 安装命令、CHANGELOG 链接）·
+`/releases/latest` → `v0.2.0`（已标记为最新）· 附注 tag 对象 `c747283` → 提交 `9cc0470`（= GA 发行提交）。
+
+至此 0.2.0 的三条发行通道全部就位并各自验证过：**npm**（`latest`/`next` = 0.2.0）·
+**git tag**（`v0.2.0`）· **GitHub Release**（latest）。收录 PR：[awesome-dsh-plugin#7491](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/7491)。
+
+
 
 
 

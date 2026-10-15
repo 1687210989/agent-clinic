@@ -2976,6 +2976,82 @@ process.stdout.write('\n21) 文档数字来源与示例新鲜度（D10 / D11）\
     /边界分支/.test(diagDocSrc) && /smoke/.test(diagDocSrc.split('边界分支')[1] ?? ''),
     /边界分支/.test(diagDocSrc) ? '已有一节' : '缺少"边界分支"清单',
   );
+
+  // ---- 发行通道（D1 的执行路径）：零依赖打包器必须真的能打出**可安装**的包 ----
+  // 本机没有 npm CLI，发布靠 scripts/publish-npm.mjs 自己打包（tar + gzip + registry PUT）。
+  // 发不出去可以等；**发一个装不上的包才是灾难** —— 所以这里断言"打包 → 解包回来逐字节一致"。
+  const zlibMod = await import('node:zlib');
+  const pub = await import('./publish-npm.mjs');
+  let packed = null;
+  let packErr = null;
+  try {
+    packed = pub.pack();
+  } catch (e) {
+    packErr = e;
+  }
+  check(
+    '发行：零依赖打包器能打出包（tar 写入 + 自校验通过）',
+    Boolean(packed) && packed.files.length > 0 && packed.tgz.length > 0,
+    packErr
+      ? `打包失败：${packErr.message}`
+      : `${packed?.files.length} 个文件 · ${(packed?.tgz.length / 1024).toFixed(1)} KiB`,
+  );
+  const unpacked = packed ? pub.tarUnpack(zlibMod.gunzipSync(packed.tgz)) : null;
+  check(
+    '发行：包里必须有 package/package.json，且包内版本与仓库一致',
+    Boolean(unpacked?.get('package/package.json')) &&
+      JSON.parse(unpacked.get('package/package.json').toString('utf8')).version === packed.pkg.version,
+    packed ? `仓库版本 ${packed.pkg.version}` : '(未打包成功)',
+  );
+  check(
+    '发行：包内文件与 package.json 的 files 白名单一致（不多不少）',
+    Boolean(unpacked) &&
+      packed.files.every((f) => unpacked.has(`package/${f.rel}`)) &&
+      [...unpacked.keys()].every((name) => packed.files.some((f) => `package/${f.rel}` === name)),
+    packed ? `${unpacked.size} 个条目` : '(未打包成功)',
+  );
+  check(
+    '发行：shasum / integrity 格式正确（registry 会校验）',
+    Boolean(packed) &&
+      /^[0-9a-f]{40}$/.test(packed.shasum) &&
+      packed.integrity.startsWith('sha512-') &&
+      Buffer.from(packed.integrity.slice(7), 'base64').length === 64,
+    packed ? `shasum ${packed.shasum.slice(0, 12)}…` : '(未打包成功)',
+  );
+  check(
+    '发行：发布体把版本挂到 dist-tag 上，并带 base64 tarball 附件（逐字节一致）',
+    (() => {
+      if (!packed) return false;
+      const version = packed.pkg.version;
+      const fileName = `agent-clinic-${version}.tgz`;
+      const body = pub.buildPublishBody({
+        pkg: packed.pkg,
+        tgz: packed.tgz,
+        shasum: packed.shasum,
+        integrity: packed.integrity,
+        tag: 'next',
+        fileName,
+      });
+      const att = body._attachments[fileName];
+      return (
+        body.name === 'agent-clinic' &&
+        body['dist-tags'].next === version &&
+        body.versions[version].dist.integrity === packed.integrity &&
+        att.length === packed.tgz.length &&
+        Buffer.from(att.data, 'base64').equals(packed.tgz)
+      );
+    })(),
+    packed ? `dist-tags.next = ${packed.pkg.version}` : '(未打包成功)',
+  );
+  check(
+    '发行：凭据查找顺序 NPM_TOKEN → NODE_AUTH_TOKEN → ~/.npmrc，找不到就返回 null（明确报错而不是假装有）',
+    (() => {
+      const viaToken = pub.readToken([], { NPM_TOKEN: 't1' });
+      const viaAlt = pub.readToken([], { NODE_AUTH_TOKEN: 't2' });
+      const none = pub.readToken([], {});
+      return viaToken.token === 't1' && viaAlt.token === 't2' && (none.token === null || typeof none.token === 'string');
+    })(),
+  );
 }
 
 process.stdout.write('\n19) 自检自身完整性\n');

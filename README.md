@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-307%2F307-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-313%2F313-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -115,7 +115,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **307/307 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **313/313 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -204,6 +204,10 @@ token（**仅主对话**：assistant/message 的 usage）：input 791,000 · out
 
 ## 安装
 
+**当前版本：`0.2.0-rc.1`（预发布通道）** —— 安装方式见下；版本以 git tag 为准
+（`v0.2.0-rc.1`）。npm 通道（`npm i -g agent-clinic@next`）待凭据到位后开放，
+放行检查记录见 [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
+
 ### 一行安装（推荐）
 
 ```bash
@@ -223,7 +227,7 @@ curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/instal
 >
 > 中国大陆网络下 `raw.githubusercontent.com` 可能不稳定，可用 jsDelivr（**必须带 tag**，分支 `@main` 会被重定向回 raw，起不到加速作用）：
 > ```bash
-> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.1.1/install.sh | bash
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.1/install.sh | bash
 > ```
 > 若遇到 `curl: (35)` 证书吊销检查错误（常见于国内网络），加 `--ssl-no-revoke`：
 > ```bash
@@ -245,7 +249,7 @@ cd agent-clinic
 ./install.sh --dsh-only         # 只装 DSH
 ./install.sh --workbuddy-only   # 只装 WorkBuddy
 ./install.sh --target ~/my/skills   # 指定目录
-./install.sh --ref v0.1.1       # 指定版本（以 git tag 为准）
+./install.sh --ref v0.2.0-rc.1  # 指定版本（以 git tag 为准）
 ```
 
 ### 另：作为 DSH Plugin（原生工具 + UI 面板）
@@ -338,7 +342,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
-./scripts/smoke.sh   # 自检（307 项）
+./scripts/smoke.sh   # 自检（313 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 项）
 ```
 

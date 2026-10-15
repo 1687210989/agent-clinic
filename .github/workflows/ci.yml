@@ -106,6 +106,12 @@ jobs:
       - name: 插件面板 DOM 桩测试
         run: node scripts/plugin-dom.test.mjs
 
+      # 发布通道自检（零依赖打包器）：本机没有 npm CLI，发布要自己打包。
+      # 这里跑的是**预演**（默认不联网）：打包 → 解包回来逐字节比对 → 打印将要发送的请求。
+      # 放在 CI 的意义：tar 头的路径拆分/八进制字段是平台相关的，三平台都过一遍才敢用来发版。
+      - name: 发布打包器自检（预演，不联网）
+        run: node scripts/publish-npm.mjs
+
   # 只读与隐私承诺的机器检查：仓库里不该出现会话数据或本地路径
   privacy:
     name: 隐私与仓库卫生

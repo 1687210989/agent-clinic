@@ -54,12 +54,30 @@
 
 ## 3. 未完成项（发行动作，非质量问题）
 
-| 序 | 事项 | 谁做 | 为什么现在没做 | 是否阻断 |
-|---|---|---|---|---|
-| A | **npm 发布 `0.2.0-rc.1`（`--tag next`）** | 需要你给 `NPM_TOKEN`，或你在有 npm 的机器上执行 | 本机**没有 npm**（`npm`/`npm.cmd`/`corepack`/`npm-cli.js` 全无，`~/.npmrc` 不存在） | **阻断 npm 通道**；不阻断 git/install.sh 通道 |
-| B | **打 tag `v0.2.0-rc.1`** | 我（一条命令） | 从未打过 0.2.x tag（最新 v0.1.1） | 不阻断发布本身，但**发行版必须有 tag**（jsDelivr 备用地址依赖 tag） |
-| C | **CHANGELOG 从 `[Unreleased]` 切版** | 我（文档改动） | 第五/六/七轮都在 `[Unreleased]` 下 | 建议切版后再发；否则发布物没有对应的变更说明 |
-| D | **README 一行安装的 jsDelivr 备用地址仍钉 `@v0.1.1`** | 我（文档改动） | 该行写于 v0.1.1 时期，需随 tag 更新 | 不阻断（主地址走 `main` 可用），但会误导镜像用户 |
+> **2026-10-15 更新**：B / C / D 已完成并随 tag `v0.2.0-rc.1` 一起发布；
+> A（npm 发布）仍等凭据，但**执行路径已备好且被 CI 验证**（见下）。
+
+| 序 | 事项 | 状态 | 说明 |
+|---|---|---|---|
+| A | **npm 发布 `0.2.0-rc.1`（`--tag next`）** | ⏳ **等凭据** | 本机**没有 npm**（`npm`/`npm.cmd`/`corepack`/`npm-cli.js` 全无，`~/.npmrc` 不存在）。为此新增**零依赖发布通道** `scripts/publish-npm.mjs`：自己按 `files` 白名单打 tar+gzip → **解包回来逐字节自校验** → 直接 `PUT registry.npmjs.org`。预演实跑：`47 个文件 · tgz 320.8 KiB`，自校验通过；`--publish` 才联网。凭据就绪后一条命令即可：`node scripts/publish-npm.mjs --publish`（或 `npm run publish:npm:go`） |
+| B | 打 tag `v0.2.0-rc.1` | ✅ 已完成 | 随本次发行推送（见 §1.4 记录） |
+| C | CHANGELOG 从 `[Unreleased]` 切版 | ✅ 已完成 | 新增 `## [0.2.0-rc.1] — 2026-10-15` 段，累计 6 轮未发版改动归入其下；顶部保留空的 `[Unreleased]` |
+| D | README 安装地址随版本更新 | ✅ 已完成 | jsDelivr 备用地址 `@v0.1.1` → `@v0.2.0-rc.1`；`--ref` 示例同步；安装节顶部新增「当前版本 `0.2.0-rc.1`（预发布通道）」与 npm 通道待开放说明 |
+
+**A 的凭据用法**（三种任选其一，脚本会按顺序查找）：
+
+```bash
+# ① 环境变量（推荐，不落盘）
+NPM_TOKEN=<token> node scripts/publish-npm.mjs --publish
+# ② 写进 ~/.npmrc（脚本会读其中的 _authToken）
+#    //registry.npmjs.org/:_authToken=<token>
+# ③ 账号开了 2FA 时补一次性验证码
+node scripts/publish-npm.mjs --publish --otp 123456
+```
+
+> 未实测的部分如实标明：**上传那一步（`PUT` + 鉴权）从没有真实执行过**（因为一直没有 token）；
+> 被验证的是它前面的一切（打包、自校验、发布体构造、凭据查找），且 CI 会在三平台都跑一遍打包预演。
+> 首次真发时如果 registry 有额外要求（例如 `_npmVersion` 字段或 2FA 策略），按返回的 HTTP 错误现场调整。
 
 ## 4. GA（0.2.0 正式）前建议处理，但**不阻断 RC**
 

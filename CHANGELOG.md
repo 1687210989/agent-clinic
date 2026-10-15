@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+（下一轮改动写在这里。本次发行的内容见下一个版本段。）
+
+## [0.2.0-rc.1] — 2026-10-15
+
+> **预发布通道（RC）**，tag `v0.2.0-rc.1`。今天就能装的两种方式：
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash   # 走 main
+> curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.1/install.sh | bash  # 走 tag（国内镜像）
+> ```
+>
+> npm 通道（`npm i -g agent-clinic@next`）随凭据到位后开放；放行检查记录见
+> [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
+>
+> **本版把此前积累了 6 轮、一直停在 `[Unreleased]` 的改动一并发出**，最关键的三处：
+> ① 诊断指标 **19 → 21 项**（K1 跨会话失忆 / K2 已解决重新排查实现，
+> 代价是本地加盐指纹快照，可 `fingerprints --clear` 清除、可整体关闭）；
+> ② 第三方评估提出的四个高/中严重度问题全部修完（CI 全红根因、现搜进处方、N3 误判、徽章无守护），
+> 并补上**合成语料装置 + 语料覆盖率自检 + 徽章守护**三层自动化；
+> ③ 面板错误态无反馈与通知自激两个真实缺陷修复，插件面板现有 76 条零依赖 DOM 桩测试。
+>
+> 质量门：自检 **307 条全绿**，语料覆盖率 **21/21**，CI **三平台 × node 22.15/24 全绿**。
+
 ### 第七轮：CI 加固 —— action 升 v7 + runner 钉版本（2026-10-15）
 
 > 起因是每次 CI 都带 7 条告警，以及 `ubuntu-latest` 即将在 10-19 ~ 11-19 分几周切到

@@ -49,7 +49,9 @@
     "test:plugin": "node scripts/plugin-dom.test.mjs",
     "fixtures": "node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home",
     "fixtures:verify": "node scripts/fixtures/synth-dsh.mjs --verify",
-    "fingerprints": "node src/cli.mjs fingerprints"
+    "fingerprints": "node src/cli.mjs fingerprints",
+    "publish:npm": "node scripts/publish-npm.mjs",
+    "publish:npm:go": "node scripts/publish-npm.mjs --publish"
   },
   "files": [
     "plugin",

@@ -2921,9 +2921,15 @@ process.stdout.write('\n21) 文档数字来源与示例新鲜度（D10 / D11）\
   // D10（示例新鲜度）：README 的输出示例必须体现**当前**口径。
   // 旧示例停在 C1 的旧口径（"同类会话基线"）与 N3 的两段式（"被拒比例"）——
   // 改完代码没人会想起示例，这里把它绑在口径关键词上。
+  //
+  // ⚠️ 按**行**切，不要用 /^````bash\n/ 这种正则：Windows 上 git checkout 出来是 CRLF，
+  //    "`bash\r\n" 匹配不上只认 \n 的模式 —— CI 的 windows job 就是这么红的（本地 LF 却是绿的）。
   const sampleBlock = (() => {
-    const m = /^````bash\n([\s\S]*?)^````$/m.exec(readmeSrc2);
-    return m ? m[1] : '';
+    const ls = readmeSrc2.split(/\r?\n/);
+    const start = ls.findIndex((l) => /^`{4}bash/.test(l));
+    if (start < 0) return '';
+    const end = ls.findIndex((l, i) => i > start && /^`{4}\s*$/.test(l));
+    return end < 0 ? '' : ls.slice(start + 1, end).join('\n');
   })();
   check(
     'D10：README 输出示例体现当前口径（C1 排除本会话 / N3 三分类 / 名额说明）',

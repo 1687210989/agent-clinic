@@ -3,6 +3,33 @@
 这个目录放着**要提交给 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 的那一个文件**。
 放在这里是为了：① 有版本记录（改了描述能看出改了什么）；② 以后更新条目不用重新推导。
 
+## 提交状态（2026-10-15）
+
+- **PR：[awesome-dsh-plugin#7491](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/7491)**
+  —— `Add 1687210989/agent-clinic`，状态 open，1 个文件 `data/plugins/1687210989__agent-clinic.yml`（+6/-0）
+- 作者账号：`1687210989`（fork 在 `1687210989/awesome-dsh-plugin`）
+- 待办：对方 CI 首次运行需要**维护者批准**（first-time contributor，页面上显示 "1 workflow awaiting approval"），
+  这不是我们的问题；维护者点一下就会跑
+- 自查通过项：`dsh.bundle` ✓、仓库 ≥1 天 ✓、`category: usage` ✓、描述无营销词 ✓、
+  `dsh-plugin` topic ✓（仓库 topics = `["dsh-plugin"]`）
+
+## ⚠️ 踩过的坑：新建文件时路径会被拼两次
+
+网页版新建文件时，**不要**打开 `…/new/main/data/plugins/<文件名>.yml` 然后再在 "Name your file..." 里
+把完整路径再填一遍 —— GitHub 会把 URL 里的目录与输入框内容拼起来，结果是：
+
+```
+data/plugins/1687210989__agent-clinic.yml/data/plugins/1687210989__agent-clinic.yml   ← 错（文件被塞进一个同名目录里）
+data/plugins/1687210989__agent-clinic.yml                                            ← 对
+```
+
+**正确做法**：打开目录 URL `…/new/main/data/plugins/`，然后在 "Name your file..." 里**只填文件名**
+`1687210989__agent-clinic.yml`。
+
+修法（本次用的）：把分支克隆下来，`git rm -r` 掉错误的那层目录、把文件放回正确路径、提交推送 ——
+git 会把它识别为**重命名**，PR 的最终 diff 就只剩正确路径那一个新增文件
+（错误文件在同一 PR 里先增后删，不进最终 diff）。
+
 ## 提交方式（对方仓库的规则）
 
 对方的 `contributing.md` 说得很明确：**一个 PR 只加一个文件**，文件名为

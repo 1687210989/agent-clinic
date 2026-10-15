@@ -23,7 +23,12 @@ if (-not (Test-Path $entry)) { throw "找不到条目文件：$entry" }
 $yaml = (Get-Content $entry -Raw).TrimEnd() + "`r`n"
 
 $targetRepo = 'awesome-dsh-plugin/awesome-dsh-plugin'
-$newFileUrl = "https://github.com/$targetRepo/new/main/data/plugins/1687210989__agent-clinic.yml"
+$entryFile = '1687210989__agent-clinic.yml'
+# ⚠️ 用**目录** URL（结尾是 data/plugins/），然后在 "Name your file..." 里只填文件名。
+# 踩过的坑：打开 `…/new/main/data/plugins/<文件名>` 再在输入框里填完整路径，
+# GitHub 会把 URL 的目录与输入框内容拼两次，文件会落到
+# `data/plugins/<文件名>/data/plugins/<文件名>`（PR 里的路径就错了）。
+$newFileUrl = "https://github.com/$targetRepo/new/main/data/plugins/"
 $forkUrl = "https://github.com/$targetRepo/fork"
 $topicsUrl = 'https://github.com/1687210989/agent-clinic/settings'
 
@@ -64,22 +69,26 @@ Say '════════ 第 1 步：打开 GitHub 的新建文件页（会
 Say "链接：$newFileUrl"
 Say '（如果它提示你需要先 fork：点页面上的 “fork this repository” / “Create a new fork”，'
 Say "  或先手动打开 $forkUrl 点 Create fork）"
-Set-Clip $yaml '要提交的 YAML 内容'
+Set-Clip $entryFile '文件名（只填这一行，别填完整路径）'
 if (-not $SkipOpen) {
   Start-Process $newFileUrl
   Say '   已尝试在你的浏览器里打开这个页面' 'Green'
 }
 Say ''
-Read-Host '浏览器打开后按回车继续（接下来把内容粘进去）'
+Read-Host '浏览器打开后按回车继续（接下来先把文件名填好，再粘内容）'
 
-Say '════════ 第 2 步：粘贴 + 提交 ════════' 'Cyan'
-Say '1. 文件名框里应该已经是： data/plugins/1687210989__agent-clinic.yml （不要改）'
-Say '2. 点内容大框，按 Ctrl+A 全选删掉，再按 Ctrl+V 粘贴（内容已在剪贴板）'
-Say '3. 页面底部 “Commit message” 填： Add 1687210989/agent-clinic'
-Say '4. 点绿色按钮 “Propose new file”'
-Say '5. 下一页点 “Create pull request”（先别提交，先完成下面第 3 步）'
+Say '════════ 第 2 步：粘文件名 → 粘内容 → 提交 ════════' 'Cyan'
+Say "1. 顶部 “Name your file...” 里粘贴（Ctrl+V，剪贴板里是 $entryFile）—— 只填文件名，不要带目录"
+Say '2. 点内容大框，Ctrl+A 全选删掉'
 Say ''
-Read-Host '进入 PR 页面后按回车，我把 PR 正文放进剪贴板'
+Set-Clip $yaml '要提交的 YAML 内容'
+Say '3. 回到内容框，Ctrl+V 粘贴（现在剪贴板里是 YAML 内容）'
+Say '4. 拉到底部：Commit message 填 Add 1687210989/agent-clinic；'
+Say '   单选选 “Create a new branch for this commit and start a pull request”；点绿色按钮'
+Say '5. 跳到 PR 页面后，把标题改成 Add 1687210989/agent-clinic，正文里 6 个方框逐个点成 ✓'
+Say '6. 点最下面绿色 “Create pull request”'
+Say ''
+Say '✅ 完成标志：出现你的 PR，且下方开始跑 CI（首次提交需要维护者批准才会跑）。' 'Green'
 
 Say '════════ 第 3 步：填 PR 标题与正文 ════════' 'Cyan'
 Say 'PR 标题（手动输入或复制）：Add 1687210989/agent-clinic'

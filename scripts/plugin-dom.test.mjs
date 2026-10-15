@@ -738,6 +738,11 @@ const world = {
   liveGate: null,
   // liveRes：自定义响应对象。用来喂异常响应形状（非 200 / body 不是 JSON / json() 直接 reject）。
   liveRes: null,
+  // reportRes / watchRes：与 liveRes 同义，给 /report、/watch 喂异常响应形状。
+  // watchError / reportError：直接 reject 掉 fetch 本身（网络层失败）。
+  reportRes: null,
+  watchRes: null,
+  watchError: null,
   // 真实宿主的首个 /watch 响应签名必然非空（否则客户端永远不建立基线）
   watch: { ok: true, version: '14', count: 1, ids: ['C1'], signature: 'sig-1', generatedAt: 't' },
   calls: [],
@@ -759,14 +764,17 @@ function installFetch() {
     world.calls.push({ url: u, opts: opts || null });
     if (u.endsWith('/report')) {
       if (world.reportError) return Promise.reject(new Error(world.reportError));
-      return Promise.resolve(jsonRes(world.report));
+      return Promise.resolve(world.reportRes ? world.reportRes : jsonRes(world.report));
     }
     if (u.endsWith('/live')) {
       if (world.liveError) return Promise.reject(new Error(world.liveError));
       const respond = () => (world.liveRes ? world.liveRes : jsonRes(world.live));
       return world.liveGate ? world.liveGate.then(respond) : Promise.resolve(respond());
     }
-    if (u.endsWith('/watch')) return Promise.resolve(jsonRes(world.watch));
+    if (u.endsWith('/watch')) {
+      if (world.watchError) return Promise.reject(new Error(world.watchError));
+      return Promise.resolve(world.watchRes ? world.watchRes : jsonRes(world.watch));
+    }
     return Promise.reject(new Error(`未知端点：${u}`));
   };
 }
@@ -778,6 +786,9 @@ function resetWorld(overrides = {}) {
   world.liveError = null;
   world.liveGate = null;
   world.liveRes = null;
+  world.reportRes = null;
+  world.watchRes = null;
+  world.watchError = null;
   world.watch = { ok: true, version: '14', count: 1, ids: ['C1'], signature: 'sig-1', generatedAt: 't' };
   world.calls = [];
   copied.length = 0;
@@ -832,6 +843,21 @@ function tickWatcher(nth = 0) {
   if (!it) throw new Error('没有可用的轮询 interval，watcher 未注册');
   return it.fn();
 }
+
+/** 统计某个端点的请求次数（/report、/live、/watch） */
+function countCalls(suffix) {
+  return world.calls.filter((c) => c.url.endsWith(suffix)).length;
+}
+
+/**
+ * 从产品源码里读真实的 CLIENT_VERSION。
+ *
+ * 为什么不在 fixture 里硬编码：本文件原来的合成报告一律写 `version: '14'`，
+ * 而 plugin/client.js 的 CLIENT_VERSION 已经走到 '15' —— 于是**每一条**渲染
+ * 断言其实都跑在「宿主版本落后」的横幅分支上，正常分支从未被渲染过。
+ * 从源码取值可以让测试跟着产品走，版本一变也不会静默失真。
+ */
+const CLIENT_VERSION_IN_SRC = (CLIENT_SRC.match(/const\s+CLIENT_VERSION\s*=\s*'([^']+)'/) || [])[1] || null;
 
 // ===========================================================================
 // 4) 合成数据（形状对齐 src/report.mjs 的 analyze() 返回）
@@ -1634,6 +1660,324 @@ section('E2) 联网现搜：中间态与异常响应形状');
     `/report 调用 ${before} → ${after}（恰好 1 次；>1 即刷新通知自激）`,
   );
   check('自动重拉不产生渲染期异常', renderErrors.length === 0, `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`);
+}
+
+// --- E3. watch 签名变化 → 面板内容级自动刷新 -----------------------------
+//
+// E2 ④ 只断言了「/report 调用 +1」—— 那是**请求级**证据，证明不了用户看到的
+// 内容真的换了（请求可能拉回同一份旧数据）。这里让重拉的 /report 返回**另一份
+// 数据**，把断言落到渲染文本上：面板必须出现新标记（【W】/【R】），且旧标记
+// （【A】）不再残留。
+//
+// 触发方式：桩把 setInterval 回调记在 `intervals` 里，tickWatcher(0) 主动调用它。
+// 所以 6 秒的**真实节奏**仍然不可达（假计时器永不触发），但「签名变化 → 重拉 →
+// 重渲染」这条逻辑链是确定性可达的；注册间隔本身也有静态断言。
+section('E3) watch 签名变化 → 面板内容级自动刷新（①）');
+{
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+
+  const pollIntervals = intervals.filter((i) => i.alive);
+  check(
+    '轮询器按 POLL_MS=6000 注册 setInterval（6 秒节奏的静态证据；真实计时不可达）',
+    pollIntervals.length === 1 && pollIntervals[0].ms === 6000,
+    `存活 interval 数=${pollIntervals.length} 全部 ms=[${intervals.map((i) => i.ms).join(',')}]`,
+  );
+  check(
+    '基线：面板展示首拉 report 的内容（【A】）',
+    has(env.container, '【A】token 消耗过快') && has(env.container, '【A】页脚'),
+    `含 A 分组=${has(env.container, '【A】token 消耗过快')} 含 A 页脚=${has(env.container, '【A】页脚')}`,
+  );
+
+  // 关键布置：让重拉的 /report 返回**不同内容**，这样"内容刷新"才可证伪。
+  world.report = {
+    ok: true,
+    version: '14',
+    generatedAt: '2026-10-16T01:00:00.000Z',
+    report: '# 第二轮报告',
+    data: makeData('W'),
+  };
+  world.watch = { ok: true, version: '14', count: 3, ids: ['C1', 'E1', 'C1'], signature: 'sig-2', generatedAt: 't2' };
+
+  const reportBefore = countCalls('/report');
+  await tickWatcher(0);
+  await flush();
+  await flush();
+  const reportAfter = countCalls('/report');
+  const t = text(env.container);
+
+  check(
+    '签名变化触发面板重新拉取 /report（恰好 +1 次）',
+    reportAfter === reportBefore + 1,
+    `/report 调用 ${reportBefore} → ${reportAfter}`,
+  );
+  check(
+    '签名变化后渲染内容真的换成了新报告（内容级刷新，不只是侧边栏角标）',
+    t.includes('【W】token 消耗过快') && t.includes('【W】处方 1') && t.includes('【W】页脚'),
+    `含 W 分组=${t.includes('【W】token 消耗过快')} 含 W 处方=${t.includes('【W】处方 1')} 含 W 页脚=${t.includes('【W】页脚')}`,
+  );
+  check(
+    '签名变化后旧报告内容不再残留（整份替换，不是叠加）',
+    !t.includes('【A】token 消耗过快') && !t.includes('【A】页脚'),
+    `残留 A 标记=[${['【A】token 消耗过快', '【A】页脚'].filter((m) => t.includes(m)).join('|') || '(无)'}]`,
+  );
+  check('内容级自动刷新不产生渲染期异常', renderErrors.length === 0, `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`);
+
+  // 签名没变 → 不得重拉（否则每 6 秒白解析一遍 4~5 个会话文件）
+  world.report = { ok: true, version: '14', report: '# 第三轮报告', data: makeData('Z') };
+  const before2 = countCalls('/report');
+  await tickWatcher(0);
+  await flush();
+  const after2 = countCalls('/report');
+  check(
+    '签名未变化时不重复拉取 /report（零浪费，也不把新数据刷进来）',
+    after2 === before2 && !text(env.container).includes('【Z】'),
+    `/report 调用 ${before2} → ${after2} 含 Z 标记=${text(env.container).includes('【Z】')}`,
+  );
+}
+{
+  // 面板**关闭**时：轮询发现签名变化只应更新角标，不应触发面板取数
+  // （监听器是在 useEffect([isOpen, nonce]) 里注册的，关闭态根本没注册）。
+  resetWorld();
+  const env = mountClient();
+  await flush();
+  check('面板关闭时不请求 /report（监听器只在打开态注册）', countCalls('/report') === 0, `/report 调用数=${countCalls('/report')}`);
+
+  world.report = { ok: true, version: '14', report: '# 关闭期间更新的报告', data: makeData('X') };
+  world.watch = { ok: true, version: '14', count: 3, ids: ['C1', 'E1', 'C1'], signature: 'sig-2', generatedAt: 't2' };
+  await tickWatcher(0);
+  await flush();
+  const badge = env.container.querySelector('[title="发现 2 个新问题"]');
+  check('面板关闭时签名变化只更新侧边栏未读角标', Boolean(badge) && text(badge).trim() === '2', `角标=${badge ? text(badge).trim() : '(无)'}`);
+  check('面板关闭时不触发面板取数（不在后台白拉全量报告）', countCalls('/report') === 0, `/report 调用数=${countCalls('/report')}`);
+
+  openPanel(env.container);
+  await flush();
+  const t = text(env.container);
+  check(
+    '随后打开面板取到的是更新后的报告内容',
+    t.includes('【X】token 消耗过快') && countCalls('/report') === 1,
+    `含 X 分组=${t.includes('【X】token 消耗过快')} /report 调用数=${countCalls('/report')}`,
+  );
+}
+
+// --- E4. 联网现搜：失败路径的中间态与恢复 --------------------------------
+//
+// E2 ① 只验证了"成功返回后按钮恢复"。失败（reject）路径同样必须解除 liveBusy，
+// 否则一次网络故障就把按钮永久锁在「检索中…」，用户再也点不动 —— 这是比"没反应"
+// 更糟的状态。这里用可手动 reject 的 deferred 网关稳定观测整条失败链。
+section('E4) 联网现搜：失败路径的中间态与恢复（②）');
+{
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  let rejectGate = () => {};
+  world.liveGate = new Promise((_res, rej) => {
+    rejectGate = rej;
+  });
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+
+  const busyBtn = buttonByText(env.container, '检索中…');
+  const busyText = text(env.container);
+  check(
+    'liveBusy 中间态：状态行明示「正在联网检索插件…」并带上只发关键词的告知',
+    busyText.includes('正在联网检索插件') && busyText.includes('不发送会话内容'),
+    `含进行中=${busyText.includes('正在联网检索插件')}`,
+  );
+  check(
+    'liveBusy 中间态：按钮 disabled，防止重复联网',
+    Boolean(busyBtn) && busyBtn.disabled === true,
+    `按钮=${busyBtn ? `text=${text(busyBtn)} disabled=${busyBtn.disabled}` : '(未找到)'}`,
+  );
+  check('liveBusy 中间态：不显示上一次的错误行（进入检索即清错）', !busyText.includes('联网检索失败：'), `含错误行=${busyText.includes('联网检索失败：')}`);
+
+  rejectGate(new Error('网关连接重置'));
+  await flush();
+  await flush();
+  const afterBtn = buttonByText(env.container, '联网现搜插件');
+  const afterText = text(env.container);
+  check(
+    '联网失败后按钮从「检索中…」恢复可点（不卡在忙碌态）',
+    Boolean(afterBtn) && afterBtn.disabled === false,
+    `按钮=${afterBtn ? `text=${text(afterBtn)} disabled=${afterBtn.disabled}` : '(未找到)'}`,
+  );
+  check(
+    '联网失败后显示失败原因，且保留原报告数据、不显示假数据',
+    afterText.includes('联网检索失败：网关连接重置') && afterText.includes('【A】token 消耗过快') && !afterText.includes('新发现'),
+    `含原因=${afterText.includes('联网检索失败：网关连接重置')} 含 A 数据=${afterText.includes('【A】token 消耗过快')} 含成功行=${afterText.includes('新发现')}`,
+  );
+  check('联网失败路径只发出一次 /live 请求', countCalls('/live') === 1, `/live 调用数=${countCalls('/live')}`);
+  check('联网失败路径无渲染期异常', renderErrors.length === 0, `异常=${renderErrors.map((e) => e.message).join(';') || '(无)'}`);
+}
+
+// --- E5. 异常响应形状的降级（③）-----------------------------------------
+//
+// 三类形状分别验证：① HTTP 500 + HTML body（json() reject）② 200 但 body 是
+// 标量/null（合法 JSON、错误形状）③ /report 与 /watch 的同类异常。
+// 判据统一为：有可见提示 / 不抛异常 / 不显示假数据 / 保留原报告。
+section('E5) 异常响应形状的降级（③）');
+{
+  // ① HTTP 500 + 非 JSON body：宿主前面挂了反向代理、返回 HTML 错误页时最常见。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  world.liveRes = {
+    ok: false,
+    status: 500,
+    headers: { get: () => 'text/html; charset=utf-8' },
+    json: () => Promise.reject(new SyntaxError("Unexpected token '<', \"<html>...\" is not valid JSON")),
+    text: () => Promise.resolve('<html><body><h1>500 Internal Server Error</h1></body></html>'),
+  };
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+  await flush();
+  const t = text(env.container);
+  check(
+    'HTTP 500 + HTML body：给出可见降级提示（不静默、不抛渲染期异常）',
+    t.includes('联网检索失败：') && t.includes('Unexpected token') && renderErrors.length === 0,
+    `含失败行=${t.includes('联网检索失败：')} 异常=${renderErrors.map((e) => e.message).join(';') || renderErrors.length}`,
+  );
+  check(
+    'HTTP 500 + HTML body：保留原报告数据、不显示假数据',
+    t.includes('【A】token 消耗过快') && !t.includes('新发现'),
+    `含 A 数据=${t.includes('【A】token 消耗过快')} 含成功行=${t.includes('新发现')}`,
+  );
+  const btn2 = buttonByText(env.container, '联网现搜插件');
+  check('HTTP 500 后按钮恢复可点（不卡在检索中…）', Boolean(btn2) && btn2.disabled === false, `按钮=${btn2 ? `text=${text(btn2)} disabled=${btn2.disabled}` : '(未找到)'}`);
+}
+{
+  // ② 200 + body 是**标量**（合法 JSON、错误形状）：不能当作成功，更不能显示假数据。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  world.liveRes = {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/plain' },
+    json: () => Promise.resolve('oops, not an object'),
+    text: () => Promise.resolve('oops, not an object'),
+  };
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+  await flush();
+  const t = text(env.container);
+  check(
+    '200 + 标量 body（非对象 JSON）：降级为失败提示，不当作成功',
+    t.includes('联网检索失败：') && !t.includes('本次联网现搜') && !t.includes('新发现'),
+    `含失败行=${t.includes('联网检索失败：')} 含成功行=${t.includes('本次联网现搜')}`,
+  );
+  check(
+    '200 + 标量 body：保留原报告数据、无渲染期异常',
+    t.includes('【A】token 消耗过快') && renderErrors.length === 0,
+    `含 A 数据=${t.includes('【A】token 消耗过快')} 异常=${renderErrors.length}`,
+  );
+}
+{
+  // ②b 200 + body 是 null（例如 204/空响应被解析成 null）。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  world.liveRes = {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    json: () => Promise.resolve(null),
+    text: () => Promise.resolve(''),
+  };
+  const liveBtn = buttonByText(env.container, '联网现搜插件');
+  if (liveBtn) liveBtn.click();
+  await flush();
+  await flush();
+  const t = text(env.container);
+  check('200 + null body：降级为失败提示（不静默、不抛异常）', t.includes('联网检索失败：') && renderErrors.length === 0, `含失败行=${t.includes('联网检索失败：')} 异常=${renderErrors.length}`);
+  check('200 + null body：保留原报告数据', t.includes('【A】token 消耗过快'), `含 A 数据=${t.includes('【A】token 消耗过快')}`);
+}
+{
+  // ③ /report 的 response body 不是 JSON（宿主未注册路由 / 被代理换成 HTML）。
+  resetWorld();
+  world.reportRes = {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/html' },
+    json: () => Promise.reject(new SyntaxError("Unexpected token '<' in JSON at position 0")),
+    text: () => Promise.resolve('<html>502 Bad Gateway</html>'),
+  };
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  const t = text(env.container);
+  check(
+    '/report 响应体不是 JSON：降级为错误提示，不渲染任何统计假数据',
+    t.includes('未能取得报告：') && !t.includes('工具调用') && !t.includes('cacheRead'),
+    `含错误行=${t.includes('未能取得报告：')} 含统计假数据=${t.includes('工具调用') || t.includes('cacheRead')}`,
+  );
+  check(
+    '/report 非 JSON 降级仍给可操作指引且不抛渲染期异常',
+    t.includes('重启 Harness') && renderErrors.length === 0,
+    `含指引=${t.includes('重启 Harness')} 异常=${renderErrors.length}`,
+  );
+}
+{
+  // ③b /watch 的 response body 不是 JSON：轮询必须静默跳过（网络抖动是常态），
+  //     且不能因此把面板刷新打乱；恢复后还得能继续工作。
+  resetWorld();
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  const before = countCalls('/report');
+  world.watchRes = {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    json: () => Promise.reject(new SyntaxError('watch body 不是 JSON')),
+    text: () => Promise.resolve('<html>'),
+  };
+  await tickWatcher(0);
+  await flush();
+  check(
+    '/watch 响应体不是 JSON：轮询静默跳过（不误刷新面板、不抛异常）',
+    countCalls('/report') === before && renderErrors.length === 0,
+    `/report ${before} → ${countCalls('/report')} 异常=${renderErrors.length}`,
+  );
+
+  world.watchRes = null;
+  world.report = { ok: true, version: '14', report: '# 恢复后的报告', data: makeData('R') };
+  world.watch = { ok: true, version: '14', count: 3, ids: ['C1', 'E1', 'C1'], signature: 'sig-9', generatedAt: 't9' };
+  await tickWatcher(0);
+  await flush();
+  await flush();
+  check(
+    '一次 /watch 响应抖动后轮询仍能继续工作（签名变化照常刷新面板）',
+    countCalls('/report') === before + 1 && text(env.container).includes('【R】token 消耗过快'),
+    `/report ${before} → ${countCalls('/report')} 含 R 分组=${text(env.container).includes('【R】token 消耗过快')}`,
+  );
+}
+{
+  // 顺带补一个既有断言的盲点：fixture 里硬编码 version '14'，而产品
+  // CLIENT_VERSION 已是 '15' —— 于是**每一条**渲染断言都跑在"宿主版本落后"
+  // 的横幅分支上，正常分支（stale=false）从未被渲染过。这里从源码取真实版本号，
+  // 断言"版本一致时不出现重启横幅"。
+  resetWorld();
+  world.report = { ok: true, version: CLIENT_VERSION_IN_SRC, report: '# 对齐版本', data: makeData('V') };
+  const env = mountClient();
+  openPanel(env.container);
+  await flush();
+  const t = text(env.container);
+  check(
+    '宿主版本与 CLIENT_VERSION 一致时不显示重启横幅（覆盖既有断言全走"落后"分支的盲点）',
+    CLIENT_VERSION_IN_SRC !== null && t.includes('【V】token 消耗过快') && !t.includes('宿主仍是旧版'),
+    `源码 CLIENT_VERSION=${CLIENT_VERSION_IN_SRC} 含 V 分组=${t.includes('【V】token 消耗过快')} 含横幅=${t.includes('宿主仍是旧版')}`,
+  );
 }
 
 // --- F. 交互路径 ---------------------------------------------------------

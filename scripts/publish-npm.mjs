@@ -56,6 +56,7 @@ function parseArgs(argv) {
   return {
     publish: argv.includes('--publish'),
     verify: argv.includes('--verify'),
+    alsoLatest: argv.includes('--also-latest'),
     tag: get('--tag', 'next'),
     outDir: get('--out', path.join(ROOT, 'dist')),
     otp: get('--otp', null),
@@ -228,7 +229,7 @@ function pack() {
 // 发布体
 // ---------------------------------------------------------------------------
 
-export function buildPublishBody({ pkg, tgz, shasum, integrity, tag, fileName }) {
+export function buildPublishBody({ pkg, tgz, shasum, integrity, tag, fileName, alsoLatest = false }) {
   const version = pkg.version;
   const manifest = {
     ...pkg,
@@ -239,6 +240,10 @@ export function buildPublishBody({ pkg, tgz, shasum, integrity, tag, fileName })
       tarball: `https://registry.npmjs.org/${pkg.name}/-/${fileName}`,
     },
   };
+  // ⚠️ 一次发布只能带**一个** dist-tag —— npm 会直接 400：
+  //    "Must associate a single dist tag with new publishes."
+  //    所以 `--also-latest` 不是塞进发布体，而是发布成功后**再单独调** dist-tags 接口
+  //    （见 setDistTag）：先 next，再把 latest 指过去。
   return {
     _id: pkg.name,
     name: pkg.name,
@@ -253,6 +258,24 @@ export function buildPublishBody({ pkg, tgz, shasum, integrity, tag, fileName })
       },
     },
   };
+}
+
+/**
+ * 单独改一个 dist-tag（npm 的 `npm dist-tag add` 走的就是这个接口）。
+ * 预发布通道想让 `npm i -g <pkg>`（不带 tag）也拿到最新版时用它。
+ */
+export async function setDistTag({ registry, name, tag, version, token, otp = null }) {
+  const headers = {
+    authorization: `Bearer ${token}`,
+    'content-type': 'application/json',
+    'user-agent': 'agent-clinic-publish/1.0 (zero-dep)',
+  };
+  if (otp) headers['npm-otp'] = String(otp);
+  const res = await fetch(
+    `${registry}/-/package/${encodeURIComponent(name)}/dist-tags/${encodeURIComponent(tag)}`,
+    { method: 'PUT', headers, body: JSON.stringify(version) },
+  );
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: (await res.text()).slice(0, 300) };
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +410,15 @@ async function main() {
   process.stdout.write(`tarball：${outPath}\n`);
   process.stdout.write('自校验：解包回来逐字节比对 · package/package.json 版本一致 · 无多余文件 → 通过\n');
 
-  const body = buildPublishBody({ pkg, tgz, shasum, integrity, tag: args.tag, fileName });
+  const body = buildPublishBody({
+    pkg,
+    tgz,
+    shasum,
+    integrity,
+    tag: args.tag,
+    fileName,
+    alsoLatest: args.alsoLatest,
+  });
   const bodyText = JSON.stringify(body);
 
   if (args.verify) {
@@ -440,6 +471,21 @@ async function main() {
   const verdict = classifyPublishResponse(res.status, text);
   if (verdict.outcome === 'published' || verdict.outcome === 'staged') {
     process.stdout.write(`✅ ${verdict.message}\n`);
+    if (args.alsoLatest && args.tag !== 'latest') {
+      const dt = await setDistTag({
+        registry: args.registry,
+        name: pkg.name,
+        tag: 'latest',
+        version: pkg.version,
+        token,
+        otp: args.otp,
+      });
+      process.stdout.write(
+        dt.ok
+          ? `✅ 已把 latest 指向 ${pkg.version}（npm i -g ${pkg.name} 不带 tag 也能装到它）\n`
+          : `⚠ latest 未更新（HTTP ${dt.status}）：${dt.body}\n`,
+      );
+    }
     process.stdout.write(`   稍后自证：node scripts/publish-npm.mjs --verify --tag ${args.tag}\n`);
     return 0;
   }

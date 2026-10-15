@@ -16,6 +16,12 @@
 > ```
 >
 > 质量门：自检 **340 条全绿** · 面板测试 **106 条** · 语料覆盖率 **22/22** · CI 三平台全绿。
+>
+> **发布记录（2026-10-15）**：`dist-tags { next: 0.2.0-rc.2, latest: 0.2.0-rc.2 }`；
+> 从 registry 拉回 tarball **与本地打包逐字节一致**；`npm install agent-clinic@next` 装出来可跑
+> （`rx` 与 A1 都在）。发布踩到一个新坑：**一次发布只能带一个 dist-tag** ——
+> `{next, latest}` 同时塞进发布体会被拒（`400 Must associate a single dist tag with new publishes`），
+> 正确做法是发完 `next` 后再单独 `PUT /-/package/<name>/dist-tags/latest`（脚本已支持 `--also-latest`）。
 
 ### A1 MCP 闲置 —— 最后一个"排期中"指标实现（配置驱动）
 

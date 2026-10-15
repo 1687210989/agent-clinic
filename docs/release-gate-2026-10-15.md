@@ -196,6 +196,35 @@ npm 正限制这类 token 做**账号级操作**（即 registry 响应头那条�
 → 它**无法自我吊销**：需要在 npm 网站（浏览器会话）删除，或等 **2026-10-22** 自然过期。
 `0.0.0-stage` 占位版本保留（npm 分阶段发布的固有痕迹；`latest`/`next` 已指向 `0.2.0-rc.1`）。
 
+### 6.4 0.2.0-rc.2 发行（2026-10-15，指标 22/22 全实现）
+
+**这一版的意义**：最后一个排期指标 **A1（MCP 闲置）** 实现 ——
+诊断指标 **22 项全部已实现、0 项排期、0 项尚未实现**。
+A1 的实现前提是用户先接入本地 filesystem MCP server（配置写在
+`~/.dsh/profiles/desktop/cordis.patch.yml` 的 `mcp-files` 行，server 装在
+`~/.dsh/mcp-servers/filesystem`，用绝对 node 路径启动 —— 本机 node 不在 PATH 上）。
+
+| 项 | 结果 | 复核方式 |
+|---|---|---|
+| 发行提交 / tag | `851cdab` · 附注 tag `v0.2.0-rc.2` | `git ls-remote --tags origin` |
+| CI | run **38740563744** → **8/8 job success**（含 A1 在干净 runner 上的覆盖） | Actions API |
+| 本地验收 | 自检 **340 条** · 面板 **106 条** · 语料覆盖率 **22/22** · 空数据降级与真机 report 均 exit 0 | 本机实跑 |
+| npm 发布 | `dist-tags { next: 0.2.0-rc.2, latest: 0.2.0-rc.2 }` · tarball 从 registry 拉回**与本地逐字节一致** | `publish-npm.mjs --verify` |
+| 装一遍再跑 | `npm install agent-clinic@next` → 版本 `0.2.0-rc.2`；`rx` 子命令可用；`diagnose` 里 A1 参与判定 | 本机实跑 |
+
+**本轮踩到的坑（第 4 条发布教训）**：一次发布**只能带一个 dist-tag** ——
+把 `{next, latest}` 同时塞进发布体会被 registry 直接拒绝：
+`HTTP 400 {"error":"Must associate a single dist tag with new publishes."}`。
+正确做法是**发布时只带一个 tag，成功后再单独调 dist-tags 接口**改另一个
+（npm CLI 的 `npm dist-tag add` 走的就是它）——脚本里已实现为
+`--also-latest`：先发 `next`，再 `PUT /-/package/<name>/dist-tags/latest`。
+
+**A1 在本机的现状（如实说明）**：真机会话历史目前只有 **4.2 天**，A1 的观察窗口要求 ≥30 天，
+所以它现在**不会**报"MCP 闲置"，而是在"未检测到异常的维度"里写明
+"观察窗口只有 4.2 天…再过约 26 天本项才会开始生效"。
+命中路径由合成语料（107 天窗口 + 0 调用）与自检第 24 段覆盖。
+
+
 
 
 

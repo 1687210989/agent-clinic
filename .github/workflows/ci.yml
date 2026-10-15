@@ -1,9 +1,20 @@
 name: CI
 
-# 为什么要有它：203+ 项自检此前没有任何自动化执行者 —— 靠人手跑，
+# 为什么要有它：自检此前没有任何自动化执行者 —— 靠人手跑，
 # 于是出现过"徽章是绿的、实跑是红的"（断言依赖宿主并发写入的状态）。
-# 这里在三个平台上跑同一套自检，顺带暴露 Mac/Linux 才有的缺陷
-# （例如曾经硬编码 `\` 的 joinPath 在 macOS 上让文件监听全量失败）。
+#
+# 第三方评估（实测版）§3.1 的直接教训：CI 曾经**连续两次全红**，根因是
+# smoke 步骤既没设 DSH_HOME、也没造语料 —— runner 上不存在 ~/.dsh/sessions，
+# 于是"会话根目录存在"这类断言直接计为失败，退出码 1，
+# 后续步骤从未执行到。也就是说：**当时所有提交都未经自动化验证**。
+#
+# 现在的纪律：
+#   1. smoke 必须在**合成语料**上跑（每指标至少命中 1 处），并设
+#      DSH_SMOKE_REQUIRE_DATA=1 —— 这样"因为没数据而跳过"会立刻变红，
+#      降级不得冒充全绿；
+#   2. 另跑一次**空数据降级**，要求退出码 0（降级是真的，不是崩）；
+#   3. README 徽章数字由 smoke 自己在跑完后核对（评估 §3.2 的整改护栏），
+#      不一致即失败 —— 此处不另设步骤，避免"两个地方各说各话"。
 
 on:
   push:
@@ -29,10 +40,32 @@ jobs:
       - name: 环境信息
         run: node -v && npm -v
 
-      - name: 自检（scripts/smoke.mjs）
-        run: node scripts/smoke.mjs
+      # 合成语料：干净 runner 上没有 DSH 会话，所有依赖数据的断言都需要它。
+      # 生成器自带"每指标至少命中 1 处"的自校验，覆盖不足会直接失败。
+      - name: 生成合成会话语料
+        run: node scripts/fixtures/synth-dsh.mjs --out ${{ runner.temp }}/dsh-home
 
-      # 报告要能在干净环境里跑出来（无会话数据时也应优雅降级，而不是崩）
+      - name: 语料覆盖率自检（每个指标都要被触达）
+        run: node scripts/fixtures/synth-dsh.mjs --verify
+
+      - name: 自检（合成数据 · 跳过数必须为 0）
+        run: node scripts/smoke.mjs
+        env:
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+          DSH_SMOKE_REQUIRE_DATA: '1'
+          # A2（skill 闲置）的一半输入是"本机装了哪些 skill" —— 不给定就只能靠 runner
+          # 上恰好装了什么，等于把断言绑在宿主机上（第三方评估 §4.2 那类病）。
+          # 语料自带一个必然闲置的 demo skill，这里显式指向它。
+          AGENT_CLINIC_SKILL_DIRS: ${{ runner.temp }}/dsh-home/agents-skills
+
+      # 降级必须是"优雅降级"而不是"崩"：无数据时只做能做的检查，
+      # 如实列出未验证的维度，并以退出码 0 结束。
+      - name: 自检（空数据降级 · 退出码应为 0）
+        run: node scripts/smoke.mjs
+        env:
+          DSH_HOME: ${{ runner.temp }}/agent-clinic-empty-home
+
+      # 报告也要能在干净环境里跑出来（无会话数据时优雅降级，而不是崩）
       - name: 空数据下跑一次报告
         run: node src/cli.mjs report
         env:

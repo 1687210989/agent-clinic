@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { scanSessions, resolveSessionsRoot } from '../src/adapters/dsh.mjs';
 import { summarize } from '../src/summary.mjs';
@@ -28,11 +29,24 @@ import * as reportMod from '../src/report.mjs';
 
 let pass = 0;
 let fail = 0;
+let skip = 0;
 const failures = [];
+const skipped = [];
 // 记录**实际执行过**的断言名：用于最后那条"没有断言静默消失"的自检。
 // 起因：曾有断言写在 `if (有会话) { … }` 里，环境不满足时它一句话不说就没了 ——
 // 报告里数出 239 项、实跑只有 233 项，正是这类静默跳过。
 const executed = [];
+
+// 第三方评估 §3.1 的根因：无数据环境下 `check('会话根目录存在')` / `check('扫到会话文件')`
+// 直接计入 fail，于是脚本一边打印"无会话数据，跳过剩余检查"，一边以退出码 1 结束 ——
+// 降级逻辑形同虚设，CI 因此 6 个 job 全红。
+//
+// 现在把语义彻底分开：
+//   fail  = 断言跑了但没过（实现或断言的错）
+//   skip  = 环境不具备，断言没跑（不是错，但也不能冒充"绿"）
+// 并且提供 DSH_SMOKE_REQUIRE_DATA=1：CI 必须用它 —— 设置了就要求数据必须存在，
+// 任何"因为没数据而跳过"立刻升级为失败，杜绝"runner 上没会话于是自检悄悄变绿"。
+const REQUIRE_DATA = process.env.DSH_SMOKE_REQUIRE_DATA === '1';
 
 function check(name, cond, detail = '') {
   executed.push(name);
@@ -44,6 +58,16 @@ function check(name, cond, detail = '') {
     failures.push(name);
     process.stdout.write(`  ✗ ${name}${detail ? `  ${detail}` : ''}\n`);
   }
+}
+
+function skipCheck(name, reason) {
+  if (REQUIRE_DATA) {
+    check(name, false, `缺少数据（DSH_SMOKE_REQUIRE_DATA=1）：${reason}`);
+    return;
+  }
+  skip += 1;
+  skipped.push(name);
+  process.stdout.write(`  ⊘ ${name}  ${reason}\n`);
 }
 
 process.stdout.write('\nagent-clinic 冒烟测试\n=====================\n\n');
@@ -59,14 +83,29 @@ if (!hasZstdSupport()) {
 // --- 2. 扫描 ---
 process.stdout.write('\n2) 扫描会话\n');
 const root = resolveSessionsRoot({});
-check('会话根目录存在', fs.existsSync(root), root);
+if (fs.existsSync(root)) {
+  check('会话根目录存在', true, root);
+} else {
+  // 评估 §3.1：这一条过去直接计为失败 —— 但"本机/runner 上没有 DSH 会话"
+  // 是环境事实，不是缺陷。改成跳过；CI 用 DSH_SMOKE_REQUIRE_DATA=1 时它仍会红。
+  skipCheck('会话根目录存在', `不存在（${root}）—— 等同 CI runner 的无数据环境`);
+}
 
 const scan = scanSessions({});
-check('扫到会话文件', scan.fileCount > 0, `${scan.fileCount} 个`);
+if (scan.fileCount > 0) {
+  check('扫到会话文件', true, `${scan.fileCount} 个`);
+} else {
+  skipCheck('扫到会话文件', `0 个（${root}）`);
+}
 check('无解析失败', scan.errors.length === 0, scan.errors.length ? JSON.stringify(scan.errors) : '');
 
 if (scan.fileCount === 0) {
-  process.stdout.write('\n无会话数据，跳过剩余检查。\n');
+  process.stdout.write(
+    '\n无会话数据，跳过剩余检查。\n' +
+      '注意：这是**降级运行** —— 事件模型、各项指标、处方层、面板与插件层本次都没被验证。\n' +
+      '要跑完整自检，用合成语料：node scripts/fixtures/synth-dsh.mjs --out <dir> 并设 DSH_HOME 指向它。\n',
+  );
+  process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail} · 跳过 ${skip}\n`);
   process.exit(fail === 0 ? 0 : 1);
 }
 
@@ -903,10 +942,19 @@ process.stdout.write('\n12c) 同类型合并\n');
     new Set(groups.map((g) => g.id)).size === groups.length,
     groups.map((g) => `${g.id}×${g.count}`).join(' · '),
   );
+  // 第三方评估 §4.2：这条旧写法是 `groups.length < data.findings.length`，
+  // 隐含要求**本机数据**每个指标恰好命中 ≥2 处 —— 干净合成数据（每指标 1 处）下必挂。
+  // 那说明自检是针对某一台机器的数据形态校准的，不是自包含的。
+  // 现在用就地构造的 finding 集验证"合并压重复"这件事本身：3 处同类 → 1 类。
+  const merged3 = groupFindings([
+    { id: 'C1', title: '合成', category: 'C', scope: 's1', summary: '第 1 处', evidence: [{ locator: '/tmp/a#L1' }] },
+    { id: 'C1', title: '合成', category: 'C', scope: 's2', summary: '第 2 处', evidence: [{ locator: '/tmp/b#L1' }] },
+    { id: 'C1', title: '合成', category: 'C', scope: 's3', summary: '第 3 处', evidence: [{ locator: '/tmp/c#L1' }] },
+  ]);
   check(
-    '合并确实压掉了重复（类数 < 处数）',
-    groups.length < data.findings.length,
-    `${groups.length} 类 / ${data.findings.length} 处`,
+    '合并确实压掉了重复（3 处同类 → 1 类；构造数据，不依赖本机形态）',
+    merged3.length === 1 && merged3[0].count === 3,
+    `${merged3.length} 类 / 3 处；本机实跑为 ${groups.length} 类 / ${data.findings.length} 处`,
   );
   check(
     '合并没丢信息：实例数 == 命中处数',
@@ -1508,10 +1556,82 @@ process.stdout.write('\n15) 窄领域「蹭词」过滤\n');
     { scan, summary: summarize(scan) },
     { liveEntries: liveGood, liveMeta },
   );
+
+  // 第三方评估 §4.1：现搜条目必须真的进得了处方层。
+  // 旧断言的毛病在于它查的是**全局处方列表**（limit 6、按 finding 轮转）——
+  // 能否通过取决于本机恰好扫出几个 finding 类，数据形态一变就红，等于不是护栏。
+  // 现在拆成三条用**构造输入**的断言（不再读本机 scan 的形态）。
+  const { prescribeOne, matchPrescriptions } = await import('../src/prescriber/index.mjs');
+  const c1Finding = { id: 'C1', title: 'token 消耗过快', category: 'C', summary: '合成 C1', evidence: [] };
+  const rxDirect = prescribeOne(c1Finding, { ctx: { catalog: liveGood, installedPlugins: [] } });
   check(
-    '联网现搜到的对症插件进入处方层',
-    dGood.prescriptions.some((rx) => rx.action?.packageName === 'demo-ctx-compress'),
-    dGood.prescriptions.filter((r) => r.kind === 'plugin').map((r) => r.action?.packageName).join(', ') || '(无插件处方)',
+    '现搜条目进入该问题的候选处方（处方层直连）',
+    rxDirect.some((rx) => rx.action?.packageName === 'demo-ctx-compress'),
+    rxDirect.map((r) => r.action?.packageName ?? r.targetId).join(', ') || '(无候选)',
+  );
+
+  // ② 报告接线：构造 scan（3 个主会话、产出够高 → 必然命中 C1），
+  // 断言 analyze 把现搜目录一路传到处方层（单点卡与合并卡都要有）
+  const mkC1Session = (id, out) => ({
+    sessionId: id,
+    file: `/tmp/${id}.zstd`,
+    totalLines: 8,
+    isSubagent: false,
+    events: Array.from({ length: 4 }, (_, i) => ({
+      kind: 'assistant_msg',
+      session_id: id,
+      locator: `/tmp/${id}.zstd#L${i + 2}`,
+      output_tokens: out,
+      input_tokens: 1000,
+      total_tokens: 1000 + out,
+    })),
+  });
+  const c1Scan = {
+    sessions: [mkC1Session('syn-A', 5000), mkC1Session('syn-B', 5000), mkC1Session('syn-C', 20000)],
+    errors: [],
+  };
+  const dSyn = reportMod.analyze({ scan: c1Scan, summary: { global: {} } }, { liveEntries: liveGood, liveMeta });
+  // 报告返回的扁平 finding 自带 prescriptions（analyze 内部按 finding 生成的完整候选）
+  const perC1 = (dSyn.findings ?? []).find((f) => f.id === 'C1');
+  check(
+    '报告接线：现搜条目出现在 C1 的单点处方里',
+    Boolean(perC1?.prescriptions?.some((rx) => rx.action?.packageName === 'demo-ctx-compress')),
+    (perC1?.prescriptions ?? []).map((r) => r.action?.packageName ?? r.targetId).join(', ') || '(无)',
+  );
+  check(
+    '报告接线：现搜条目出现在 C1 的合并卡处方里',
+    Boolean(
+      (dSyn.groups ?? [])
+        .find((g) => g.id === 'C1')
+        ?.prescriptions?.some((rx) => rx.action?.packageName === 'demo-ctx-compress'),
+    ),
+  );
+
+  // ③ 名额护栏：≥6 类问题时插件类处方仍要拿得到全局名额。
+  // 旧实现（`out.length < limit` 直接当轮次门控）在第 0 轮就把 6 个名额填满，
+  // 第 1 轮永不执行 —— 插件类处方正排在那个位次，于是"现搜只进推荐不进处方"。
+  const manyFindings = ['C1', 'C2', 'C3', 'C6', 'E3', 'E5', 'N1'].map((id) => ({
+    id,
+    summary: `合成 ${id}`,
+    evidence: [],
+  }));
+  const rxAll = matchPrescriptions(manyFindings, { ctx: { catalog: liveGood, installedPlugins: [] } });
+  check(
+    '≥6 类问题时插件类处方仍拿得到全局名额（名额轮转不得回退）',
+    rxAll.some((rx) => rx.action?.packageName === 'demo-ctx-compress'),
+    rxAll.map((r) => `${r.kind}:${r.action?.packageName ?? r.targetId}`).join(' | '),
+  );
+
+  // ④ 名额不够时不静默丢弃（plan-2026-10-15 §3.1 / docs/report-format.md 要求 16）：
+  // 候选池（按 targetId 去重）多于全局名额时，报告必须报出"因名额未展示"的条数。
+  const poolIds = new Set(
+    (dSyn.findings ?? []).flatMap((f) => (f.prescriptions ?? []).map((rx) => rx.targetId)),
+  );
+  const expectOmitted = Math.max(0, poolIds.size - (dSyn.prescriptions ?? []).length);
+  check(
+    '名额说明：因名额未展示的处方条数被如实报出（不静默丢弃）',
+    dSyn.prescriptionsOmitted === expectOmitted && dSyn.prescriptionsPoolSize === poolIds.size,
+    `prescriptionsOmitted=${dSyn.prescriptionsOmitted} · pool=${dSyn.prescriptionsPoolSize} · 期望 ${expectOmitted}/${poolIds.size}`,
   );
 }
 
@@ -1975,6 +2095,34 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     later.notDetected.find((x) => x.id === 'A2')?.note ?? '(无说明)',
   );
 
+  // A2 的"已装 skill 名单"不得绑在宿主机上（第三方评估 §4.2 那类病：断言针对作者本机校准）。
+  // 用 AGENT_CLINIC_SKILL_DIRS 指向一个临时目录，断言名单确实来自它 —— 否则全新 CI runner
+  // 上 A2 必然命中 0，合成语料自检会假红。
+  {
+    // 注意 URL 基准：末尾带 `/` 才被当作目录，否则最后一节会被当成文件名（踩过一次）。
+    const skillRoot = fileURLToPath(new URL('../.tmp/skill-dirs-guard/', import.meta.url));
+    const guardName = 'guard-idle-skill';
+    fs.mkdirSync(path.join(skillRoot, guardName), { recursive: true });
+    const prevSkillsDir = process.env.AGENT_CLINIC_SKILL_DIRS;
+    process.env.AGENT_CLINIC_SKILL_DIRS = skillRoot;
+    try {
+      const guarded = diagMod.runDiagnostics(
+        { scan: a2Scan, summary: { global: {} } },
+        { now: Date.parse('2026-11-01T00:00:00.000Z') },
+      );
+      const gf = guarded.findings.find((x) => x.id === 'A2');
+      check(
+        'A2：已装 skill 名单可由 AGENT_CLINIC_SKILL_DIRS 给定（不绑宿主机）',
+        Boolean(gf) && `${gf.summary}${gf.impact ?? ''}`.includes(guardName),
+        gf ? gf.summary : (guarded.notDetected.find((x) => x.id === 'A2')?.note ?? '(未检出)'),
+      );
+    } finally {
+      if (prevSkillsDir === undefined) delete process.env.AGENT_CLINIC_SKILL_DIRS;
+      else process.env.AGENT_CLINIC_SKILL_DIRS = prevSkillsDir;
+      fs.rmSync(skillRoot, { recursive: true, force: true });
+    }
+  }
+
   // 证据区间：-L<end> 必须真的展开到终点（旧版只打起点 ±2 行）
   const firstSession = scan.sessions.find((s) => s.totalLines > 120);
   if (firstSession) {
@@ -2236,12 +2384,118 @@ process.stdout.write('\n17) 插件层功能测试（apply → 工具 → 路由�
   );
 }
 
-// --- 18. 自检自身的完整性（没有断言静默消失） ---
+// --- 18. 第三方评估（实测版）整改护栏 ---
+//
+// 这一节守住《agent-clinic 独立评估报告（实测版）》点出的问题。
+// 全部用**构造输入**，不依赖本机数据形态 —— 那正是评估 §4.2 的教训。
+process.stdout.write('\n18) 第三方评估整改护栏\n');
+{
+  const diagMod = await import('../src/diagnostics/index.mjs');
+
+  // --- N3：outcome 三分类（评估 §4.3） ---
+  // 旧实现 `if (!/^allow/i.test(outcome)) denied += 1`：5 个 approved 会报成"被拒 5 次"。
+  const n3Findings = (outcomes) => {
+    const events = [];
+    outcomes.forEach((o, i) => {
+      const t = Date.parse('2026-09-01T00:00:00.000Z') + i * 600000;
+      events.push({
+        kind: KIND.APPROVAL,
+        approval_phase: 'asked',
+        approval_id: `ap${i}`,
+        tool_name: 'pwsh',
+        locator: `/tmp/n3.zstd#L${i * 2 + 2}`,
+        ts: new Date(t).toISOString(),
+      });
+      if (o !== null) {
+        events.push({
+          kind: KIND.APPROVAL,
+          approval_phase: 'decided',
+          approval_id: `ap${i}`,
+          outcome: o,
+          locator: `/tmp/n3.zstd#L${i * 2 + 3}`,
+          ts: new Date(t + 120000).toISOString(),
+        });
+      }
+    });
+    const scanN3 = { sessions: [{ sessionId: 'n3', file: '/tmp/n3.zstd', totalLines: 40, events }], errors: [] };
+    return diagMod.runDiagnostics({ scan: scanN3, summary: { global: {} } }).findings.filter((f) => f.id === 'N3');
+  };
+
+  const fApproved = n3Findings(['approved', 'accept', 'granted', 'ok', 'allow'])[0];
+  check(
+    'N3：approved/accept/granted 不再被计成"被拒"（第三方实测旧版报"被拒 5 次"）',
+    Boolean(fApproved) && !/被拒/.test(fApproved.summary),
+    fApproved?.summary ?? '(无结论)',
+  );
+  check(
+    'N3：等待时长照旧如实报出',
+    Boolean(fApproved) && /等待审批中位 120\.0 秒/.test(fApproved.summary),
+    fApproved?.summary ?? '(无结论)',
+  );
+  const fDenied = n3Findings(['deny', 'rejected', 'allow', 'approved', 'declined'])[0];
+  check(
+    'N3：显式拒绝语义才计"被拒"（deny/rejected/declined → 3 次）',
+    Boolean(fDenied) && /被拒 3 次/.test(fDenied.summary),
+    fDenied?.summary ?? '(无结论)',
+  );
+  const fUnknown = n3Findings(['weird-value', 'approved', 'deny', 'allow', 'granted'])[0];
+  check(
+    'N3：无法识别的 outcome 归"结果无法识别"，不混进被拒',
+    Boolean(fUnknown) && /结果无法识别 1 次/.test(fUnknown.summary) && /被拒 1 次/.test(fUnknown.summary),
+    fUnknown?.summary ?? '(无结论)',
+  );
+  const fMissing = n3Findings(['approved', 'approved', 'allow', 'deny', null])[0];
+  check(
+    'N3：无对应决定记录单列（与"未知结果"分开，不混算）',
+    Boolean(fMissing) && /无对应决定记录 1 次/.test(fMissing.summary) && /结果无法识别/.test(fMissing.summary) === false,
+    fMissing?.summary ?? '(无结论)',
+  );
+
+  // --- C1：基线排除被判会话自身（评估 §5.1） ---
+  // [100, 250, 2000]：旧口径含自身 → 基线 250 → 8.0 倍；
+  // 新口径排除自身 → 基线 175（= median(100,250)）→ 11.4 倍。
+  const c1Session = (id, perReq, n = 200) => ({
+    sessionId: id,
+    file: `/tmp/${id}.zstd`,
+    totalLines: n + 2,
+    isSubagent: false,
+    events: Array.from({ length: n }, (_, i) => ({
+      kind: KIND.ASSISTANT_MSG,
+      session_id: id,
+      locator: `/tmp/${id}.zstd#L${i + 2}`,
+      input_tokens: 100,
+      output_tokens: perReq,
+      total_tokens: 100 + perReq,
+    })),
+  });
+  const c1Scan = {
+    sessions: [c1Session('c1-low', 100), c1Session('c1-mid', 250), c1Session('c1-high', 2000)],
+    errors: [],
+  };
+  const c1f = diagMod.runDiagnostics({ scan: c1Scan, summary: { global: {} } }).findings.filter((f) => f.id === 'C1');
+  check(
+    'C1：基线排除被判会话自身 —— [100,250,2000] 下基线为 175 而非 250（评估 §5.1）',
+    c1f.length === 1 && /是主会话基线 175 的 11\.4 倍/.test(c1f[0].summary),
+    c1f.map((f) => f.summary).join(' | ') || '(无 C1)',
+  );
+  check(
+    'C1：只在真的超过阈值时报，且报的是那个会话',
+    c1f.length === 1 && c1f[0].scope === 'c1-high',
+    c1f.map((f) => f.scope).join(',') || '(无 C1)',
+  );
+  check(
+    'C1：结论写明基线口径（排除本会话后的其余主会话）',
+    c1f.length === 1 && /排除本会话/.test(c1f[0].summary),
+    c1f[0]?.summary ?? '(无 C1)',
+  );
+}
+
+// --- 19. 自检自身的完整性（没有断言静默消失） ---
 //
 // 上一轮报告数出 239 项、实跑只有 233 项：有断言写在条件分支里，
 // 环境不满足时它一句话不说就不执行了 —— 那等于没有这条护栏。
 // 这里把"源码里写了的断言名"与"实际执行过的断言名"对齐。
-process.stdout.write('\n18) 自检自身完整性\n');
+process.stdout.write('\n19) 自检自身完整性\n');
 {
   const selfSrc = fs.readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8');
   // 用拼接构造正则，避免匹配到本行自己
@@ -2263,11 +2517,144 @@ process.stdout.write('\n18) 自检自身完整性\n');
     executed.length === pass + fail,
     `执行 ${executed.length} = 通过 ${pass} + 失败 ${fail}`,
   );
+  // 评估 §3.1 的补充：CI 必须设 DSH_SMOKE_REQUIRE_DATA=1，此时不允许有跳过项
+  check(
+    '自检：要求数据时跳过数必须为 0（降级不得冒充全绿）',
+    !REQUIRE_DATA || skip === 0,
+    REQUIRE_DATA ? `跳过 ${skip} 项` : '未要求数据，本项不适用（跳过项已在汇总里如实列出）',
+  );
 }
 
 // --- 汇总 ---
-process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail}\n`);
+process.stdout.write(`\n=====================\n通过 ${pass} · 失败 ${fail} · 跳过 ${skip}\n`);
 if (fail > 0) {
   process.stdout.write(`失败项：${failures.join('、')}\n`);
 }
-process.exit(fail === 0 ? 0 : 1);
+if (skip > 0) {
+  process.stdout.write(`跳过项（环境不具备，未验证）：${skipped.join('、')}\n`);
+}
+
+// --- 徽章守护（第三方评估 §3.2） ---
+//
+// 项目 README 声称 `smoke 249/249`，第三方实测 247 通过 / 2 失败 / 退出码 1；
+// 第 18 段此前只断言了"声明的断言全部执行过"，**没有断言守护徽章数字本身**。
+// 一个把"每条结论都可复核"写进产品理念的工具，它自己的绿灯不可复核 —— 这是最该修的问题。
+//
+// 这里把"README 声称的通过数"与本轮**实际通过数**硬绑定：不一致即以退出码 1 结束。
+// 数完之后才能比对（中途不知道最终条数），所以这一条不在 check() 体系里，单独判定。
+// 只在完整运行（跳过 0 项）时比对：降级运行的通过数没有可比性，如实说明不核对。
+{
+  const total = pass + fail;
+  const writeBadge = process.argv.includes('--write-badge');
+  const actual = { pass, total };
+  const issues = [];
+  let readFailures = 0;
+
+  // 每个声称"多少条断言通过"的文件都要核对：README 是门面，SKILL.md 是使用者照抄的命令清单。
+  // （SKILL.md 曾经停在 233 项、README 停在 249 项 —— 同一类漂移，必须一起守。）
+  const targets = [
+    {
+      file: 'README.md',
+      patterns: [
+        {
+          name: 'smoke 徽章',
+          re: /badge\/smoke-(\d+)%2F(\d+)-/,
+          // 徽章语义：通过数 / 断言总数
+          fields: ['pass', 'total'],
+          make: () => `badge/smoke-${pass}%2F${total}-`,
+        },
+        {
+          name: 'README「冒烟测试 N/N 通过」',
+          re: /冒烟测试 \*\*(\d+)\/(\d+) 通过\*\*/,
+          fields: ['pass', 'total'],
+          make: () => `冒烟测试 **${pass}/${total} 通过**`,
+        },
+        {
+          name: 'README「自检（N 项）」',
+          re: /自检（(\d+) 项）/,
+          fields: ['total'],
+          make: () => `自检（${total} 项）`,
+        },
+      ],
+    },
+    {
+      file: 'SKILL.md',
+      patterns: [
+        {
+          name: 'SKILL「自检（N 项）」',
+          re: /自检（(\d+) 项）/,
+          fields: ['total'],
+          make: () => `自检（${total} 项）`,
+        },
+      ],
+    },
+  ];
+
+  for (const target of targets) {
+    const filePath = new URL(`../${target.file}`, import.meta.url);
+    let text = '';
+    try {
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch (e) {
+      issues.push(`${target.file} 读不到：${e.message}`);
+      readFailures += 1;
+      continue;
+    }
+
+    let updated = text;
+    let dirty = false;
+    for (const p of target.patterns) {
+      const m = updated.match(p.re);
+      if (!m) {
+        issues.push(`${target.file} 里找不到 ${p.name}，无法核对`);
+        continue;
+      }
+      let mismatch = false;
+      p.fields.forEach((field, i) => {
+        const claimed = Number(m[i + 1]);
+        if (claimed !== actual[field]) {
+          issues.push(
+            `${p.name}：声称 ${claimed}，实际${field === 'pass' ? '通过' : '总计'} ${actual[field]}`,
+          );
+          mismatch = true;
+        }
+      });
+      if (mismatch) {
+        updated = updated.replace(p.re, p.make());
+        dirty = true;
+      }
+    }
+
+    if (writeBadge && fail === 0) {
+      if (skip > 0) {
+        process.stdout.write('⊘ --write-badge 未执行：本次为降级运行，通过数不可比。\n');
+      } else if (!dirty) {
+        process.stdout.write(`${target.file} 声称的条数与实际一致，无需改写。\n`);
+      } else {
+        fs.writeFileSync(filePath, updated);
+        process.stdout.write(`已把 ${target.file} 的条数声称改写为实际值：${pass}/${total}。\n`);
+        dirty = false;
+      }
+    }
+  }
+
+  // --write-badge 成功改写后，本次"声称值不一致"不再是问题（读不到文件仍算问题）
+  if (writeBadge && fail === 0 && skip === 0 && readFailures === 0) issues.length = 0;
+
+  if (skip > 0 && issues.length) {
+    process.stdout.write(
+      `\n⊘ 徽章未核对：本次为降级运行（跳过 ${skip} 项），通过数 ${pass} 与 README 声明不具可比性。\n` +
+        '  完整核对请用合成语料跑：node scripts/fixtures/synth-dsh.mjs --out <dir> && DSH_HOME=<dir> node scripts/smoke.mjs\n',
+    );
+    issues.length = 0;
+  }
+
+  if (issues.length) {
+    process.stdout.write(`\n✗ 徽章与实际状态不一致（评估 §3.2 的整改护栏）：\n`);
+    for (const i of issues) process.stdout.write(`  - ${i}\n`);
+    process.stdout.write('  修法：确认这是完整运行（跳过 0）后执行 `node scripts/smoke.mjs --write-badge`。\n');
+  }
+  process.exitCode = fail === 0 && issues.length === 0 ? 0 : 1;
+}
+
+process.exit(process.exitCode ?? (fail === 0 ? 0 : 1));

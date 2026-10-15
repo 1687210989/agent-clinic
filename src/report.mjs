@@ -294,23 +294,31 @@ export function analyze(ctx, opts = {}) {
     // 让处方层的插件检索也看到"本次生效的目录"（含联网现搜条目）
     catalog: effectiveEntries ?? undefined,
   };
-  const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
-
-  // 省 token 开关清单：已经作为处方给出的不再重复列
-  const levers = tokenInventory({
-    ctx: rxCtx,
-    excludeIds: prescriptions.map((r) => r.targetId),
-  });
-
   // 每个问题各自挂上它的处方与插件检索命中（旧版只在末尾给全局列表，
   // 用户看不出"这条对应哪个问题"，也看不到"为什么推荐这个插件"）。
   // 这里存**完整处方对象**，面板展开问题时可以直接渲染成卡片。
+  // 注意：要在全局处方之前算出来 —— 全局处方受名额轮转限制，
+  // 而"本类问题本来有多少条可给"正好用来统计因名额未展示的条数（不静默丢弃）。
   const perFinding = findings.map((f) => ({
     id: f.id,
     scope: f.scope ?? null,
     full: prescribeOne(f, { ctx: rxCtx, rejected: opts.rejected }),
     skipped: skippedFor(f, { ctx: rxCtx }),
   }));
+
+  const prescriptions = prescribe(findings, { ...opts, ctx: rxCtx });
+
+  // plan-2026-10-15 §3.1：名额不够时**不静默丢弃** —— 报出"本可给出、因名额未展示"的条数。
+  // 口径：按 targetId 去重后的候选池大小 − 实际给出的条数（同一插件命中多类问题只算一条）。
+  const rxPoolIds = new Set(perFinding.flatMap((p) => p.full.map((c) => c.targetId)));
+  const rxPoolSize = rxPoolIds.size;
+  const prescriptionsOmitted = Math.max(0, rxPoolSize - prescriptions.length);
+
+  // 省 token 开关清单：已经作为处方给出的不再重复列
+  const levers = tokenInventory({
+    ctx: rxCtx,
+    excludeIds: prescriptions.map((r) => r.targetId),
+  });
 
   // 同类型合并：一类问题一张卡，处方对着聚合后的数字生成（不再一处一张）
   const groups = groupFindings(findings).map((grp) => ({
@@ -395,6 +403,9 @@ export function analyze(ctx, opts = {}) {
     unimplementable: unimplementable.map((d) => ({ id: d.id, title: d.title, reason: d.reason })),
     // 处方：每条都可执行（配置片段 / 命令 / 插件入口 / 设置路径 / 具体动作）
     prescriptions,
+    // 名额轮转语义（plan-2026-10-15 §3.1）：本可给出但因全局名额未展示的条数 —— 不静默丢弃
+    prescriptionsOmitted,
+    prescriptionsPoolSize: rxPoolSize,
     // 省 token 开关清单（陈列本机真实存在的旋钮，不是诊断结论）
     levers,
     // 插件目录检索：本地已装清单 + 命中到的插件（**按插件去重**，列全命中的指标）
@@ -604,6 +615,17 @@ export function renderReport(data) {
   if (data.prescriptions.length > 0) {
     push(`### 处方（${data.prescriptions.length} 条 · 每条都有可执行动作）`);
     push();
+    // 名额轮转语义（plan-2026-10-15 §3.1 / 评估 §4.1）：
+    // 全局处方有名额上限，但"本可给出"的候选多于名额时必须如实报数，不得静默丢弃。
+    // 每类问题各自的完整处方仍在上面每张问题卡里（perFinding/groups），这里只说明全局裁剪量。
+    if (data.prescriptionsOmitted > 0) {
+      push(
+        `> 名额说明：本次共 ${data.prescriptionsPoolSize ?? '?'} 条可给处方，` +
+          `本清单按"每类问题轮转 + 严重度顺序"取前 ${data.prescriptions.length} 条；` +
+          `另有 **${data.prescriptionsOmitted} 条** 因名额未在此列出（各类问题卡片里的处方不受此限）。`,
+      );
+      push();
+    }
     if (data.config?.patchPath) {
       push(`> 配置类处方改的是这份文件（本工具只读它，不代你改）：\`${data.config.patchPath}\``);
       push();

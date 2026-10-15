@@ -61,8 +61,23 @@ license: MIT
 ./run.sh catalog-sync            # 同步插件目录（npm + GitHub）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
-./scripts/smoke.sh               # 自检（233 项）
+./scripts/smoke.sh               # 自检（263 项）
 ```
+
+自检在**没有本地会话**的环境里也能跑：先用合成语料装置造一份确定性语料，
+再要求"跳过数必须为 0"（CI 就是这么跑的）。徽章/声称的条数由 smoke 自己在跑完后核对，
+对不上即以退出码 1 结束；确认无误用 `--write-badge` 回写。
+
+```bash
+node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home    # 覆盖 19 项指标，固定时间戳
+node scripts/fixtures/synth-dsh.mjs --verify                 # 每项指标至少命中 1 处，否则非零退出
+DSH_HOME=.tmp/synth-home DSH_SMOKE_REQUIRE_DATA=1 \
+  AGENT_CLINIC_SKILL_DIRS=.tmp/synth-home/agents-skills node scripts/smoke.mjs
+node scripts/smoke.mjs --write-badge                         # 全绿后回写 README/SKILL 的条数声称
+```
+
+A2「skill 闲置」默认读宿主机的 `~/.agents/skills`、`~/.workbuddy/skills`；
+`AGENT_CLINIC_SKILL_DIRS` 可覆盖该名单（CI 与合成自检用它，免得断言绑在跑测机器上）。
 
 ### 发现问题后联网找方案（`report --live`）
 

@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { KIND } from '../adapters/base.mjs';
 import { num, pct } from '../summary.mjs';
 
@@ -412,7 +413,8 @@ function detectA5(ctx, opts) {
  * 而且报告里写"自身基线"，那个数字其实与"自身"无关。
  *
  * 新判据：
- *   - 基线只取**主会话**（非子代理、有 assistant 用量、output > 0）的单位请求 output 中位数
+ *   - 基线只取**主会话**（非子代理、有 assistant 用量、output > 0）的单位请求 output 中位数，
+ *     且**排除被判定的那个会话自身**（评估 §5.1：自己不该当自己的对照）
  *   - 归一化：比较 output / 请求数，而不是会话总量
  *   - 绝对量下限：会话 output 总量低于阈值不报（小会话凭比例上榜没有意义）
  *   - 措辞如实说明"产出量大不必然是浪费"，并指向 E1/E5/C2 去看重复劳动
@@ -438,16 +440,27 @@ function detectC1(ctx, opts) {
     });
   }
 
-  // 基线：主会话、有实际产出
-  const baselinePool = stats.filter((x) => !x.subagent && x.output > 0).map((x) => x.perRequest);
-  const base = median(baselinePool);
-  if (!base || base <= 0) return [];
+  // 基线：主会话、有实际产出 —— **且排除被判定者自身**。
+  //
+  // 旧实现把被判会话自己也算进基线池（第三方评估 §5.1）：中位数对离群值稳健，
+  // 所以多数情况下结论不变，但"自己当自己的对照"在口径上站不住 ——
+  // 一个远超他人的会话会把基线抬高，从而**压低自己的倍率**，属于自我掩饰。
+  // 现在逐会话排除自身后再取中位数。
+  const poolEntries = stats.filter((x) => !x.subagent && x.output > 0);
+  const baselineFor = (self) =>
+    median(poolEntries.filter((x) => x !== self).map((x) => x.perRequest));
+  const base = median(poolEntries.map((x) => x.perRequest));
+  if (!poolEntries.length || !base || base <= 0) return [];
 
   const findings = [];
   for (const x of stats) {
     if (x.subagent) continue; // 子代理天然高于基线，单列（A4）而不是在这里报
     if (x.output < minOutput) continue; // 绝对量下限
-    if (x.perRequest <= base * ratio) continue;
+    // 对照取"排除了本会话之后"的基线；剩余样本不足时退回全体基线（并在摘要里如实标注）
+    const own = baselineFor(x);
+    const useBase = own && own > 0 ? own : base;
+    const selfExcluded = own && own > 0;
+    if (x.perRequest <= useBase * ratio) continue;
     const worst = x.msgs.reduce((a, b) => ((b.output_tokens ?? 0) > (a.output_tokens ?? 0) ? b : a), x.msgs[0]);
     findings.push({
       id: 'C1',
@@ -457,10 +470,11 @@ function detectC1(ctx, opts) {
       scope: x.session.sessionId,
       summary:
         `本会话单位请求 output ${num(x.perRequest)}（共 ${num(x.output)} / ${x.requests} 次请求），` +
-        `是主会话基线 ${num(base)} 的 ${(x.perRequest / base).toFixed(1)} 倍（阈值 ${ratio} 倍）`,
+        `是主会话基线 ${num(useBase)} 的 ${(x.perRequest / useBase).toFixed(1)} 倍（阈值 ${ratio} 倍；` +
+        `基线为${selfExcluded ? '排除本会话后的其余主会话' : '全体主会话（可对照样本不足）'}中位值）`,
       evidence: [{ locator: worst.locator, note: `单次 output 最高的一条（${num(worst.output_tokens ?? 0)} token）` }],
       impact:
-        `相对基线约多消耗 ${num(Math.round((x.perRequest - base) * x.requests))} output token；` +
+        `相对基线约多消耗 ${num(Math.round((x.perRequest - useBase) * x.requests))} output token；` +
         `注意：产出量大不必然是浪费，请结合 E1（死循环）/E5（冗余调用）/C2（上下文膨胀）判断`,
       confidence: 0.6,
     });
@@ -818,6 +832,7 @@ function detectN3(ctx, opts) {
   const byTool = new Map();
   let denied = 0;
   let unknown = 0;
+  let unknownOutcome = 0;
   const waits = [];
   let slowest = null;
   for (const [id, a] of asked) {
@@ -827,8 +842,18 @@ function detectN3(ctx, opts) {
       unknown += 1;
       continue;
     }
-    const outcome = String(d.outcome ?? '');
-    if (!/^allow/i.test(outcome)) denied += 1;
+    // outcome 判定：**显式匹配拒绝语义**，其余归"未知结果"，绝不猜。
+    //
+    // 旧实现是 `if (!/^allow/i.test(outcome)) denied += 1` —— 任何非 allow* 开头
+    // 的结果（approved / accept / granted …）都被计成"被拒"。第三方实测拿
+    // 5 个 approved 跑出"被拒 5 次"；若 DSH 某版本改用 approved 措辞，N3 的
+    // 被拒字段会系统性全错，而用户会据此调整权限配置 —— 误导比不报更糟。
+    const outcome = String(d.outcome ?? '').toLowerCase().trim();
+    if (/^(deny|denied|reject|rejected|decline|declined|refus|forbid)/.test(outcome)) {
+      denied += 1;
+    } else if (!/^(allow|approv|accept|grant|ok|yes|permit)/.test(outcome)) {
+      unknownOutcome += 1;
+    }
     const gap = tsOf(d) !== null && tsOf(a.ev) !== null ? tsOf(d) - tsOf(a.ev) : null;
     if (gap !== null && gap >= 0) {
       waits.push(gap);
@@ -840,7 +865,9 @@ function detectN3(ctx, opts) {
   const parts = [`审批请求 ${asked.size} 次`];
   if (topTools.length) parts.push(`集中在 ${topTools.map(([t, n]) => `${t}(${n})`).join('、')}`);
   if (medWait !== null) parts.push(`等待审批中位 ${(medWait / 1000).toFixed(1)} 秒`);
+  // 三类结果分开报：被拒 / 结果无法识别 / 无对应决定记录（彼此不混算）
   if (denied) parts.push(`被拒 ${denied} 次`);
+  if (unknownOutcome) parts.push(`结果无法识别 ${unknownOutcome} 次`);
   if (unknown) parts.push(`无对应决定记录 ${unknown} 次`);
 
   const first = [...asked.values()][0].ev;
@@ -1216,11 +1243,23 @@ function detectAssetIdle(ctx, opts) {
 /** 列出已安装的 skill 名（只读目录名，不读内容） */
 function listInstalledSkills() {
   const out = [];
-  const home = process.env.HOME || process.env.USERPROFILE;
-  if (!home) return out;
-  for (const sub of ['.agents/skills', '.workbuddy/skills']) {
+  // 目录来源可覆盖（`AGENT_CLINIC_SKILL_DIRS`，用平台路径分隔符分隔多个）。
+  // 为什么需要它：本项的输入一半来自会话（窗口天数），一半来自**跑测机器上装了什么** ——
+  // 于是自检与 CI 的结果取决于宿主机恰好装了哪个 skill（第三方评估 §4.2 正是这类病：
+  // 断言针对作者本机校准，换个环境就挂）。CI / 合成语料用本变量给一个确定性的 skill 目录。
+  const override = (process.env.AGENT_CLINIC_SKILL_DIRS ?? '')
+    .split(path.delimiter)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const roots = override.length
+    ? override
+    : (() => {
+        const home = process.env.HOME || process.env.USERPROFILE;
+        if (!home) return [];
+        return ['.agents/skills', '.workbuddy/skills'].map((sub) => `${home}/${sub}`);
+      })();
+  for (const dir of roots) {
     try {
-      const dir = `${home}/${sub}`;
       if (!fs.existsSync(dir)) continue;
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (e.isDirectory()) out.push(e.name);

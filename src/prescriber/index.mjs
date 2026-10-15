@@ -527,20 +527,52 @@ export function matchPrescriptions(problem, opts = {}) {
   const ctx = opts.ctx ?? {};
 
   const findings = Array.isArray(problem) ? problem : [{ id: String(problem), summary: '' }];
+
+  const rounds = Math.max(perFinding, 1);
+  // 每轮配额 = 总名额按轮数分摊（上取整）。
+  //
+  // 旧实现用 `out.length < limit` 直接当轮次门控：perFinding=2、limit=6 时，
+  // 第 0 轮就把 6 个名额填满 → **第 1 轮永不执行** → 每类问题的第 2 个位次
+  // 结构性丢失。插件类处方正排在那个位次（KIND_WEIGHT 里 PLUGIN 排 1），
+  // 于是「联网现搜到的对症插件」只进推荐、进不了全局处方列表。
+  // 轮配额保证每一轮都有名额，位次轮转才是真的。
+  const roundCap = Math.max(1, Math.ceil(limit / rounds));
+
+  // 同一个 finding 的候选只算一次（旧写法每轮重算，且重算结果本应一致）
+  const allCache = new Map();
+  const allFor = (f) => {
+    if (!allCache.has(f)) allCache.set(f, prescribeOne(f, { ...opts, ctx }));
+    return allCache.get(f);
+  };
+
   const out = [];
   const seen = new Set();
+  const tryPush = (f, rank) => {
+    const pick = allFor(f)[rank];
+    if (!pick) return false;
+    // 按**处方本身**去重：同一个插件 / 同一条配置建议只出现一次。
+    // 否则 billion-context-dsh 会因为同时命中 C1 与 C3 而被重复列出。
+    if (seen.has(pick.targetId)) return false;
+    seen.add(pick.targetId);
+    out.push(pick);
+    return true;
+  };
 
-  for (let round = 0; round < Math.max(perFinding, 1) && out.length < limit; round++) {
+  // 第一遍：轮转 —— 每个问题、每个位次都有机会（公平性）
+  for (let round = 0; round < rounds && out.length < limit; round++) {
+    const roundStart = out.length;
+    for (const f of findings) {
+      if (out.length >= limit || out.length - roundStart >= roundCap) break;
+      tryPush(f, round);
+    }
+  }
+
+  // 第二遍：候选取尽后若仍有名额，按位次顺序继续填满。
+  // 轮转只负责"位次有机会"，不该因为公平而浪费名额（旧实现贪婪填充这一点是对的）。
+  for (let round = 0; round < rounds && out.length < limit; round++) {
     for (const f of findings) {
       if (out.length >= limit) break;
-      const all = prescribeOne(f, { ...opts, ctx });
-      const pick = all[round];
-      if (!pick) continue;
-      // 按**处方本身**去重：同一个插件 / 同一条配置建议只出现一次。
-      // 否则 billion-context-dsh 会因为同时命中 C1 与 C3 而被重复列出。
-      if (seen.has(pick.targetId)) continue;
-      seen.add(pick.targetId);
-      out.push(pick);
+      tryPush(f, round);
     }
   }
 

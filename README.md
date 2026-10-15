@@ -18,7 +18,11 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-249%2F249-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-263%2F263-brightgreen)]()
+[![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
+
+> `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
+> 想知道 CI 此刻是红是绿，看旁边那枚 **CI** 徽章（它就是 GitHub Actions 的实况，改不了）。
 
 ---
 
@@ -107,7 +111,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **249/249 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **263/263 通过**。
 
 ````bash
 $ ./run.sh report
@@ -341,8 +345,31 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog     # 看插件目录（来源、能力标签、热度、中文简介覆盖情况）
 ./run.sh catalog-sync            # 联网同步插件目录（唯一会写盘 + 联网的只读工具命令）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
-./scripts/smoke.sh   # 自检（249 项）
+./scripts/smoke.sh   # 自检（263 项）
 ```
+
+**自检两种跑法**（第三方评估 §3.1 的整改）：
+
+- **完整自检**（推荐，也是 CI 的跑法）：先用合成语料装置造一份确定性会话，
+  再要求"跳过数必须为 0"—— 无数据时"跳过"会直接变成失败，降级不得冒充全绿：
+
+  ```bash
+  node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home   # 覆盖 19 项指标，固定时间戳
+  node scripts/fixtures/synth-dsh.mjs --verify                # 每项指标都要被触达，命中 0 即非零退出
+  DSH_HOME=.tmp/synth-home DSH_SMOKE_REQUIRE_DATA=1 \
+    AGENT_CLINIC_SKILL_DIRS=.tmp/synth-home/agents-skills node scripts/smoke.mjs
+  ```
+
+  A2「skill 闲置」的一半输入是"这台机器装了哪些 skill"（默认读 `~/.agents/skills`、
+  `~/.workbuddy/skills`）—— CI 与合成自检用 `AGENT_CLINIC_SKILL_DIRS` 指向语料自带的
+  demo skill 目录，免得断言绑在宿主机上。
+
+- **降级自检**（无 DSH 会话的环境）：跑得动的照跑，跳过项如实列出并以退出码 0 结束
+  （`通过 p · 失败 f · 跳过 s`）。此时徽章不做核对（通过数不可比），且**不会**把跳过算成失败。
+- **徽章守护**：完整跑完且全绿时，smoke 会核对 `README.md` / `SKILL.md` 里声称的条数
+  （徽章、`冒烟测试 N/N 通过`、`自检（N 项）`）与实际是否一致，不一致即以退出码 1 结束；
+  确认无误后用 `node scripts/smoke.mjs --write-badge` 回写。
+
 
 > **node 不必在 PATH 上** —— `./run.sh` 会自动定位（PATH → WorkBuddy 托管目录 → DSH 运行时 → nvm / volta / fnm / Program Files）。
 > 若自动定位失败，用 `AGENT_CLINIC_NODE=/path/to/node ./run.sh scan` 显式指定。
@@ -426,6 +453,7 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 | **定位符解析仍有两份** | `src/adapters/base.mjs` 的 `parseLocator`（不支持区间）与 `src/evidence/index.mjs` 的 `parseRange`（支持区间）—— 调用方要自己选对那个 |
 | **`show` 的区间展开有 200 行上限** | 超长区间会截断并提示，需要看别处得用 offset/limit 分段复核 |
 | **A3 的通用工具清单是硬编码** | 插件生态新增的通用工具不在清单里时，A3 可能重新变吵（阈值可用 `opts` 覆盖，但清单本身要先改代码） |
+| **`plugin/client.js` 无浏览器端测试** | 插件面板/角标只有 Node 侧功能测试，浏览器行为靠手测 |
 
 ### ⚠️ 关于 DSH 数据格式
 
@@ -451,6 +479,18 @@ DSH 会话文件是**多帧 zstd 拼接**（单个文件实测含 60~233 个帧�
 - **M3.8 ✅ 第三轮工程基建**：CI（三平台 × node 22/24）、`joinPath` 跨平台、
   `install.sh` 三处修复、版本与 tag 对齐、CHANGELOG、删死代码 `src/state.mjs` 等 6 处、
   合并已分叉的 `resolveDshHome` / `fetchJson` / `mapLimit`
+- **M3.9 ✅ 第四轮：第三方独立评估整改**（依据 `agent-clinic-独立评估报告-实测版(1).md`，
+  方案 [docs/plan-2026-10-15.md](docs/plan-2026-10-15.md)）：
+  ①CI 全红根因修复 —— smoke 无数据时计**跳过**而非失败（`skipCheck`，`DSH_SMOKE_REQUIRE_DATA=1`
+  可把跳过转成失败），CI 跑前用合成语料装置造数据；②新增 `scripts/fixtures/synth-dsh.mjs`
+  确定性覆盖 19 项指标（`--verify` 校验每项 ≥1 处命中）；③**徽章守护**内建进 smoke
+  （比对 README 三处声称与实际条数，`--write-badge` 可回写）；
+  ④自检不再针对作者本机校准（合并卡/现搜处方改为构造输入，第 14 节覆盖插件类处方所在的
+  第 2 个位次）；⑤N3 outcome 三分类（`approved` 不再被算成"被拒"）；
+  ⑥C1 基线逐会话排除自身（倍率变大、更敏感，`[100,250,2000]`：8.0× → 11.4×）；
+  ⑦修 `matchPrescriptions` 名额轮转 bug（每类问题第 2 个位次丢失的根因）。
+  偏差说明：徽章核对**未**做成独立的 `scripts/badge.mjs`，而是内建进 smoke 随 CI 一起跑
+  （最终条数只有跑完才知道；且沙箱内 spawn 捕获输出会 EPERM）
 - M3.5 ⏳ 处方四重过滤 + 反馈闭环（记住已拒绝 / 感兴趣）
 - M4 体检报告卡片（可分享）
 - M5 ✅ 开源发布（SKILL.md / install.sh / 文档）

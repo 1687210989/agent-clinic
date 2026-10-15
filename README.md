@@ -18,7 +18,7 @@ https://github.com/1687210989/agent-clinic.git
 
 [![node](https://img.shields.io/badge/node-%3E%3D22.15-blue)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
-[![smoke](https://img.shields.io/badge/smoke-315%2F315-brightgreen)]()
+[![smoke](https://img.shields.io/badge/smoke-322%2F322-brightgreen)]()
 [![CI](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml/badge.svg)](https://github.com/1687210989/agent-clinic/actions/workflows/ci.yml)
 
 > `smoke N/N` 是**本地自检的通过数**（由 smoke 自己在跑完后核对，数字对不上就以退出码 1 结束）——
@@ -115,7 +115,7 @@ agent-clinic 的做法不同：**它给证据，也给处方。**
 | A1 MCP 闲置 | ⏳ 排期中（本机未配置 MCP，暂无数据源） |
 | WorkBuddy 平台 | ⏳ 待实现 |
 
-**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **315/315 通过**。
+**M1 闭环已完成**：`./run.sh report` 产出带可复核证据 + 可执行处方的体检报告；DSH 插件有侧边栏入口、面板与准实时角标；冒烟测试 **322/322 通过**。
 
 **输出示例**（2026-10-15 之前某次实跑的原文快照，数字随本机数据变化）：
 
@@ -220,6 +220,10 @@ curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/instal
 2. 定位可用的 Node（**不要求 node 在 PATH 上**）
 3. 自动检测已安装的平台（DSH / WorkBuddy）并部署到对应 skills 目录
 4. 已存在旧版本时先备份，绝不直接删除
+
+> ⚠️ **关于 WorkBuddy**：检测到 `~/.workbuddy` 时脚本会把 skill 装过去，
+> 但当前**只有 DSH 会话适配器** —— 装在 WorkBuddy 上扫不到它的会话数据
+> （脚本自己也会打印这条提示，见"已知缺陷"）。WorkBuddy 适配未排期。
 
 装完对 Agent 说「**体检一下**」即可触发。
 
@@ -342,7 +346,7 @@ dsh plugin --profile <profile> add -w git+https://github.com/1687210989/agent-cl
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 加大候选池与收录数
 ./run.sh fingerprints            # 查看我本地的文本指纹快照（K1/K2 的数据基础；只存加盐哈希）
 ./run.sh fingerprints --clear    # 删除该快照
-./scripts/smoke.sh   # 自检（315 项）
+./scripts/smoke.sh   # 自检（322 项）
 node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（76 项）
 ```
 
@@ -453,21 +457,43 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 - **C3 已接线 compaction**：只数"最后一次压缩之后仍活着"的消息 ——
   被压缩遮蔽的历史不再占用上下文，所以"靠 `/compact` 续命的长会话"不会被误报疲劳
 
-### 已知缺陷（已记录、尚未修）
+### 已知缺陷
 
-第二轮评估发现的问题已在 2026-10-14/15 两轮整改中修掉大部分
-（C1 基线、A2 判定与窗口、A3 噪声、E3/N3/N4 落地、静默降级、撤销处方可见性、
-证据区间展开、复核命令跨平台、`reasoning-effort` 改写 provider、C3 接线 compaction、
-文档漂移 —— 详见 [docs/evaluation-2026-10-14.md](docs/evaluation-2026-10-14.md) 的"整改情况"）。
-**下面这些仍未修**：
+这张表**只列当前仍未修**的缺陷。修掉的移入下面"已关闭"，并且自检里有一条守护断言
+（把已修条目重新写回"未修"会直接红）—— 文档漂移和代码 bug 一样，都要有东西拦着。
 
-| 缺陷 | 影响 |
+**已关闭**（每条都有断言或测试守着；决策号见 [docs/plan-2026-10-15.md](docs/plan-2026-10-15.md)）：
+
+| 曾经的问题 | 现状 |
 |---|---|
-| ~~配置旋钮未接线~~ | ✅ 第三轮验收时修掉：`maxSessions` / `minRepeatCount` / `contextLines` 现在都真的生效（插件四条路径 + CLI `show --context`），并且**有功能测试守着** |
-| **定位符解析仍有两份** | `src/adapters/base.mjs` 的 `parseLocator`（不支持区间）与 `src/evidence/index.mjs` 的 `parseRange`（支持区间）—— 调用方要自己选对那个 |
-| **`show` 的区间展开有 200 行上限** | 超长区间会截断并提示，需要看别处得用 offset/limit 分段复核 |
-| **A3 的通用工具清单是硬编码** | 插件生态新增的通用工具不在清单里时，A3 可能重新变吵（阈值可用 `opts` 覆盖，但清单本身要先改代码） |
-| **`plugin/client.js` 无浏览器端测试** | 插件面板/角标只有 Node 侧功能测试，浏览器行为靠手测 |
+| 配置旋钮未接线 | ✅ 第三轮验收修掉：`maxSessions` / `minRepeatCount` / `contextLines` 在插件四条路径 + CLI 都真的生效 |
+| 定位符解析有两份 | ✅ 第五轮 D7 合并为一份：`src/evidence/index.mjs` 的 `parseRange` 只是 `src/adapters/base.mjs` `parseLocator` 的转发，后者已支持 `#L<a>-L<b>` |
+| `show` 区间展开有 200 行硬上限 | ✅ 第五轮 D8 改为显式分页 `--offset/--limit`（上限 5000），截断提示直接给**可复制**的下一条命令 |
+| A3 通用工具清单硬编码 | ✅ 第五轮 D5 改为"基础集（硬编码保底）+ 会话广度自动学习"，判据写进报告，`opts` 可覆盖 |
+| `plugin/client.js` 面板与角标缺浏览器端测试 | ✅ 第五轮 D9 新增 `scripts/plugin-dom.test.mjs`（零依赖 DOM 桩，76 条） |
+| 面板错误态点「联网现搜」无可见反馈 | ✅ 第六轮修掉（`liveErr` 未在错误分支渲染）；同轮修掉会让界面卡死的通知自激 |
+| 发布脚本把 HTTP 202 当失败 | ✅ 首次真实发布时修掉：`classifyPublishResponse()` + 2 条断言（202 = registry 已接受／分阶段发布） |
+| CI 连续全红 / 徽章无守护 | ✅ 第四轮修掉根因，徽章核对内建进 smoke（不一致即退出码 1） |
+
+**仍未修**：
+
+| 缺陷 | 影响 | 现状 |
+|---|---|---|
+| **WorkBuddy 会话解析未实现** | `install.sh` 在 `~/.workbuddy` 存在时会把 skill 部署过去，但当前**只有 DSH 适配器** —— 装了也扫不到会话 | 安装节已如实标注；适配器本身未排期 |
+| **v3 会话格式未验证** | `session.v3` 可能是单帧或无压缩，未实测（无压缩 `.jsonl` 已支持） | 见 [docs/data-formats.md](docs/data-formats.md) |
+| **配置层只解析 `cordis.patch.yml` 的 YAML 子集**；处方里的"随附默认值"是抄录表 | DSH 升级后随附默认值会漂移，需要同步；更深嵌套结构会被忽略（在 `warnings` 里说明） | 设计取舍，非缺陷 |
+| **CLI 行为缺少断言** | 参数校验之外的 CLI 端到端行为只在 CI 步骤里跑（只看退出码），smoke 里没有断言 | 本轮补了参数校验断言，见下"测试空白" |
+
+### 测试空白（明确列出，不吹全覆盖）
+
+- **面板**：真实计时器（6 秒轮询、复制按钮 1.4 秒复位）、CSS 布局（`var(--x, fallback)` 不解析）、
+  `liveBusy` 中间态、watch 签名变化后面板自动刷新、`CatalogRow` 展开态的其它分支、
+  Escape 关闭（`client.js` 里没有键盘处理）、异常响应形状（非 JSON / 非 200 / `r.json()` reject）。
+- **CLI 端到端**：`report` / `catalog` / `fingerprints` 的真实执行由 CI 步骤覆盖（只看退出码）；
+  参数校验现在有断言（`parseShowOptions`）。
+- **证据层与适配层部分 helper**：`stableStringify`、`makeEvent` 等没有直接断言
+  （它们的稳定性由 E1/E5 的哈希断言间接覆盖）。
+
 
 ### ⚠️ 关于 DSH 数据格式
 

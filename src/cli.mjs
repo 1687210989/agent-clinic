@@ -138,39 +138,21 @@ function doScan() {
 
 function doShow() {
   envCheck();
-  const locator = argv[1];
-  if (!locator) {
-    fail('用法：agent-clinic show "<file>#L<n>" [--context N] [--offset N] [--limit N]');
-  }
   // 待优化报告 §5-1：插件侧按 contextLines 展开，CLI 却固定 2 行 —— 同一工具两种行为。
   // 现在优先用 --context，其次读 profile patch 里本插件那一行的 contextLines，最后才是 2。
-  let context = Number(argOf('--context', NaN));
-  if (!Number.isFinite(context)) {
-    try {
-      const cfg = readEffectiveConfig();
-      const row = cfg?.rows?.['agent-clinic'];
-      const v = Number(row?.config?.contextLines);
-      context = Number.isFinite(v) ? v : 2;
-    } catch {
-      context = 2;
-    }
+  let defaults = { context: 2 };
+  try {
+    const cfg = readEffectiveConfig();
+    const v = Number(cfg?.rows?.['agent-clinic']?.config?.contextLines);
+    if (Number.isFinite(v)) defaults = { context: v };
+  } catch {
+    defaults = { context: 2 };
   }
-  // 决策 D8：区间过长时的显式分页。offset = 从窗口起点再跳过多少行；
-  // limit = 本次展开多少行（默认 200）。参数给错要报错，不能静默当成默认值 ——
-  // 否则用户以为自己翻页了，看到的还是第一页。
-  const offsetRaw = argOf('--offset', null);
-  const limitRaw = argOf('--limit', null);
-  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
-  const limit = limitRaw === null ? undefined : Number(limitRaw);
-  if (offsetRaw !== null && (!Number.isInteger(offset) || offset < 0)) {
-    fail(`--offset 必须是非负整数，收到 ${JSON.stringify(offsetRaw)}`);
-  }
-  if (limitRaw !== null && (!Number.isInteger(limit) || limit < 1)) {
-    fail(`--limit 必须是正整数，收到 ${JSON.stringify(limitRaw)}`);
-  }
-  if (limit !== undefined && limit > 5000) {
-    fail(`--limit 上限 5000 行（收到 ${limit}）—— 证据是用来复核的，不是用来倾倒整个会话的`);
-  }
+  // 决策 D8：区间过长时的显式分页（--offset/--limit）。参数解析抽成纯函数 parseShowOptions，
+  // 由自检直接断言；给错要报错，不能静默当成默认值 —— 否则用户以为自己翻页了，看到的还是第一页。
+  const parsed = parseShowOptions(argv.slice(1), defaults);
+  if (!parsed.ok) fail(parsed.error);
+  const { locator, context, offset, limit } = parsed.options;
   try {
     process.stdout.write(`${renderEvidence(locator, { context, offset, limit })}\n`);
   } catch (e) {
@@ -403,8 +385,12 @@ function doCatalog() {
   }
 }
 
-function doHelp() {
-  process.stdout.write(
+/**
+ * help 文案（导出以便断言：子命令清单必须与实际 dispatch 一致）。
+ * @returns {string}
+ */
+export function buildHelpText() {
+  return (
     [
       'agent-clinic —— Agent 体检诊所',
       '',
@@ -430,39 +416,103 @@ function doHelp() {
       'AGENT_CLINIC_NO_FINGERPRINT_STORE=1 关闭',
       '联网动作只有两个，都需显式指定：catalog-sync（同步目录）、report --live（现搜插件）',
       'report --live 只发送问题类型关键词，不发送任何会话内容（报告里会列出实际发出的检索词）',
-    ].join('\n') + '\n',
+    ].join('\n') + '\n'
   );
+}
+
+/**
+ * 解析 `show` 的参数 —— **纯函数**，便于断言（不读全局、不退出进程）。
+ *
+ * 2026-10-15：`--context` 以前给错值时会被静默忽略并回退到配置/2 —— 现在像
+ * `--offset/--limit` 一样明确报错（"给错要说，不许静默退回默认值"是 D8 的既定原则）。
+ *
+ * @param {string[]} args  `show` 之后的参数（第一个非 `--` 项是定位符）
+ * @param {{context?:number}} [defaults] 从 profile 配置读到的 contextLines
+ * @returns {{ok:true, options:{locator:string,context:number,offset:number,limit:number|undefined}}
+ *          | {ok:false, error:string}}
+ */
+export function parseShowOptions(args, defaults = {}) {
+  const list = Array.isArray(args) ? args : [];
+  const get = (name) => {
+    const i = list.indexOf(name);
+    return i >= 0 && list[i + 1] !== undefined ? list[i + 1] : null;
+  };
+  const locator = list[0] && !String(list[0]).startsWith('--') ? list[0] : null;
+  if (!locator) {
+    return {
+      ok: false,
+      error: '用法：agent-clinic show "<file>#L<n>" [--context N] [--offset N] [--limit N]',
+    };
+  }
+
+  const contextRaw = get('--context');
+  const context = contextRaw === null ? (defaults.context ?? 2) : Number(contextRaw);
+  if (!Number.isFinite(context) || context < 0) {
+    return { ok: false, error: `--context 必须是非负整数，收到 ${JSON.stringify(contextRaw)}` };
+  }
+
+  const offsetRaw = get('--offset');
+  const limitRaw = get('--limit');
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  const limit = limitRaw === null ? undefined : Number(limitRaw);
+  if (offsetRaw !== null && (!Number.isInteger(offset) || offset < 0)) {
+    return { ok: false, error: `--offset 必须是非负整数，收到 ${JSON.stringify(offsetRaw)}` };
+  }
+  if (limitRaw !== null && (!Number.isInteger(limit) || limit < 1)) {
+    return { ok: false, error: `--limit 必须是正整数，收到 ${JSON.stringify(limitRaw)}` };
+  }
+  if (limit !== undefined && limit > 5000) {
+    return {
+      ok: false,
+      error: `--limit 上限 5000 行（收到 ${limit}）—— 证据是用来复核的，不是用来倾倒整个会话的`,
+    };
+  }
+  return { ok: true, options: { locator, context, offset, limit } };
+}
+
+function doHelp() {
+  process.stdout.write(buildHelpText());
 }
 
 // ---------------------------------------------------------------------------
 
-switch (cmd) {
-  case 'scan':
-    doScan();
-    break;
-  case 'show':
-    doShow();
-    break;
-  case 'diagnose':
-    doDiagnose();
-    break;
-  case 'report':
-    await doReport();
-    break;
-  case 'catalog':
-    doCatalog();
-    break;
-  case 'catalog-sync':
-    doCatalogSync();
-    break;
-  case 'fingerprints':
-    doFingerprints();
-    break;
-  case 'help':
-  case '--help':
-  case '-h':
-    doHelp();
-    break;
-  default:
-    fail(`未知命令：${cmd}\n\n运行 agent-clinic help 查看用法。`);
+/**
+ * 只在**直接执行**时跑命令 —— 被 import 时必须无副作用。
+ *
+ * 这条守卫是"合成语料 fixture 那个坑"的同一课（见 scripts/fixtures/synth-dsh.mjs 末尾）：
+ * 裸着跑 dispatch，任何 `import { parseShowOptions }` 都会顺带执行 CLI
+ * （还可能真的 exit）。加了守卫之后，CLI 的参数解析与 help 文案才能被自检直接断言。
+ */
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+if (invokedPath === path.resolve(fileURLToPath(import.meta.url))) {
+  switch (cmd) {
+    case 'scan':
+      doScan();
+      break;
+    case 'show':
+      doShow();
+      break;
+    case 'diagnose':
+      doDiagnose();
+      break;
+    case 'report':
+      await doReport();
+      break;
+    case 'catalog':
+      doCatalog();
+      break;
+    case 'catalog-sync':
+      doCatalogSync();
+      break;
+    case 'fingerprints':
+      doFingerprints();
+      break;
+    case 'help':
+    case '--help':
+    case '-h':
+      doHelp();
+      break;
+    default:
+      fail(`未知命令：${cmd}\n\n运行 agent-clinic help 查看用法。`);
+  }
 }

@@ -173,6 +173,18 @@ if [ "${#TARGETS[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# ⚠️ 诚实提示：WorkBuddy 目前**只有安装、没有适配器**。
+# 会话解析（src/adapters/）当前只实现了 DSH；装到 ~/.workbuddy 的 skill 能触发，
+# 但扫不到 WorkBuddy 的会话数据。这里必须说出来，不能让用户以为装完就能用。
+for t in "${TARGETS[@]}"; do
+  case "$t" in
+    *"/.workbuddy/skills/"*)
+      warn "WorkBuddy 目标：会正常安装 skill，但**当前没有 WorkBuddy 会话适配器** ——"
+      warn "  装完后它扫不到 WorkBuddy 的会话（现只支持 DSH）。详见 README「已知缺陷」。"
+      ;;
+  esac
+done
+
 say ""
 say "安装目标（自动检测，共 ${#TARGETS[@]} 个）："
 for t in "${TARGETS[@]}"; do say "  - $t"; done

@@ -3075,6 +3075,119 @@ process.stdout.write('\n21) 文档数字来源与示例新鲜度（D10 / D11）\
   );
 }
 
+// --- 22. 文档诚信 + CLI 行为（2026-10-15 发行后按优先级修的 A / B1 / C）---
+//
+// A：README 的"已知缺陷"表曾把 4 条**已经修掉**的东西继续写成"未修" —— 而这轮发行
+//    恰好把它们全修了。文档说谎和代码 bug 一样，必须有东西拦着，所以这里把
+//    "表里的话"与"代码事实"绑在一起断言。
+// B1：WorkBuddy 只装了 skill、没有适配器 —— 只要适配器还不存在，安装脚本与 README
+//    就必须写明"装了也扫不到"。将来真实现了适配器，这两条断言会自动改变要求。
+// C：CLI 的行为以前只有源码级正则（读一眼 cli.mjs 里有没有那几行字）。
+//    现在 cli.mjs 加了"仅直接执行才跑"的守卫，可以直接 import 它、断言纯函数行为。
+process.stdout.write('\n22) 文档诚信与 CLI 行为\n');
+{
+  const readmeSrc3 = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const installSrc3 = fs.readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
+  const evSrc3 = fs.readFileSync(new URL('../src/evidence/index.mjs', import.meta.url), 'utf8');
+  const diagSrc3 = fs.readFileSync(new URL('../src/diagnostics/index.mjs', import.meta.url), 'utf8');
+
+  // ---- A：已修条目不得再被写成"未修"，且文档说法必须与代码事实一致 ----
+  const staleClaims = [
+    '定位符解析仍有两份',
+    '区间展开有 200 行上限',
+    'A3 的通用工具清单是硬编码',
+    '`plugin/client.js` 无浏览器端测试',
+  ];
+  const stillStale = staleClaims.filter((s) => readmeSrc3.includes(s));
+  check(
+    '文档诚信：README 不再把已修缺陷写成"未修"（旧措辞四句都已消失）',
+    stillStale.length === 0 && /已关闭/.test(readmeSrc3) && /仍未修/.test(readmeSrc3),
+    stillStale.length ? `仍在 README 里的旧说法：${stillStale.join(' / ')}` : '四条旧说法已清除，且"已关闭/仍未修"两节都在',
+  );
+  const codeFacts = {
+    'D7 定位符解析合并': /export function parseRange\(locator\) \{\s*return parseLocator\(locator\);/.test(evSrc3),
+    'D5 A3 可学习通用工具': /export function learnedGenericTools/.test(diagSrc3),
+    'D9 面板浏览器端测试': fs.existsSync(new URL('../scripts/plugin-dom.test.mjs', import.meta.url)),
+    'D8 show 分页参数': true, // 下一段用 parseShowOptions 直接断言
+  };
+  check(
+    '文档诚信：README 说"已关闭"的条目，代码事实确实成立（文档 == 代码）',
+    Object.values(codeFacts).every(Boolean),
+    Object.entries(codeFacts)
+      .filter(([, ok]) => !ok)
+      .map(([k]) => k)
+      .join(' / ') || `${Object.keys(codeFacts).length} 项代码事实全部成立`,
+  );
+
+  // ---- B1：没有 WorkBuddy 适配器时，安装脚本与 README 必须写明后果 ----
+  const hasWbAdapter = fs.existsSync(new URL('../src/adapters/workbuddy.mjs', import.meta.url));
+  const readmeCaveat = /WorkBuddy[\s\S]{0,200}?(扫不到|没有 WorkBuddy 会话适配器)/.test(readmeSrc3);
+  const installCaveat = /没有 WorkBuddy 会话适配器|扫不到 WorkBuddy/.test(installSrc3);
+  check(
+    '文档诚信：WorkBuddy 只有安装没有适配器时，README 与 install.sh 都写明"装了也扫不到"',
+    hasWbAdapter || (readmeCaveat && installCaveat),
+    hasWbAdapter
+      ? '已有 WorkBuddy 适配器 —— 这条要求不再适用（请同步更新 README/install.sh 措辞）'
+      : `README=${readmeCaveat} · install.sh=${installCaveat}`,
+  );
+
+  // ---- C：CLI 行为（参数解析 + help 一致性），直接 import 纯函数 ----
+  const cliMod = await import('../src/cli.mjs');
+  check(
+    'CLI：import src/cli.mjs 无副作用，参数解析与 help 可被直接断言（不再只读源码）',
+    typeof cliMod.parseShowOptions === 'function' && typeof cliMod.buildHelpText === 'function',
+    `parseShowOptions=${typeof cliMod.parseShowOptions} · buildHelpText=${typeof cliMod.buildHelpText}`,
+  );
+  const okDefault = cliMod.parseShowOptions(['/tmp/a.zstd#L5'], { context: 7 });
+  const okFull = cliMod.parseShowOptions(
+    ['/tmp/a.zstd#L2-L211', '--context', '3', '--offset', '20', '--limit', '50'],
+    {},
+  );
+  check(
+    'CLI：show 合法参数解析正确（未给 --context 时用配置值；区间定位符原样带回）',
+    okDefault.ok &&
+      okDefault.options.context === 7 &&
+      okDefault.options.offset === 0 &&
+      okDefault.options.limit === undefined &&
+      okFull.ok &&
+      okFull.options.locator === '/tmp/a.zstd#L2-L211' &&
+      okFull.options.context === 3 &&
+      okFull.options.offset === 20 &&
+      okFull.options.limit === 50,
+    `默认 context=${okDefault.options?.context} · 完整解析 context=${okFull.options?.context} offset=${okFull.options?.offset} limit=${okFull.options?.limit}`,
+  );
+  const badCases = [
+    [[], '缺定位符'],
+    [['--limit', '0'], '--limit 0'],
+    [['--limit', '5001'], '--limit 超上限'],
+    [['--limit', 'abc'], '--limit 非数字'],
+    [['--offset', '-1'], '--offset 负数'],
+    [['--offset', '1.5'], '--offset 小数'],
+    [['--context', 'x'], '--context 非数字'],
+  ];
+  const badResults = badCases.map(([args, label]) => {
+    // 除"缺定位符"这一例外，其余都补上一个合法定位符，专门测参数校验
+    const a = label === '缺定位符' ? args : ['/tmp/a.zstd#L5', ...args];
+    const r = cliMod.parseShowOptions(a, {});
+    return { label, ok: r.ok === false && typeof r.error === 'string' && r.error.length > 0, error: r.error };
+  });
+  check(
+    'CLI：show 非法参数逐个报错（不静默退回默认值 —— D8 的既定原则）',
+    badResults.every((r) => r.ok),
+    badResults
+      .filter((r) => !r.ok)
+      .map((r) => `${r.label} 未被拒`)
+      .join(' / ') || badResults.map((r) => `${r.label}:✓`).join(' '),
+  );
+  const help = cliMod.buildHelpText();
+  const cmds = ['scan', 'show', 'diagnose', 'report', 'catalog', 'catalog-sync', 'fingerprints'];
+  check(
+    'CLI：help 文案覆盖全部子命令（与 dispatch 分支一致，漏一个就红）',
+    cmds.every((c) => help.includes(`agent-clinic ${c}`)),
+    cmds.filter((c) => !help.includes(`agent-clinic ${c}`)).join(' / ') || `${cmds.length} 个子命令都在 help 里`,
+  );
+}
+
 process.stdout.write('\n19) 自检自身完整性\n');
 {
   const selfSrc = fs.readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8');

@@ -3,19 +3,23 @@
 > 本轮**只做检查**，不改任何代码或指标口径。检查对象：仓库当前 `main` HEAD
 > （`72d7dcc`「ci: action 升 v7 + Linux runner 钉版本 + ubuntu-26.04 迁移探针」，2026-10-15 15:18）。
 > 判定依据：`docs/plan-2026-10-15.md` §5「发布门槛」+ 第三方评估报告 §八 顺序。
+>
+> **2026-10-15 更新**：检查通过后已执行发行（tag `v0.2.0-rc.1` + npm 发布），
+> 结果与教训见 §6 / §6.1；本文档因此从"放行检查"变成"放行 + 发行记录"。
 
 ---
 
 ## 0. 判定
 
-> ## ✅ 可以进入发行上线阶段 —— 但限于 **DSH 平台**、且走 **预发布（RC）通道**
-> ### ⚠️ 不能直接进 GA（0.2.0 正式）：有 4 项「发行动作」未完成，其中 1 项需凭据
+> ## ✅ **已发行**：`0.2.0-rc.1` 已可通过三种通道安装（npm / git tag / main）
+> ### ⚠️ 仍未进 GA（0.2.0 正式）：RC 需要观察期，且见 §4 的 5 条建议
 
 **理由**：方案 §5 的四条质量门槛**全部通过**（每条都有断言守护，不是人工判断）；
 第五条"以上全绿才谈上线"已满足。当前 `package.json` 版本是 `0.2.0-rc.1`，
 按语义化版本本就属于预发布 —— 与"先发 RC 观察"的发行策略一致。
 
-**没有任何一项质量问题构成阻断**；未完成的都是**发行动作**（打 tag / 切 CHANGELOG / 填凭据 / 更新安装地址）。
+**四项发行动作（tag / CHANGELOG / 凭据 / 安装地址）全部完成**，记录见 §6；
+npm 发布结果与三个真实教训见 §6.1。
 
 ---
 
@@ -59,7 +63,7 @@
 
 | 序 | 事项 | 状态 | 说明 |
 |---|---|---|---|
-| A | **npm 发布 `0.2.0-rc.1`（`--tag next`）** | ⏳ **等凭据** | 本机**没有 npm**（`npm`/`npm.cmd`/`corepack`/`npm-cli.js` 全无，`~/.npmrc` 不存在）。为此新增**零依赖发布通道** `scripts/publish-npm.mjs`：自己按 `files` 白名单打 tar+gzip → **解包回来逐字节自校验** → 直接 `PUT registry.npmjs.org`。预演实跑：`47 个文件 · tgz 320.8 KiB`，自校验通过；`--publish` 才联网。凭据就绪后一条命令即可：`node scripts/publish-npm.mjs --publish`（或 `npm run publish:npm:go`） |
+| A | **npm 发布 `0.2.0-rc.1`（`--tag next`）** | ✅ **已完成** | 2026-10-15 10:26 UTC 发布成功：`dist-tags { next: 0.2.0-rc.1, latest: 0.2.0-rc.1 }`。因为本机没有 npm CLI，走的是仓库自带的**零依赖发布通道** `scripts/publish-npm.mjs`（自己打 tar+gzip → 解包逐字节自校验 → `PUT registry.npmjs.org`）。**复核方式：装一遍再跑**（见 §6） |
 | B | 打 tag `v0.2.0-rc.1` | ✅ 已完成 | 随本次发行推送（见 §1.4 记录） |
 | C | CHANGELOG 从 `[Unreleased]` 切版 | ✅ 已完成 | 新增 `## [0.2.0-rc.1] — 2026-10-15` 段，累计 6 轮未发版改动归入其下；顶部保留空的 `[Unreleased]` |
 | D | README 安装地址随版本更新 | ✅ 已完成 | jsDelivr 备用地址 `@v0.1.1` → `@v0.2.0-rc.1`；`--ref` 示例同步；安装节顶部新增「当前版本 `0.2.0-rc.1`（预发布通道）」与 npm 通道待开放说明 |
@@ -120,6 +124,42 @@ CHANGELOG 切版、安装地址更新、零依赖发布通道三件事都完成�
 > 环境限制如实记录：`raw.githubusercontent.com` 在本机被 hosts 拦（已知），
 > 因此"raw 直取安装脚本"这一步**没法在本机验证**；改用了两条不受影响的证据 ——
 > git 协议直查远端 tag/分支，以及 jsDelivr（走 CDN）实取 200。
+
+### 6.1 npm 发布记录与三个真实教训
+
+**结果（2026-10-15 10:26:36 UTC）**
+
+| 检查 | 实测 |
+|---|---|
+| packument | `GET registry.npmjs.org/agent-clinic` → 200 |
+| dist-tags | `{"latest":"0.2.0-rc.1","next":"0.2.0-rc.1"}` |
+| 版本列表 | `0.0.0-stage`（npm 的占位版本，历史痕迹）、`0.2.0-rc.1` |
+| tarball 完整性 | 下载 329,594 字节，本地重算 sha512 **与 registry 声明一致**；包内 47 条目、`package.json` 版本 `0.2.0-rc.1` |
+| **装一遍再跑** | `npm install agent-clinic@next` → `added 1 package`；版本读出 `0.2.0-rc.1`；`src/cli.mjs help`/`scan` 正常，空数据优雅退出（exit 0）；`.bin` 里生成了 `agent-clinic` / `.cmd` / `.ps1` 三个 shim |
+
+**教训 1：HTTP 202 不是失败**。首次 `--publish` 返回 `202 {"success":true}`，
+我的脚本按"只认 200/201"打成 `❌ 发布失败：HTTP 202` —— 而 registry 其实**已经接受**。
+真相是 npm 的**分阶段发布（staged publish）**：账号带 2FA 时先建占位版本
+`0.0.0-stage`，正式版本随后生效（本次是自动生效的）。
+修法：`classifyPublishResponse()` 把 2xx 一律当"已接受"，并按 body/409 文案区分
+"已在审核区 / 版本已存在 / 凭据不足 / 真失败"；自检里加了 2 条断言钉住
+（其中一条就是"202 必须判为 staged，不是失败"）。
+
+**教训 2：发布脚本正确路由是 `POST /-/stage/package/<name>`**（响应带回 `stageId`），
+而经典路由是 `PUT /<name>`。两者都能触发分阶段发布，但只有前者会把 `stageId`
+交给你去 `POST /-/stage/<stageId>/approve`。本次用经典路由发出、靠 npm 自动放行成功；
+若账号策略要求人工批准，就必须用 stage 路由（或 npm 网站）拿 id 再批准。
+
+**教训 3（卫生）**：`--verify` 会去 registry 把包拉回来对 integrity。
+发布之后我又改了 `scripts/publish-npm.mjs`，于是 `--verify` 现在如实报
+"本地打包与已发布内容不一致" —— 这**不是故障**，而是它在正确工作：
+**下一次发布请从已提交（最好已打 tag）的状态打包**。
+
+**凭据说明（重要）**：本次使用的 token 是**可绕过 2FA 的 granular token**；
+registry 在响应头里发了提醒 —— npm 正在限制这类 token 用于直接发布
+（"npm tokens that bypass 2FA are being restricted for account changes and direct publishing"）。
+建议：**用完即轮换/吊销**（尤其它曾出现在聊天记录里），后续发布优先用
+`npm stage publish` + 网页批准，或改用带 2FA 的发布流程。
 
 
 ---

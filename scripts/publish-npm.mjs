@@ -17,9 +17,16 @@
  * 用法：
  *   node scripts/publish-npm.mjs                 # 预演（默认）：打包 + 自校验 + 打印将要发送的请求
  *   node scripts/publish-npm.mjs --publish       # 真正发布（需要 NPM_TOKEN 或 ~/.npmrc）
+ *   node scripts/publish-npm.mjs --verify        # 发布后自证：去 registry 核对 dist-tag / integrity / 逐字节
  *   node scripts/publish-npm.mjs --tag next      # 指定 dist-tag（默认 next，即预发布通道）
  *   node scripts/publish-npm.mjs --out dist      # tarball 落盘目录（默认 dist/）
  *   node scripts/publish-npm.mjs --otp 123456    # 账号开了 2FA 时补一次性验证码
+ *
+ * 关于 2FA 与"分阶段发布"（staged publish）：若账号开了 2FA，
+ * registry 可能返回 **202 = 已接受**，并先建一个占位版本 `0.0.0-stage`，
+ * 正式版本在批准（或自动放行）后生效。这不是失败 —— 202 会被如实报成"已接受"，
+ * 之后用 `--verify` 复核实际结果（本脚本第一次真实发布时就踩过这个坑：
+ * 老版本把 202 打成"发布失败"，而 registry 其实已经接受了）。
  *
  * 纪律（与仓库其它部分一致）：
  *   1. 默认**不联网**（`--publish` 才发请求）；
@@ -48,6 +55,7 @@ function parseArgs(argv) {
   };
   return {
     publish: argv.includes('--publish'),
+    verify: argv.includes('--verify'),
     tag: get('--tag', 'next'),
     outDir: get('--out', path.join(ROOT, 'dist')),
     otp: get('--otp', null),
@@ -248,6 +256,102 @@ export function buildPublishBody({ pkg, tgz, shasum, integrity, tag, fileName })
 }
 
 // ---------------------------------------------------------------------------
+// 响应分类（这段是被真实发布打脸后加的）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把 registry 的发布响应翻译成"到底发生了什么"。
+ *
+ * ⚠️ 第一版只把 200/201 当成功，于是首次真实发布时脚本打印
+ *    `❌ 发布失败：HTTP 202` —— 而 202 的真实含义是 **被接受**：
+ *    npm 对带 2FA 的账号走"分阶段发布（staged publish）"，
+ *    先建占位版本 `0.0.0-stage`，随后（自动或人工批准后）正式生效。
+ *    结论：把 2xx 一律当"已接受"，再按 body / 409 文案细分下一步。
+ *
+ * @returns {{outcome:'published'|'staged'|'version-exists'|'stage-conflict'|'auth'|'failed', message:string}}
+ */
+export function classifyPublishResponse(status, bodyText = '') {
+  const body = String(bodyText);
+  if (status === 200 || status === 201) {
+    return { outcome: 'published', message: '已发布（registry 直接接受）' };
+  }
+  if (status >= 200 && status < 300) {
+    return {
+      outcome: 'staged',
+      message:
+        'registry 已**接受**（HTTP ' +
+        status +
+        '）—— 账号开了 2FA 时会走 npm 的"分阶段发布"：' +
+        '先出现占位版本 0.0.0-stage，待批准（或自动放行）后正式生效。' +
+        '稍等片刻用 --verify 复核实际结果。',
+    };
+  }
+  if (status === 409) {
+    if (/previously staged version/.test(body)) {
+      return { outcome: 'stage-conflict', message: '该版本已在审核区里（不能重复提交）—— 去 npm 网站或 npm stage list/approve 处理' };
+    }
+    if (/previously published version|Cannot publish over existing version|already exists/i.test(body)) {
+      return { outcome: 'version-exists', message: '该版本已发布过 —— 改版本号后重试，不自动覆盖' };
+    }
+    return { outcome: 'failed', message: `HTTP 409：${body.slice(0, 200)}` };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      outcome: 'auth',
+      message: `凭据/权限不足（HTTP ${status}）${/EOTP|one-time pass/i.test(body) ? '：需要一次性验证码（--otp）' : ''}：${body.slice(0, 200)}`,
+    };
+  }
+  return { outcome: 'failed', message: `HTTP ${status}：${body.slice(0, 200)}` };
+}
+
+// ---------------------------------------------------------------------------
+// 发布后自证（--verify）：不信任"成功"两个字，去 registry 把包拉回来对一遍
+// ---------------------------------------------------------------------------
+
+export async function verifyPublished({ pkg, tgz, integrity, tag, registry }) {
+  const url = `${registry}/${pkg.name}`;
+  const res = await fetch(url, { headers: { 'user-agent': 'agent-clinic-publish/1.0' } });
+  if (res.status !== 200) return { ok: false, detail: `packument HTTP ${res.status}` };
+  const meta = await res.json();
+  const tags = meta['dist-tags'] ?? {};
+  const publishedVersion = tags[tag] ?? null;
+  const versionMeta = meta.versions?.[pkg.version];
+  if (!versionMeta) {
+    return {
+      ok: false,
+      detail: `registry 里还没有 ${pkg.version}（当前 dist-tags：${JSON.stringify(tags)}）—— 若刚发布，稍等再试`,
+    };
+  }
+  if (publishedVersion !== pkg.version) {
+    return {
+      ok: false,
+      detail: `dist-tag ${tag} 指向 ${publishedVersion}，不是 ${pkg.version}`,
+    };
+  }
+  if (integrity && versionMeta.dist?.integrity && versionMeta.dist.integrity !== integrity) {
+    return {
+      ok: false,
+      detail:
+        `本地打包与 registry 上已发布的内容**不一致**（integrity 不同）——` +
+        `通常意味着"发布之后又改了工作区里的文件"。` +
+        (tgz ? '下次发布请从已提交（最好已打 tag）的状态打包。' : ''),
+    };
+  }
+  // 把 registry 上的 tarball 拉回来，逐字节核对本地那份
+  const t = await fetch(versionMeta.dist.tarball, { headers: { 'user-agent': 'agent-clinic-publish/1.0' } });
+  if (t.status !== 200) return { ok: false, detail: `tarball HTTP ${t.status}` };
+  const remote = Buffer.from(await t.arrayBuffer());
+  const same = tgz ? remote.equals(tgz) : true;
+  return {
+    ok: true,
+    detail:
+      `dist-tags.${tag} = ${publishedVersion} · tarball ${remote.length} 字节 · ` +
+      (tgz ? (same ? '与本地打包逐字节一致' : '⚠ 与本地打包不一致（工作区可能在打包后被改过）') : '（未比对本地）'),
+    fileCount: versionMeta.dist?.fileCount ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 凭据
 // ---------------------------------------------------------------------------
 
@@ -286,6 +390,21 @@ async function main() {
   const body = buildPublishBody({ pkg, tgz, shasum, integrity, tag: args.tag, fileName });
   const bodyText = JSON.stringify(body);
 
+  if (args.verify) {
+    // 发布后自证：去 registry 把包拉回来，核对 dist-tag / integrity / 逐字节
+    process.stdout.write('\n正在向 registry 核对（只读）…\n');
+    const v = await verifyPublished({
+      pkg,
+      tgz,
+      integrity,
+      tag: args.tag,
+      registry: args.registry,
+    });
+    process.stdout.write(`${v.ok ? '✅' : '❌'} ${v.detail}\n`);
+    if (v.ok) process.stdout.write(`   https://www.npmjs.com/package/${pkg.name}/v/${pkg.version}\n`);
+    return v.ok ? 0 : 1;
+  }
+
   if (!args.publish) {
     process.stdout.write('\n（预演，未联网）将要发送：\n');
     process.stdout.write(`  PUT ${args.registry}/${pkg.name}\n`);
@@ -318,17 +437,14 @@ async function main() {
 
   const res = await fetch(`${args.registry}/${pkg.name}`, { method: 'PUT', headers, body: bodyText });
   const text = await res.text();
-  if (res.status === 200 || res.status === 201) {
-    process.stdout.write(`✅ 已发布 ${pkg.name}@${pkg.version}（dist-tag：${args.tag}）\n`);
-    process.stdout.write(`   https://www.npmjs.com/package/${pkg.name}/v/${pkg.version}\n`);
+  const verdict = classifyPublishResponse(res.status, text);
+  if (verdict.outcome === 'published' || verdict.outcome === 'staged') {
+    process.stdout.write(`✅ ${verdict.message}\n`);
+    process.stdout.write(`   稍后自证：node scripts/publish-npm.mjs --verify --tag ${args.tag}\n`);
     return 0;
   }
-  if (res.status === 409) {
-    process.stderr.write(`❌ 该版本已存在（409）：${pkg.name}@${pkg.version} —— 改版本号后重试，不自动覆盖。\n`);
-    return 1;
-  }
-  process.stderr.write(`❌ 发布失败：HTTP ${res.status}\n${text.slice(0, 800)}\n`);
-  return 1;
+  process.stderr.write(`❌ ${verdict.message}\n`);
+  return verdict.outcome === 'version-exists' || verdict.outcome === 'stage-conflict' ? 1 : 1;
 }
 
 // 直接执行才跑（被 import 时只暴露函数，供自检做打包校验）

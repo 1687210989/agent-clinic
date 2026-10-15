@@ -13,10 +13,14 @@
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/1687210989/agent-clinic/main/install.sh | bash   # 走 main
 > curl -fsSL https://cdn.jsdelivr.net/gh/1687210989/agent-clinic@v0.2.0-rc.1/install.sh | bash  # 走 tag（国内镜像）
+> npm i -g agent-clinic@next                                                                   # 走 npm
 > ```
 >
-> npm 通道（`npm i -g agent-clinic@next`）随凭据到位后开放；放行检查记录见
-> [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
+> **npm 已发布**（2026-10-15 10:26 UTC）：`agent-clinic@0.2.0-rc.1`，
+> dist-tags `next` 与 `latest` 都指向它（首个发布版本）。发布走的是仓库自带的
+> 零依赖通道 `scripts/publish-npm.mjs`（本机没有 npm CLI），并已用
+> 「装一遍再跑」验证：`npm install agent-clinic@next` → 版本正确 → CLI 可运行 → 空数据优雅退出。
+> 放行检查记录见 [docs/release-gate-2026-10-15.md](docs/release-gate-2026-10-15.md)。
 >
 > **本版把此前积累了 6 轮、一直停在 `[Unreleased]` 的改动一并发出**，最关键的三处：
 > ① 诊断指标 **19 → 21 项**（K1 跨会话失忆 / K2 已解决重新排查实现，

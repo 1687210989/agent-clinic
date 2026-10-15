@@ -3052,6 +3052,27 @@ process.stdout.write('\n21) 文档数字来源与示例新鲜度（D10 / D11）\
       return viaToken.token === 't1' && viaAlt.token === 't2' && (none.token === null || typeof none.token === 'string');
     })(),
   );
+  // 发布响应分类：这段是被**真实发布**打脸后加的 —— 第一版把 HTTP 202 当失败，
+  // 而 202 的真实含义是"registry 已接受"（npm 的 2FA 分阶段发布会先建 0.0.0-stage 占位）。
+  // 于是"发布成功了但脚本报失败"这种最坏的可信度事故在这里被钉住。
+  check(
+    '发行：HTTP 202 被判为"已接受/分阶段"，不是失败（真实发布踩过的坑）',
+    pub.classifyPublishResponse(202, '{"success":true}').outcome === 'staged' &&
+      pub.classifyPublishResponse(200, '{"success":true}').outcome === 'published' &&
+      pub.classifyPublishResponse(201, '{}').outcome === 'published' &&
+      /分阶段|占位/.test(pub.classifyPublishResponse(202, '{"success":true}').message),
+    pub.classifyPublishResponse(202, '{"success":true}').message.slice(0, 70),
+  );
+  check(
+    '发行：409 的两种含义被分开报（"已在审核区" vs "版本已存在"），401/403 报凭据问题',
+    pub.classifyPublishResponse(409, '{"error":"Cannot publish over previously staged version \\"1.0.0\\"."}').outcome ===
+      'stage-conflict' &&
+      pub.classifyPublishResponse(409, '{"error":"Cannot stage previously published version \\"1.0.0\\"."}').outcome ===
+        'version-exists' &&
+      pub.classifyPublishResponse(401, '{"error":"EOTP"}').outcome === 'auth' &&
+      pub.classifyPublishResponse(500, 'boom').outcome === 'failed',
+    `staged-conflict / version-exists / auth / failed 四类都能区分`,
+  );
 }
 
 process.stdout.write('\n19) 自检自身完整性\n');

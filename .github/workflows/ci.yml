@@ -74,6 +74,20 @@ jobs:
       - name: 目录命令自检（不联网）
         run: node src/cli.mjs catalog
 
+      # 指纹快照（决策 D4）：K1/K2 的数据基础。这里验证两件事：
+      #   ① fingerprints 子命令在没有任何快照时也能读（不崩、如实说"还没写过"）；
+      #   ② 指向临时目录时不许碰 runner 的 ~/.agent-clinic。
+      - name: 指纹快照命令自检（临时 HOME，不碰真实状态）
+        run: node src/cli.mjs fingerprints
+        env:
+          HOME: ${{ runner.temp }}/agent-clinic-fp-home
+          USERPROFILE: ${{ runner.temp }}/agent-clinic-fp-home
+
+      # 插件面板（浏览器端）的零依赖 DOM 桩测试 —— 决策 D9。
+      # 它不依赖 DSH_HOME：自带桩环境，测的是 client.js 的渲染与交互路径。
+      - name: 插件面板 DOM 桩测试
+        run: node scripts/plugin-dom.test.mjs
+
   # 只读与隐私承诺的机器检查：仓库里不该出现会话数据或本地路径
   privacy:
     name: 隐私与仓库卫生

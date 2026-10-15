@@ -490,6 +490,47 @@ export const REMEDIES = [
     }),
   }),
 
+  // --- 决策 D4（2026-10-15）：K1/K2 变成已实现指标 → 必须有对症处方 ---
+  P({
+    id: 'behavior-cross-session-note',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 88,
+    // K1 是"跨会话失忆"：同一段文本在多个会话里重复出现
+    targets: ['K1'],
+    title: '把结论写进项目里，别靠会话记忆',
+    solves: '跨会话重复解释同一个问题 —— 会话不留记忆，能留记忆的是项目文件',
+    build: (f) => ({
+      detail:
+        `同一个问题被问了多次（${f.summary}）。把它的**结论**写进项目里的固定位置：` +
+        `AGENTS.md（约定与边界）、README 的「已知问题/决策」、或一份 docs/<主题>.md；` +
+        `下次开新会话时让 Agent 先读那份文件，而不是重新讲一遍。`,
+      because: '指纹重合是客观事实（同一段文本出现在多个会话），不是猜你忘了。',
+    }),
+    risk: '把结论写进项目文件会留下长期维护成本；建议只沉淀"反复被问到"的那几件事。',
+    verify: '重跑 ./run.sh report：K1 里那几条指纹重合应当消失或不再增长。',
+  }),
+
+  P({
+    id: 'behavior-resolved-list',
+    kind: REMEDY_KIND.BEHAVIOR,
+    source: BEHAVIOR_SOURCE,
+    priority: 87,
+    // K2 是"已解决重新排查"：同一问题再次被提起且其后又出现失败/重试
+    targets: ['K2'],
+    title: '维护一份"已解决"清单，排查前先读',
+    solves: '已经定位过的问题又被从头排查一遍 —— 重复的定位与试错成本',
+    build: (f) => ({
+      detail:
+        `把已经查清的问题与最终结论记成一张清单（docs/known-issues.md 或 AGENTS.md 的一节）：` +
+        `症状 → 根因 → 当时的修法 → 复核命令。这条是**软信号**（${f.summary}），` +
+        `定位也指向具体会话，你可以直接打开看对不对。`,
+      because: '同一个问题再次出现、其后又走进失败/重试，是"重新排查"的可观察代理信号。',
+    }),
+    risk: 'K2 是软信号（代理判据），可能把"新问题"看成"旧问题"；先打开证据确认再动手。',
+    verify: '重跑 ./run.sh report：若同一指纹不再伴随失败/重试，K2 不再报。',
+  }),
+
   P({
     id: 'behavior-todo-update',
     kind: REMEDY_KIND.BEHAVIOR,
@@ -674,6 +715,20 @@ const EXPLICIT_STEPS = {
     '下次派活时把任务缩到一句话能说清：目标 / 输入文件 / 期望输出格式 / 边界（不许做什么）',
     '在指令里加上「只回结论，不要回过程」',
     '能自己做完的小任务不要派子代理 —— 子代理按独立会话全额计费',
+  ],
+  'behavior-cross-session-note': [
+    '打开报告里 K1 的 Evidence，确认这几个会话问的确实是同一件事（指纹只证明文本重合）',
+    '把这件事的结论写成文件：项目根目录 AGENTS.md 的「约定」一节，或新增 docs/<主题>.md',
+    '文件里至少写清：结论 / 为什么这么做 / 怎么复核（可复制的命令）',
+    '在项目 AGENTS.md 里加一句：「开新会话先读 docs/<主题>.md 再动手」',
+    '下次同类问题直接在会话开头引用该文件，不再复述背景',
+  ],
+  'behavior-resolved-list': [
+    '打开报告里 K2 的两条证据定位，确认"后一次"确实是在重复排查（而不是新问题）',
+    '在 docs/known-issues.md 建表：症状 / 根因 / 修法 / 复核命令 / 当时日期',
+    '把这次确认过的问题补进去，尤其写清"怎么验证已经修好"',
+    '在项目 AGENTS.md 里写：「排查失败类问题前，先查 docs/known-issues.md」',
+    '下次再遇到同类症状，先跑清单里的复核命令，再决定要不要重新排查',
   ],
   'behavior-todo-update': [
     '在项目 AGENTS.md 里写明：「每完成一步立刻更新 todo 状态，不要全部做完后一次性回写」',

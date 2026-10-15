@@ -24,6 +24,10 @@ import { summarize, topTools, num, pct } from '../src/summary.mjs';
 import { hasZstdSupport } from '../src/adapters/zstd-frames.mjs';
 import { renderEvidence } from '../src/evidence/index.mjs';
 import { buildReport, analyze, analyzeLive } from '../src/report.mjs';
+// 决策 D4：K1/K2 的指纹采集同样要在**扫描前**开好（适配层在解析时算加盐哈希）。
+// 插件进程若写不了 ~/.agent-clinic（沙箱/权限），beginFingerprintRun 会如实返回不可用，
+// K1/K2 于是带 note 出现在"未检测到异常"里说明"本次未采集指纹"——不静默装成"没问题"。
+import { beginFingerprintRun } from '../src/privacy/fingerprints.mjs';
 
 /** 插件短名（cordis patch 里的 id / name 与之对应） */
 export const name = 'agent-clinic';
@@ -36,8 +40,9 @@ export const name = 'agent-clinic';
  * 插件只在启动时装载，更新后必须重启才生效；若不显式提示，
  * 用户只会看到面板内容没变，无法判断该做什么。
  * 改动 /api/agent-clinic/report 的响应结构时，两边一起 +1。
+ * v15（决策 D4）：response.data 增加可选的 `fingerprintNotice`（指纹快照不可用/写失败时提示）。
  */
-export const API_VERSION = '14';
+export const API_VERSION = '15';
 
 /**
  * 面板「联网现搜」的预算上限（毫秒）。
@@ -155,13 +160,35 @@ function analyzeOptsFromConfig(config = {}) {
   return opts;
 }
 
+/**
+ * 指纹快照的一句话状态（决策 D4）：只在**有话要说**时返回（不可用 / 写失败）。
+ * 写成功或本次没新观测都属于正常，不打扰用户。
+ */
+function fingerprintNotice(out) {
+  if (!out) return null;
+  if (out.error) {
+    // phase='save'：写盘失败但本次**已判定**；phase='load'：没有盐，确实没判
+    if (out.phase === 'save') {
+      return `指纹快照写入失败：${out.error.message}（K1/K2 已按本次扫描判定；跨会话历史未累积）`;
+    }
+    return `指纹快照不可用：${out.error.message}（K1/K2 本次未判定）`;
+  }
+  return null;
+}
+
 function runReport(opts = {}, config = {}) {
   if (!hasZstdSupport()) {
     return `运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）。`;
   }
+  const fp = beginFingerprintRun();
   const scan = limitSessions(scanSessions({ dshHome: opts.dshHome }), config.maxSessions);
   const summary = summarize(scan);
-  return buildReport({ scan, summary }, analyzeOptsFromConfig(config));
+  const text = buildReport(
+    { scan, summary },
+    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan) },
+  );
+  const notice = fingerprintNotice(fp.finish(scan));
+  return notice ? `${text}\n\n> ⚠ ${notice}\n` : text;
 }
 
 /** 结构化体检结果（供客户端面板渲染卡片式 UI，避免解析 markdown 文本） */
@@ -169,10 +196,17 @@ function runAnalyze(opts = {}, config = {}) {
   if (!hasZstdSupport()) {
     throw new Error(`运行环境不支持原生 zstd 解码（需要 Node >= 22.15，当前 ${process.version}）`);
   }
+  const fp = beginFingerprintRun();
   const scan = limitSessions(scanSessions({ dshHome: opts.dshHome }), config.maxSessions);
   const summary = summarize(scan);
   // opts 必须传下去：否则 maxSessions / minRepeatCount 就是"改了没效果"的旋钮
-  return analyze({ scan, summary }, analyzeOptsFromConfig(config));
+  const data = analyze(
+    { scan, summary },
+    { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan) },
+  );
+  const notice = fingerprintNotice(fp.finish(scan));
+  // 面板已经会渲染 notDetected 的 note；这里再单独挂一个字段，供将来显式提示
+  return notice ? { ...data, fingerprintNotice: notice } : data;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,15 +483,20 @@ export function apply(ctx, config = {}) {
           try {
             // 旋钮同样要生效：面板路由与模型工具必须同一口径
             // （待优化报告 §3：这里是最后一处漏传 opts 的地方）
+            // 决策 D4：指纹也要在同一处开（扫描前），否则面板里的 K1/K2 永远不判定
+            const fp = beginFingerprintRun();
             const scan = limitSessions(scanSessions({ dshHome: config.dshHome }), config.maxSessions);
             const summary = summarize(scan);
             const ctxReport = { scan, summary };
+            const fpOpts = fp.diagnosticOpts(scan);
+            const fpData = analyze(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts });
+            const fpNotice = fingerprintNotice(fp.finish(scan));
             send(200, {
               ok: true,
               version: API_VERSION,
               generatedAt: new Date().toISOString(),
-              report: buildReport(ctxReport),
-              data: analyze(ctxReport, analyzeOptsFromConfig(config)),
+              report: buildReport(ctxReport, { ...analyzeOptsFromConfig(config), ...fpOpts }),
+              data: fpNotice ? { ...fpData, fingerprintNotice: fpNotice } : fpData,
             });
           } catch (e) {
             send(500, { ok: false, error: String(e?.message ?? e) });
@@ -483,19 +522,25 @@ export function apply(ctx, config = {}) {
             res.end(body);
           };
           try {
+            // 决策 D4：现搜路径同样要开指纹，否则"点联网现搜后 K1/K2 又不判定"——
+            // 同一面板两种口径（与旋钮那处是同一类问题）
+            const fp = beginFingerprintRun();
             const scan = limitSessions(scanSessions({ dshHome: config.dshHome }), config.maxSessions);
             const summary = summarize(scan);
+            const fpOpts = fp.diagnosticOpts(scan);
             // 现搜也要带上旋钮：否则"点联网后阈值又变回默认"——同一面板两种口径
             const { data, live } = await analyzeLive({ scan, summary }, {
               ...analyzeOptsFromConfig(config),
+              ...fpOpts,
               liveOptions: { budgetMs: LIVE_BUDGET_MS },
             });
+            const fpNotice = fingerprintNotice(fp.finish(scan));
             send(200, {
               ok: true,
               version: API_VERSION,
               generatedAt: new Date().toISOString(),
               live,
-              data,
+              data: fpNotice ? { ...data, fingerprintNotice: fpNotice } : data,
             });
           } catch (e) {
             send(500, { ok: false, error: String(e?.message ?? e) });

@@ -130,12 +130,14 @@ const IDLE_SKILL_MD = [
   '',
 ].join('\n');
 
-/** 本语料必须覆盖的 19 个已实现指标（A1/K1/K2 未实现，不在内） */
+/** 本语料必须覆盖的 21 个已实现指标（A1 未实现，不在内） */
 export const METRIC_IDS = [
   'C1', 'C2', 'C3', 'C5', 'C6', 'C7',
   'E1', 'E2', 'E3', 'E4', 'E5',
   'N1', 'N2', 'N3', 'N4',
   'A2', 'A3', 'A4', 'A5',
+  // 决策 D4：K1/K2 从"未实现"变为已实现（本地加盐指纹），语料必须覆盖
+  'K1', 'K2',
 ];
 
 const REPO_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
@@ -631,6 +633,23 @@ function buildSessions() {
     add(s);
   }
 
+  // --- 决策 D4：K1/K2 的语料 ---
+  // 同一段用户文本出现在 ≥3 个会话里（K1 跨会话失忆），
+  // 并且**较晚的**会话在该消息之后又走进了排查（失败信号）→ K2 已解决重新排查。
+  // 注意：文本要 ≥12 字符才会生成指纹（短文本被指纹层排除，这是防噪音的设计）。
+  const K_REPEAT_TEXT = '同一个问题：为什么构建又失败了？我上次已经让你修过了（合成语料，用于验证 K1/K2 指纹）';
+  sessions.slice(0, 3).forEach((s, i) => {
+    const t = s.createdAt + 30 * MIN;
+    user(s, t, K_REPEAT_TEXT);
+    if (i > 0) {
+      pair(s, t + 2 * MIN, 'pwsh', { command: 'npm run build' }, `kfail-${i}`, {
+        isError: true,
+        text: '构建失败（合成语料）',
+        error: 'ExitCode=1',
+      });
+    }
+  });
+
   return sessions;
 }
 
@@ -824,10 +843,17 @@ async function runVerify() {
   const { scanSessions } = await import('../../src/adapters/dsh.mjs');
   const { summarize } = await import('../../src/summary.mjs');
   const { runDiagnostics } = await import('../../src/diagnostics/index.mjs');
+  const { beginFingerprintRun } = await import('../../src/privacy/fingerprints.mjs');
 
+  // 决策 D4：K1/K2 要指纹。**用一次性快照目录**，绝不碰用户真实的
+  // ~/.agent-clinic/text-fingerprints.json（自检不该污染开发者的本机状态）。
+  const fpStore = path.join(VERIFY_DIR, 'fingerprints.json');
+  const fp = beginFingerprintRun({ path: fpStore });
+  // 顺序：beginFingerprintRun 必须在 scanSessions 之前（适配层解析时算哈希）
   const scan = scanSessions({ dshHome: VERIFY_DIR });
   const summary = summarize(scan);
-  const diag = runDiagnostics({ scan, summary });
+  const diag = runDiagnostics({ scan, summary }, fp.diagnosticOpts(scan));
+  fp.finish(scan);
 
   const counts = new Map(METRIC_IDS.map((id) => [id, 0]));
   for (const f of diag.findings) {

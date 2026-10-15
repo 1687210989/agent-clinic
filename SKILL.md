@@ -57,19 +57,26 @@ license: MIT
 ./run.sh scan                    # 扫描概览
 ./run.sh diagnose                # 只跑诊断，不生成完整报告
 ./run.sh show "<file>#L<n>"      # 展开证据，复核结论
+./run.sh show "<file>#L2-L211" --limit 20 --offset 20   # 长区间显式分页（截断提示里给的就是这条命令）
+./run.sh fingerprints            # 查看本地文本指纹快照（K1/K2 的数据基础；只存加盐哈希，正文不落盘）
+./run.sh fingerprints --clear    # 删除该快照
 ./run.sh catalog                 # 查看插件目录（人工核实 + npm 同步 + GitHub 核实，按热度排序）
 ./run.sh catalog-sync            # 同步插件目录（npm + GitHub）
 ./run.sh catalog-sync --source github   # 只同步 GitHub 方向（经 gh-proxy.com 中继 GitHub API）
 ./run.sh catalog-sync --pool 900 --limit 150 --gh-discover 40   # 扩大候选池 / 收录数 / GitHub 核实数
-./scripts/smoke.sh               # 自检（263 项）
+./scripts/smoke.sh               # 自检（302 项）
+node scripts/plugin-dom.test.mjs # 插件面板的零依赖 DOM 桩测试（65 条）
 ```
+
+**K1/K2 的隐私开关**：`AGENT_CLINIC_NO_FINGERPRINT_STORE=1` 可整体关闭指纹采集；
+关闭（或快照损坏）时报告会在"未检测到异常"里写明 K1/K2 **未采集/未判定** —— 是"没查"，不是"没问题"。
 
 自检在**没有本地会话**的环境里也能跑：先用合成语料装置造一份确定性语料，
 再要求"跳过数必须为 0"（CI 就是这么跑的）。徽章/声称的条数由 smoke 自己在跑完后核对，
 对不上即以退出码 1 结束；确认无误用 `--write-badge` 回写。
 
 ```bash
-node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home    # 覆盖 19 项指标，固定时间戳
+node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home    # 覆盖全部 21 项已实现指标，固定时间戳
 node scripts/fixtures/synth-dsh.mjs --verify                 # 每项指标至少命中 1 处，否则非零退出
 DSH_HOME=.tmp/synth-home DSH_SMOKE_REQUIRE_DATA=1 \
   AGENT_CLINIC_SKILL_DIRS=.tmp/synth-home/agents-skills node scripts/smoke.mjs

@@ -515,12 +515,14 @@ export function skippedFor(finding, opts = {}) {
  * 仍然不放任刷屏。
  *
  * @param {string|Array} problem 问题 ID 或 finding 列表
- * @param {Object} [opts] { limit=4, rejected=[], perFinding=1, ctx }
+ * @param {Object} [opts] { limit=8, rejected=[], perFinding=2, ctx }
  */
 export function matchPrescriptions(problem, opts = {}) {
-  // 上限 6（第二轮评估）：指标从 12 项增到 15 项后，7 类问题抢 4 个名额
-  // 会把最可执行的配置类建议挤掉 —— 例如 E3（工具结果过大）指向 spill 预算那一条。
-  const limit = opts.limit ?? 6;
+  // 上限 8（2026-10-15 决策 D3）：每类问题 2 个名额，8 个名额 = 前 4 类问题各 2 条。
+  // 上限 6 时只覆盖得下 3 类（7 类问题抢 6 个名额），第 4 类起在全局清单里没有处方 ——
+  // 虽已如实报出"因名额未展示 N 条"，但覆盖率太低。8 是"每类 2 条"语义下最小的
+  // 扩容（每 +2 个名额多覆盖 1 类），同时报告长度仍可控。
+  const limit = opts.limit ?? 8;
   // 每个问题默认给 2 个名额：第 1 个是确定对症的处方，第 2 个留给插件目录检索结果，
   // 这样"能装的插件"不会被一句行为建议挤掉。
   const perFinding = opts.perFinding ?? 2;

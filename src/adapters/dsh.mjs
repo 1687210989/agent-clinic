@@ -21,6 +21,9 @@ import crypto from 'node:crypto';
 import { decodeFrames } from './zstd-frames.mjs';
 import { resolveDshHome as resolveEnvDshHome } from '../config/index.mjs';
 import { KIND, PLATFORM, makeLocator, makeEvent, stableStringify } from './base.mjs';
+// 决策 D4：用户文本指纹（K1/K2 的数据基础）。此处只在解析时**当场**算哈希，
+// 正文不落到事件里；详见 src/privacy/fingerprints.mjs 的隐私边界说明。
+import { fingerprintOf, getActiveSalt, textOfContent } from '../privacy/fingerprints.mjs';
 
 /** 会话文件名匹配：session.v4.jsonl.zstd / session.v1.jsonl */
 const SESSION_FILE_RE = /^session\.v(\d+)\.jsonl(\.zstd)?$/;
@@ -331,6 +334,11 @@ export function parseSession(file) {
         // content 在 data.content
         ev = makeEvent({ ...base, kind: KIND.USER_MSG }, {
           text_len: sumTextLen(data.content, 'text'),
+          // 决策 D4（K1/K2 的数据基础）：用户文本在**解析时**当场规范化 + 加盐哈希，
+          // 只把 32 位十六进制指纹放进事件 —— 正文既不进事件、也不进报告，更不落盘。
+          // 没有盐（未走 report/scan 的指纹路径）或文本过短（<12 字符）时为 null，
+          // 上层会如实说明"本次未采集指纹"，而不是假装没问题。
+          text_hash: fingerprintOf(getActiveSalt(), textOfContent(data.content, 'text'))?.hash ?? null,
         });
         break;
 

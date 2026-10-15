@@ -1,0 +1,36 @@
+{
+  "what": "本工具在作者本机（DSH 真实会话 + 真实 profile patch）上量到的实测数字。",
+  "why": "README 与 docs/diagnostics.md 里引用的『本机实测』数字必须来自同一份来源，否则两边会各自漂移成『文档谎言』。改数字请改这里，再同步两处文档；smoke 会核对。",
+  "measuredAt": "2026-10-15",
+  "host": "作者本机 · DSH desktop profile（会话数 13、8058 行、1387 次工具调用）",
+  "facts": [
+    {
+      "key": "C5_shadowed_tokens",
+      "value": 638171,
+      "formatted": "638,171",
+      "meaning": "compaction/summary|prune 的 shadowedTokenCount 累计 —— DSH 自报的压缩实际释放量（不是估算）",
+      "citedIn": ["docs/diagnostics.md"]
+    },
+    {
+      "key": "C6_tool_schema_chars",
+      "value": 29779,
+      "formatted": "29,779",
+      "meaning": "request/header 的 tools 数组字符数（≈7,445 token/请求，按 4 字符/token 估算）",
+      "citedIn": ["docs/diagnostics.md"]
+    },
+    {
+      "key": "C7_inbox_inserted_chars",
+      "value": 158393,
+      "formatted": "158,393",
+      "meaning": "agent/inbox/spliced 的 inserted 体积累计 —— 注入内容会留在历史里被重复计费",
+      "citedIn": ["README.md", "docs/diagnostics.md"]
+    },
+    {
+      "key": "A5_aux_requests",
+      "value": 96,
+      "formatted": "96",
+      "meaning": "web/*-llm-request 与 session/title-llm-request 次数 —— 这些调用没有 usage 记录，此前完全不可见",
+      "citedIn": ["README.md", "docs/diagnostics.md"]
+    }
+  ]
+}

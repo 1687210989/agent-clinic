@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { KIND } from '../adapters/base.mjs';
 import { num, pct } from '../summary.mjs';
+import { observationsFromScan, observationsFromStore, MIN_CHARS } from '../privacy/fingerprints.mjs';
 
 /** 严重度 */
 export const SEVERITY = { HIGH: '高', MID: '中', LOW: '低' };
@@ -1049,15 +1050,66 @@ function detectE3(ctx, opts) {
  * ⚠️ 另有一条老约束：必须是两个**不同**工具的相邻转换。
  *    早期版本允许 `web_fetch→web_fetch`，把"连续抓取 44 个 URL"报成 4 条 —— 那是
  *    单一工具的重复使用（已由 E5 覆盖），不是"序列"。
+ *
+ * 2026-10-15 决策 D5：通用工具清单不再纯硬编码，改为 **基础集 + 从会话数据自动学习**。
+ *
+ *   - **基础集**（`BASE_GENERIC_TOOLS`）硬编码、不可被学习移除 —— 它是保底判据，
+ *     任何"从数据学出来"的东西都不许把 `read`/`pwsh` 这类工具重新变成候选。
+ *   - **学习只做排除**，判据是**广度**：一个工具出现在 ≥ `a3GenericMinSessions`（默认 3）
+ *     个不同会话里，就视为通用工具 —— 跨任务普遍出现的工具不可能是"某个任务的固定套路"。
+ *   - **为什么不用"内置包白名单"**：会话数据里只有工具名，**没有工具→包的映射**
+ *     （`request/header` 给的是 tool_names 与 schema 体积，不含包名），所以"排除
+ *     `@deepseek-ai/*` 提供的工具"在这条数据源上无法判定。硬要按包名排除就只能靠猜，
+ *     而本项目"宁可承认做不到，也不假装有数据"。广度判据是**可复核**的：它只看
+ *     "这个工具出现在几个会话里"，任何人都能从报告里验证。
+ *   - 学习结果**如实报出**：A3 命中时写进 summary，未命中时作为说明进 notDetected
+ *     （`runDiagnostics` 会把 `{findings, note}` 的 note 放进"未检测到"的说明里）。
+ *   - 可关掉/可追加：`opts.a3LearnGeneric = false` 关闭学习；`opts.a3GenericTools`
+ *     追加排除名单（用户知道自己环境里哪些工具是通用的）。
  */
-const GENERIC_TOOLS = new Set([
+const BASE_GENERIC_TOOLS = new Set([
   'read', 'write', 'edit', 'grep', 'glob', 'pwsh', 'bash', 'sh', 'shell',
   'todo_write', 'ask_user_question', 'compress', 'subagent', 'subagent_fork',
   'list_agents', 'send_message', 'job_output', 'job_list', 'job_kill',
 ]);
 
+/**
+ * 从会话数据里学习"通用工具"（决策 D5）：在 ≥ minSessions 个不同会话里都出现过的工具。
+ *
+ * @param {{scan:{sessions:Array}}} ctx
+ * @param {{a3GenericMinSessions?:number, a3LearnGeneric?:boolean}} [opts]
+ * @returns {Set<string>}
+ */
+export function learnedGenericTools(ctx, opts = {}) {
+  const out = new Set();
+  if (opts.a3LearnGeneric === false) return out;
+  const minSessions = opts.a3GenericMinSessions ?? 3;
+  const byTool = new Map();
+  for (const s of ctx?.scan?.sessions ?? []) {
+    const seen = new Set();
+    for (const e of s.events ?? []) {
+      if (e.kind !== KIND.TOOL_CALL || !e.tool_name || seen.has(e.tool_name)) continue;
+      seen.add(e.tool_name);
+      byTool.set(e.tool_name, (byTool.get(e.tool_name) ?? 0) + 1);
+    }
+  }
+  for (const [tool, sessions] of byTool) {
+    if (sessions >= minSessions) out.add(tool);
+  }
+  return out;
+}
+
 function detectA3(ctx, opts) {
   const minRepeat = opts.a3MinRepeat ?? 5;
+  const learned = learnedGenericTools(ctx, opts);
+  const extra = new Set(opts.a3GenericTools ?? []);
+  const isGeneric = (n) => BASE_GENERIC_TOOLS.has(n) || extra.has(n) || learned.has(n);
+  const learnedList = [...learned].sort();
+  const criteria =
+    `判据：基础通用工具 ${BASE_GENERIC_TOOLS.size} 个` +
+    ` + 本次自动学习 ${learnedList.length} 个` +
+    (learnedList.length ? `（${learnedList.slice(0, 8).join('、')}${learnedList.length > 8 ? '…' : ''}）` : '') +
+    (extra.size ? ` + 手工追加 ${extra.size} 个` : '');
 
   const pairs = new Map();
   for (const s of ctx.scan.sessions) {
@@ -1071,7 +1123,7 @@ function detectA3(ctx, opts) {
       if (!a || !b || a === b) continue; // 同一工具的连续使用不算"序列"
       // 任一端是通用工具就不算"可固化套路"：任何任务都要读文件、跑命令，
       // 「跑命令→搜网页」这种组合是任务形状，不是可复用的固定套路。
-      if (GENERIC_TOOLS.has(a) || GENERIC_TOOLS.has(b)) continue;
+      if (isGeneric(a) || isGeneric(b)) continue;
       const key = [a, b].sort().join('\u0000');
       let rec = pairs.get(key);
       if (!rec) {
@@ -1094,13 +1146,13 @@ function detectA3(ctx, opts) {
       scope: [...rec.sessions].join(','),
       summary:
         `工具序列「${rec.from}↔${rec.to}」出现 ${rec.count} 次（跨 ${rec.sessions.size} 个会话），` +
-        `两端都不是通用读写/命令工具，可考虑固化`,
+        `两端都不在通用工具清单里，可考虑固化（${criteria}）`,
       evidence: [{ locator: rec.first, note: '该序列首次出现' }],
       impact: `约 ${rec.count} 次固定的两步操作，可合并为一次调用或固化为技能`,
       confidence: 0.6,
     });
   }
-  return findings;
+  return { findings, note: criteria };
 }
 
 /**
@@ -1431,7 +1483,7 @@ export const REGISTRY = [
     category: 'A',
     severity: SEVERITY.LOW,
     implemented: true,
-    desc: '非通用工具的两步序列复现 >=5 次（去镜像、跨会话合并；第二轮评估 F14 收窄）',
+    desc: '非通用工具的两步序列复现 >=5 次（去镜像、跨会话合并；通用工具 = 基础集 + 从会话广度自动学习，见决策 D5）',
     detect: detectA3,
   },
   {
@@ -1452,6 +1504,26 @@ export const REGISTRY = [
     desc: '窗口内辅助模型调用（联网检索 / 会话标题）≥20 次，给出 maxTokens 上界估算',
     detect: detectA5,
   },
+  // --- 决策 D4（2026-10-15）：K1/K2 从"隐私取舍下方案未定"变为已实现 ---
+  //   数据基础：用户文本的**加盐指纹**（正文不落盘），详见 src/privacy/fingerprints.mjs
+  {
+    id: 'K1',
+    title: '跨会话失忆',
+    category: 'K',
+    severity: SEVERITY.MID,
+    implemented: true,
+    desc: '同一用户文本指纹出现在 ≥3 个不同会话（本地加盐指纹，正文不落盘）',
+    detect: detectK1,
+  },
+  {
+    id: 'K2',
+    title: '已解决重新排查',
+    category: 'K',
+    severity: SEVERITY.LOW,
+    implemented: true,
+    desc: '同一指纹在 ≥2 个会话出现，且较晚的会话在其后有失败/重试（软信号，措辞"疑似"）',
+    detect: detectK2,
+  },
   // --- M2+ 预留 ---
   { id: 'A1', title: 'MCP 闲置', category: 'A', severity: SEVERITY.MID, implemented: false, desc: '已配置 MCP 30 天 0 调用（本机未配置 MCP，暂无数据源）', detect: () => [] },
   // --- 第二轮评估：以下三项原本被列在"不可实现"，实为适配层没抽，已实现并移入上方 REGISTRY ---
@@ -1468,22 +1540,180 @@ export const REGISTRY = [
  *    旧版写的是"数据源在 DSH 里不存在"（不可实现），但实测 E3/N3/N4 的数据都在日志里
  *    —— 那是适配层没抽（已修）。剩下 K1/K2 同样**不是数据源缺失**：
  *    user/message 的正文就在日志里，是适配层按隐私约束只记了长度。
- *    所以这里描述的是"要用什么方案才能做"，而不是"平台做不到"。
+ *
+ * 2026-10-15 决策 D4：K1/K2 已实现（列为项已移入 REGISTRY），本数组因此为空。
+ * 保留这个导出是为了报告结构稳定（"尚未实现的维度"这一节会如实显示"没有"）。
  */
-export const UNIMPLEMENTABLE = [
-  {
-    id: 'K1',
-    title: '跨会话失忆',
-    reason:
-      '适配层按隐私约束只记 user/message 的 text_len、不留正文（正文在日志里，但本工具不落盘）。' +
-      '要做跨会话"你是不是又在问同一个问题"，需改为记录**规范化文本指纹**（hash，可复原性为零）—— 方案未定，未排期',
-  },
-  {
-    id: 'K2',
-    title: '已解决重新排查',
-    reason: '同 K1：同样依赖用户文本指纹，未排期',
-  },
-];
+export const UNIMPLEMENTABLE = [];
+
+/**
+ * K1 跨会话失忆 / K2 已解决重新排查 —— **决策 D4（2026-10-15）实现**
+ *
+ * ⚠️ 这两项以前被列在"尚未实现"，原因写的是"隐私取舍"：适配层按隐私约束只记
+ *    `user/message` 的 `text_len`、不留正文，所以做不了"你是不是又在问同一个问题"。
+ *    用户拍板选了**较强的**一档：把**规范化文本指纹（加盐 sha256）写入本地快照**
+ *    （`~/.agent-clinic/text-fingerprints.json`）。于是这两项从"方案未定"变成已实现，
+ *    代价与边界都写在 src/privacy/fingerprints.mjs 里（正文不落盘、加盐、可清除、可关闭）。
+ *
+ * 判定口径（写在代码里，就是为了可复核）：
+ *   K1：**同一指纹在 ≥3 个不同会话里出现**（默认阈值 3）。取 3 而不是 2 —— 两次
+ *       提问同一件事可能是正常的追问，三次跨会话才是"没记住"。
+ *   K2：同一指纹在 ≥2 个会话里出现，且**较晚那个会话**在该消息之后又出现了
+ *       失败/重试信号（`tool/result` 且 `is_error`，或 `llm/retry`）。
+ *       为什么用这个代理判据：日志里**没有**"这件事已解决"的显式信号，
+ *       能观测到的最接近事实是"这个问题再次被提起，而且又走进了排查（失败/重试）"。
+ *       因此 K2 措辞必须是"疑似"，严重度只给 LOW（约定 3）。
+ *
+ * 单样本不出结论（约定 4）：一个指纹只在一个会话里出现时，两个指标都不报。
+ */
+
+/** 把观测按指纹分组 */
+function groupByHash(observations) {
+  const byHash = new Map();
+  for (const o of observations) {
+    if (!o?.hash) continue;
+    const list = byHash.get(o.hash) ?? [];
+    list.push(o);
+    byHash.set(o.hash, list);
+  }
+  return byHash;
+}
+
+const tsKey = (o) => String(o?.ts ?? '');
+
+/** 每个会话里"失败/重试"信号出现的时间点 */
+function failureTimesBySession(scan) {
+  const map = new Map();
+  for (const s of scan?.sessions ?? []) {
+    const times = [];
+    for (const e of s.events ?? []) {
+      const failed =
+        (e.kind === KIND.TOOL_RESULT && e.is_error) || e.kind === KIND.RETRY;
+      if (failed) times.push(String(e.ts ?? ''));
+    }
+    map.set(s.sessionId, times);
+  }
+  return map;
+}
+
+/** K1/K2 共用的观测来源：优先用调用方给的（scan + 快照合并后），否则只从本次 scan 里取 */
+function kObservations(ctx, opts) {
+  if (Array.isArray(opts.fingerprintObservations)) return opts.fingerprintObservations;
+  const { observations } = observationsFromScan(ctx.scan);
+  if (opts.fingerprintStore) return [...observations, ...observationsFromStore(opts.fingerprintStore)];
+  return observations;
+}
+
+/** 把"这次到底采到指纹没有"如实写进判据说明（不静默降级） */
+function fingerprintNoteSuffix(opts) {
+  const parts = [];
+  if (opts.fingerprintUnavailable) parts.push(`本次未采集指纹：${opts.fingerprintUnavailable}`);
+  if (opts.fingerprintMissing) {
+    parts.push(`本次有 ${opts.fingerprintMissing} 条用户消息未参与指纹（过短或未采集）`);
+  }
+  return parts.length ? `；${parts.join('；')}` : '';
+}
+
+function detectK1(ctx, opts) {
+  const minSessions = opts.k1MinSessions ?? 3;
+  const observations = kObservations(ctx, opts);
+  const byHash = groupByHash(observations);
+  const findings = [];
+  let multiSession = 0;
+
+  for (const [hash, list] of byHash) {
+    const sessions = [...new Set(list.map((o) => o.session).filter(Boolean))];
+    if (sessions.length < 2) continue;
+    multiSession += 1;
+    if (sessions.length < minSessions) continue;
+    const chars = list.reduce((m, o) => Math.max(m, o.chars ?? 0), 0);
+    const sorted = list.slice().sort((a, b) => tsKey(a).localeCompare(tsKey(b)));
+    findings.push({
+      id: 'K1',
+      title: '跨会话失忆',
+      category: 'K',
+      severity: SEVERITY.MID,
+      scope: sessions.join(','),
+      summary:
+        `同一段用户文本（指纹 ${hash.slice(0, 8)}…，约 ${num(chars)} 字符）在 ${sessions.length} 个会话里出现 ` +
+        `—— 疑似同一个问题被反复提出（跨会话没有记住）`,
+      evidence: sorted
+        .slice(0, 3)
+        .map((o) => ({ locator: o.locator, note: `${o.session} · ${o.ts ?? '无时间'}` })),
+      impact: `同一个问题被解释了 ${sessions.length} 遍，上下文成本按会话数翻倍`,
+      confidence: 0.6,
+    });
+  }
+
+  const criteria =
+    `判据：同一指纹出现在 ≥${minSessions} 个不同会话（本次有 ${multiSession} 个指纹跨了 2 个以上会话）` +
+    `；文本短于 ${MIN_CHARS} 字符不生成指纹` +
+    fingerprintNoteSuffix(opts);
+  return { findings, note: criteria };
+}
+
+function detectK2(ctx, opts) {
+  const minSessions = opts.k2MinSessions ?? 2;
+  const observations = kObservations(ctx, opts);
+  const byHash = groupByHash(observations);
+  const failures = failureTimesBySession(ctx.scan);
+  const findings = [];
+
+  for (const [hash, list] of byHash) {
+    const sessions = [...new Set(list.map((o) => o.session).filter(Boolean))];
+    if (sessions.length < minSessions) continue;
+    // 每个会话最早一次出现（用它判断"先解决过、后来又提"的时间关系）
+    const firstBySession = new Map();
+    for (const o of list) {
+      if (!o.session) continue;
+      const prev = firstBySession.get(o.session);
+      if (!prev || tsKey(o) < tsKey(prev)) firstBySession.set(o.session, o);
+    }
+    const ordered = [...firstBySession.values()].sort((a, b) => tsKey(a).localeCompare(tsKey(b)));
+    const earliest = ordered[0];
+    // 时间不可比时不出结论（约定 4：宁可不出，也不猜）
+    if (!earliest || !tsKey(earliest)) continue;
+    // ⚠️ 必须检查**最早一次之后的每一个会话**，而不是只看最后一个：
+    // 三次提问时，失败/重试可能发生在中间那次（只看最后一次会把这种情况漏掉）。
+    const laterFailed = ordered
+      .slice(1)
+      .filter((o) => tsKey(o) && tsKey(o) > tsKey(earliest))
+      .filter((o) => (failures.get(o.session) ?? []).some((t) => t >= tsKey(o)));
+    if (laterFailed.length === 0) continue;
+    const later = laterFailed[0];
+    // 收紧一步：**最早那次出现之后不能就有失败** —— 否则这条更可能是"一直在排查"
+    // （E2/N4 已经在报），而不是"当时看着解决了、后来又翻出来"。
+    // 实测未收紧时合成语料里 K2 一次报 8 条（同一段文本在很多会话里都出现），
+    // 收紧后降到 1 条量级；仍是软信号，故只给 LOW + "疑似"。
+    const earlierFailed = (failures.get(earliest.session) ?? []).some((t) => t >= tsKey(earliest));
+    if (earlierFailed) continue;
+
+    const chars = list.reduce((m, o) => Math.max(m, o.chars ?? 0), 0);
+    findings.push({
+      id: 'K2',
+      title: '已解决重新排查',
+      category: 'K',
+      severity: SEVERITY.LOW, // 软信号（约定 3）：只给低，且措辞"疑似"
+      scope: `${earliest.session},${later.session}`,
+      summary:
+        `疑似"已经解决过的事又排查了一遍"：同一段用户文本（指纹 ${hash.slice(0, 8)}…，约 ${num(chars)} 字符）` +
+        `先出现在 ${earliest.ts?.slice(0, 10) ?? '较早'}，之后在 ${later.ts?.slice(0, 10) ?? '较晚'} 再次出现，` +
+        `且后一次之后有失败/重试信号`,
+      evidence: [
+        { locator: earliest.locator, note: `较早提出（${earliest.session}）` },
+        { locator: later.locator, note: `再次提出（${later.session}），其后出现失败/重试` },
+      ],
+      impact: '同一问题被重新排查一遍：重复的定位与试错成本',
+      confidence: 0.4,
+    });
+  }
+
+  const criteria =
+    `判据：同一指纹在 ≥${minSessions} 个会话出现，且较晚的会话在该消息之后有失败/重试信号` +
+    `（日志里没有"已解决"的显式信号，故这是代理判据，措辞必须保留"疑似"）` +
+    fingerprintNoteSuffix(opts);
+  return { findings, note: criteria };
+}
 
 /**
  * 运行诊断。

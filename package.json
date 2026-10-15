@@ -1,6 +1,6 @@
 {
   "name": "agent-clinic",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.1",
   "description": "Agent 体检诊所 —— 用可复核证据诊断 Agent 使用体验问题，并开出可执行处方",
   "type": "module",
   "main": "plugin/index.js",
@@ -45,7 +45,11 @@
   "scripts": {
     "scan": "node src/cli.mjs scan",
     "report": "node src/cli.mjs report",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "test:plugin": "node scripts/plugin-dom.test.mjs",
+    "fixtures": "node scripts/fixtures/synth-dsh.mjs --out .tmp/synth-home",
+    "fixtures:verify": "node scripts/fixtures/synth-dsh.mjs --verify",
+    "fingerprints": "node src/cli.mjs fingerprints"
   },
   "files": [
     "plugin",

@@ -47,6 +47,11 @@ export const CAPABILITY_TERMS = {
   'subagent-control': ['subagent'],
   'session-mgmt': ['session archive'],
   observability: ['usage dashboard', 'telemetry'],
+  // 决策 D4：K1/K2（跨会话失忆 / 已解决重新排查）对应的能力标签。
+  // ⚠️ 这两类问题**基本没有插件能解决** —— 它们的解法是把结论写进项目文件，
+  // 所以检索词刻意保持中性（知识沉淀 / 问题清单类工具），不硬凑"记忆插件"。
+  'knowledge-capture': ['notes to markdown', 'docs generator'],
+  'issue-tracking': ['known issues', 'changelog'],
 };
 
 /**

@@ -4,7 +4,7 @@
  *
  * 用法：
  *   agent-clinic scan                    扫描并输出概览
- *   agent-clinic show "<file>#L<n>"      展开证据（复核用）
+ *   agent-clinic show "<file>#L<n>"      展开证据（复核用；--context / --offset / --limit 可控）
  *   agent-clinic report                  输出体检报告（M1 Step 5 待实现）
  *   agent-clinic diagnose                运行诊断（M1 Step 3 待实现）
  *   agent-clinic help
@@ -25,6 +25,15 @@ import { runDiagnostics } from './diagnostics/index.mjs';
 import { buildReport, buildReportLive } from './report.mjs';
 import { readEffectiveConfig } from './config/index.mjs';
 import * as catalogMod from './catalog/index.mjs';
+// 决策 D4：用户文本指纹（K1/K2）—— 生命周期、隐私边界与可清除入口都在这里
+import {
+  beginFingerprintRun,
+  clearStore,
+  loadStore,
+  storeStats,
+  STORE_PATH,
+  MIN_CHARS,
+} from './privacy/fingerprints.mjs';
 
 const argv = process.argv.slice(2);
 /** 取 `--flag value` 形式的参数值 */
@@ -57,8 +66,11 @@ function envCheck() {
 
 function doScan() {
   envCheck();
+  // 决策 D4：单独 scan 也会贡献指纹观测（同样必须在扫描前设好盐）
+  const fp = beginFingerprintRun();
   const root = resolveSessionsRoot({});
   const scan = scanSessions({});
+  const fpOutcome = fp.finish(scan);
   const { global: g, perSession } = summarize(scan);
 
   if (scan.fileCount === 0) {
@@ -107,6 +119,7 @@ function doScan() {
   if (g.badFrames || g.badLines) {
     process.stdout.write(`\n⚠ 数据完整性：坏帧 ${g.badFrames} / 坏行 ${g.badLines}\n`);
   }
+  writeFingerprintOutcome(fpOutcome);
   if (scan.errors.length) {
     const readErrs = scan.errors.filter((e) => e.kind === 'read');
     const parseErrs = scan.errors.filter((e) => e.kind !== 'read');
@@ -126,7 +139,9 @@ function doScan() {
 function doShow() {
   envCheck();
   const locator = argv[1];
-  if (!locator) fail('用法：agent-clinic show "<file>#L<n>" [--context N]');
+  if (!locator) {
+    fail('用法：agent-clinic show "<file>#L<n>" [--context N] [--offset N] [--limit N]');
+  }
   // 待优化报告 §5-1：插件侧按 contextLines 展开，CLI 却固定 2 行 —— 同一工具两种行为。
   // 现在优先用 --context，其次读 profile patch 里本插件那一行的 contextLines，最后才是 2。
   let context = Number(argOf('--context', NaN));
@@ -140,8 +155,24 @@ function doShow() {
       context = 2;
     }
   }
+  // 决策 D8：区间过长时的显式分页。offset = 从窗口起点再跳过多少行；
+  // limit = 本次展开多少行（默认 200）。参数给错要报错，不能静默当成默认值 ——
+  // 否则用户以为自己翻页了，看到的还是第一页。
+  const offsetRaw = argOf('--offset', null);
+  const limitRaw = argOf('--limit', null);
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  const limit = limitRaw === null ? undefined : Number(limitRaw);
+  if (offsetRaw !== null && (!Number.isInteger(offset) || offset < 0)) {
+    fail(`--offset 必须是非负整数，收到 ${JSON.stringify(offsetRaw)}`);
+  }
+  if (limitRaw !== null && (!Number.isInteger(limit) || limit < 1)) {
+    fail(`--limit 必须是正整数，收到 ${JSON.stringify(limitRaw)}`);
+  }
+  if (limit !== undefined && limit > 5000) {
+    fail(`--limit 上限 5000 行（收到 ${limit}）—— 证据是用来复核的，不是用来倾倒整个会话的`);
+  }
   try {
-    process.stdout.write(`${renderEvidence(locator, { context })}\n`);
+    process.stdout.write(`${renderEvidence(locator, { context, offset, limit })}\n`);
   } catch (e) {
     fail(`无法展开证据：${e.message}`);
   }
@@ -149,9 +180,15 @@ function doShow() {
 
 function doDiagnose() {
   envCheck();
+  // 决策 D4：指纹必须在 **scan 之前**开好（适配层在解析时就算指纹，正文不落盘）
+  const fp = beginFingerprintRun();
   const scan = scanSessions({});
   const summary = summarize(scan);
-  const { findings, notDetected, notImplemented } = runDiagnostics({ scan, summary });
+  const { findings, notDetected, notImplemented } = runDiagnostics(
+    { scan, summary },
+    fp.diagnosticOpts(scan),
+  );
+  const fpOutcome = fp.finish(scan);
 
   process.stdout.write('运行诊断…\n\n');
   process.stdout.write(`发现 ${findings.length} 个问题\n`);
@@ -164,10 +201,56 @@ function doDiagnose() {
   if (notImplemented.length) {
     process.stdout.write(`未实现：${notImplemented.map((d) => d.id).join('、')}\n`);
   }
+  writeFingerprintOutcome(fpOutcome);
+}
+
+/**
+ * 指纹快照的**运行结果如实回报**（决策 D4）。
+ * 四件事都要说清：关闭了 / 读不出来 / 本次没采到指纹 / 写入失败。
+ * 任何一件都不许静默 —— 否则用户会以为 K1/K2 的"没报问题"是"查过了，没问题"。
+ */
+function writeFingerprintOutcome(out) {
+  if (!out) return;
+  if (out.skipped && !out.error) {
+    process.stdout.write(`\n指纹：${out.skipped}\n`);
+    return;
+  }
+  if (out.error) {
+    // ⚠️ 分清两种失败（我自己写反过一次）：
+    //   phase='load'（读不出快照/没有盐）→ K1/K2 确实**没判**
+    //   phase='save'（写盘失败，例如沙箱只允许写工作区）→ K1/K2 **已按本次扫描判定**，
+    //                 损失的是"跨会话历史不会累积"
+    if (out.phase === 'save') {
+      process.stdout.write(
+        `\n⚠ 指纹快照写入失败：${out.error.message}` +
+          `\n  （K1/K2 本次仍按本次扫描的会话判定完毕；但这份快照没存下来，` +
+          `下次体检不会带上历史观测 —— 想持久化请让本工具能写 ${out.path}）\n`,
+      );
+      return;
+    }
+    process.stdout.write(
+      `\n⚠ 指纹快照不可用：${out.error.message}` +
+        `\n  （K1 跨会话失忆 / K2 已解决重新排查 本次**未判定** —— 是"没查"，不是"没问题"）\n`,
+    );
+    return;
+  }
+  if (out.saved) {
+    process.stdout.write(
+      `\n指纹：本次新增 ${out.added} 条观测 → ${out.path}` +
+        `（累计 ${out.stats?.hashes ?? 0} 个指纹 / ${out.stats?.observations ?? 0} 条观测；` +
+        `只存加盐哈希，正文不落盘；agent-clinic fingerprints --clear 可删除）\n`,
+    );
+  } else if (out.added === 0 && out.missing > 0) {
+    process.stdout.write(
+      `\n指纹：本次扫描的 ${out.missing} 条用户消息都太短（<${MIN_CHARS} 字符）或未参与采集，没有新增观测。\n`,
+    );
+  }
 }
 
 async function doReport() {
   envCheck();
+  // 决策 D4：扫面之前先开指纹（解析时算哈希），扫完把观测合并进本地快照
+  const fp = beginFingerprintRun();
   const scan = scanSessions({});
   const summary = summarize(scan);
 
@@ -178,9 +261,11 @@ async function doReport() {
       `\n正在联网检索插件（预算 ${budget}ms，只发问题类型、不发会话内容）…\n`,
     );
     const { text, live } = await buildReportLive({ scan, summary }, {
+      ...fp.diagnosticOpts(scan),
       liveOptions: { budgetMs: Number(budget) || 12000 },
     });
     process.stdout.write(text);
+    const fpOutcome = fp.finish(scan);
     if (live) {
       process.stdout.write(
         `\n联网现搜：npm 检索 ${live.stats.npmQueries} 式 → ${live.stats.npmCandidates} 个候选 → 收录 ${live.stats.npmEntries} 条` +
@@ -189,6 +274,7 @@ async function doReport() {
       );
       for (const e of live.errors) process.stdout.write(`  ⚠ ${e}\n`);
     }
+    writeFingerprintOutcome(fpOutcome);
     const reportPath = path.resolve(process.cwd(), 'agent-clinic-report.md');
     try {
       fs.writeFileSync(reportPath, text, 'utf8');
@@ -199,9 +285,11 @@ async function doReport() {
     return;
   }
 
-  const text = buildReport({ scan, summary });
+  const text = buildReport({ scan, summary }, fp.diagnosticOpts(scan));
+  const fpOutcome = fp.finish(scan);
 
   process.stdout.write(text);
+  writeFingerprintOutcome(fpOutcome);
 
   const reportPath = path.resolve(process.cwd(), 'agent-clinic-report.md');
   try {
@@ -212,6 +300,48 @@ async function doReport() {
   }
 }
 
+
+/**
+ * 指纹快照的查看 / 清除（决策 D4 的隐私出口）。
+ *
+ * 这条命令本身**不联网、不读会话**，只读我们自己写的那份快照文件。
+ */
+function doFingerprints() {
+  if (argv.includes('--clear')) {
+    const r = clearStore({ path: STORE_PATH });
+    if (!r.ok) fail(`删除指纹快照失败：${r.error.message}`);
+    process.stdout.write(`已删除指纹快照：${STORE_PATH}\n`);
+    return;
+  }
+  const { store, error, created } = loadStore({ path: STORE_PATH });
+  process.stdout.write(`指纹快照：${STORE_PATH}\n`);
+  if (error) {
+    fail(`读不出来：${error.message}`);
+  }
+  if (created || !store.updatedAt) {
+    process.stdout.write('状态：还没有写过（没跑过 scan / diagnose / report，或每次都没有新观测）\n');
+  }
+  const stats = storeStats(store);
+  process.stdout.write(
+    `内容：${stats.hashes} 个文本指纹 · ${stats.observations} 条观测` +
+      `（每个指纹最多留 20 条）${stats.updatedAt ? ` · 最近更新 ${stats.updatedAt}` : ''}\n`,
+  );
+  process.stdout.write(
+    [
+      '',
+      '里面存的是什么：',
+      `  - 只有 sha256(盐 + 规范化用户文本) 的前 32 位十六进制，**没有正文**`,
+      `  - 盐是本机随机生成的一串十六进制，存在同一个文件里（换机器不可比对）`,
+      `  - 短于 ${MIN_CHARS} 字符的用户文本不生成指纹（"继续""好的"不会进来）`,
+      '能反推出来吗：',
+      '  - 不能反推出原文；但持有这个文件的人可以拿**已知候选句子**逐条试算比对 ——',
+      '    这正是"可清除"存在的理由。',
+      '',
+      '删除：agent-clinic fingerprints --clear',
+      '关闭：环境变量 AGENT_CLINIC_NO_FINGERPRINT_STORE=1（关闭后 K1/K2 会如实说"未采集"）',
+    ].join('\n') + '\n',
+  );
+}
 
 /**
  * 插件目录同步：**唯一会联网的命令**，且只在用户显式执行时运行。
@@ -281,6 +411,9 @@ function doHelp() {
       '用法：',
       '  agent-clinic scan                 扫描 DSH 会话并输出概览',
       '  agent-clinic show "<file>#L<n>"   展开证据（复核用）',
+      '                                    --context N  区间两端各多取几行（默认读配置，回退 2）',
+      '                                    --offset N   翻页：再跳过 N 行（配合截断提示里的命令）',
+      '                                    --limit N    本次展开多少行（默认 200，上限 5000）',
       '  agent-clinic diagnose             只跑诊断',
       '  agent-clinic report               输出体检报告（只读本地目录）',
       '  agent-clinic report --live        发现问题后**联网现搜**插件（npm + GitHub）',
@@ -288,8 +421,13 @@ function doHelp() {
       '  agent-clinic catalog              查看插件目录（人工核实 + npm + GitHub）',
       '  agent-clinic catalog-sync         同步插件目录（npm registry + GitHub）',
       '                                    --source npm|github|both（默认 both）',
+      '  agent-clinic fingerprints         查看本人文本指纹快照（K1/K2 的数据基础）',
+      '                                    --clear  删除该快照',
       '',
       '只读 · 零依赖 · 默认零外发',
+      '会话文件只读；本工具只在自己目录 ~/.agent-clinic/ 下写两份状态：目录快照、文本指纹快照',
+      '指纹快照只存加盐哈希（正文不落盘），可用 fingerprints --clear 删除或',
+      'AGENT_CLINIC_NO_FINGERPRINT_STORE=1 关闭',
       '联网动作只有两个，都需显式指定：catalog-sync（同步目录）、report --live（现搜插件）',
       'report --live 只发送问题类型关键词，不发送任何会话内容（报告里会列出实际发出的检索词）',
     ].join('\n') + '\n',
@@ -316,6 +454,9 @@ switch (cmd) {
     break;
   case 'catalog-sync':
     doCatalogSync();
+    break;
+  case 'fingerprints':
+    doFingerprints();
     break;
   case 'help':
   case '--help':

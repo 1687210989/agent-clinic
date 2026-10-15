@@ -769,7 +769,7 @@ process.stdout.write('\n12) 处方层\n');
   const rx = prescribe(findings_12, { ctx: { config: analysis.config ? { rows: {} } : null } });
   // 第二轮评估：指标 12 → 15 项，7 类问题抢 4 个名额会把最可执行的配置类建议
   // （E3 → spill 预算）挤掉，因此上限提到 6；仍然要有界，不能放任刷屏。
-  check('处方数量 <= 6（仍然有界，不刷屏）', rx.length <= 6, `${rx.length} 条`);
+  check('处方数量 <= 8（仍然有界，不刷屏）', rx.length <= 8, `${rx.length} 条`);
   check(
     '新增的 E3/N3/N4 都有对症处方（否则"发现问题却没方案"会重演）',
     ['E3', 'N3', 'N4'].every((id) => REMEDIES.some((r) => r.targets.includes(id))),
@@ -1622,6 +1622,24 @@ process.stdout.write('\n15) 窄领域「蹭词」过滤\n');
     rxAll.map((r) => `${r.kind}:${r.action?.packageName ?? r.targetId}`).join(' | '),
   );
 
+  // ③b 名额 8（2026-10-15 决策 D3）：7 类问题时全局清单应至少覆盖 **4 类**问题。
+  // 席位算术：`roundCap = ceil(limit/perFinding)`，第一轮铺满 roundCap 个类，
+  // 故 limit=6 时最多覆盖 3 类（7 类问题抢 6 个名额，第 4 类起在全局清单里没有处方 ——
+  // 这是"每类 2 条"的算术结果而非 bug，但覆盖率太低，故按 D3 扩容到 8）。
+  // 注意断言的是 **≥4 类**而不是"恰好前 4 类各 2 条"：同一类问题的第 2 个位次
+  // 可能拿不到**不同的**候选（同 targetId 去重、或该类只有 1 条候选），
+  // 空出的名额会顺延给第 5 类 —— 实测 C1×2 C2×2 C3×2 C6×1 E5×1。
+  // 这条同时钉住"默认名额 = 8"这个数值决策：谁改小，覆盖率立刻红。
+  const byFinding = new Map();
+  for (const rx of rxAll) byFinding.set(rx.findingId, (byFinding.get(rx.findingId) ?? 0) + 1);
+  check(
+    '名额 8：7 类问题时全局处方至少覆盖 4 类（限量决策不得静默回退）',
+    rxAll.length === 8 && byFinding.size >= 4,
+    `共 ${rxAll.length} 条 · 覆盖 ${byFinding.size} 类 · ${[...byFinding.entries()]
+      .map(([id, n]) => `${id}×${n}`)
+      .join(' ')}`,
+  );
+
   // ④ 名额不够时不静默丢弃（plan-2026-10-15 §3.1 / docs/report-format.md 要求 16）：
   // 候选池（按 targetId 去重）多于全局名额时，报告必须报出"因名额未展示"的条数。
   const poolIds = new Set(
@@ -1740,6 +1758,78 @@ process.stdout.write('\n15) 第二轮评估整改护栏\n');
     'F14：专门工具的两步序列仍能报，且镜像合并成一条',
     a3b.length === 1 && /web_search↔web_fetch/.test(a3b[0].summary),
     a3b.map((f) => f.summary).join(' | ') || '(无)',
+  );
+
+  // --- 决策 D5：通用工具清单 = 基础集 + 从会话广度自动学习 ---
+  const mkSeqSession = (id, names) => ({
+    sessionId: id,
+    file: `/tmp/${id}.zstd`,
+    totalLines: 10,
+    events: names.map((n, i) => ({
+      kind: 'tool_call',
+      tool_name: n,
+      locator: `/tmp/${id}.zstd#L${i + 1}`,
+    })),
+  });
+  const seqOf = (a, b, n) => Array.from({ length: n }, () => [a, b]).flat();
+  // alpha 在 3 个会话里都出现 → 应被学成通用工具；beta / omega 只各在 1 个会话出现
+  const learnScan = {
+    sessions: [
+      mkSeqSession('s-learn-1', seqOf('alpha', 'beta', 6)),
+      mkSeqSession('s-learn-2', seqOf('alpha', 'beta', 6)),
+      mkSeqSession('s-learn-3', seqOf('alpha', 'omega', 6)),
+    ],
+  };
+  const learned = diagMod.learnedGenericTools({ scan: learnScan });
+  check(
+    'D5：广度判据把"跨 3 个会话都出现"的工具学成通用工具',
+    learned.has('alpha') && !learned.has('beta') && !learned.has('omega'),
+    `学到：${[...learned].sort().join('、') || '(无)'}`,
+  );
+  const learnRun = diagMod.runDiagnostics({ scan: learnScan, summary: { global: {} } });
+  const learnedFindings = learnRun.findings.filter((f) => f.id === 'A3');
+  check(
+    'D5：含自动学到的通用工具的序列被排除（alpha↔beta 不再报）',
+    learnedFindings.length === 0,
+    learnedFindings.map((f) => f.summary).join(' | ') || '(无)',
+  );
+  const noteA3 = learnRun.notDetected.find((x) => x.id === 'A3')?.note ?? '';
+  check(
+    'D5：A3 未命中时把学到的通用工具如实报出（可复核，不是黑箱）',
+    /自动学习 [1-9]/.test(noteA3) && noteA3.includes('alpha'),
+    noteA3 || '(无说明)',
+  );
+  const noLearn = diagMod
+    .runDiagnostics({ scan: learnScan, summary: { global: {} } }, { a3LearnGeneric: false })
+    .findings.filter((f) => f.id === 'A3');
+  check(
+    'D5：关掉学习后同一条序列会报（证明确实是"学习"在排除，而非别的判据顺手排掉）',
+    noLearn.length >= 1 && /alpha↔beta|beta↔alpha/.test(noLearn.map((f) => f.summary).join(' ')),
+    noLearn.map((f) => f.summary).join(' | ') || '(无)',
+  );
+  // 基础集是保底：关掉学习后 read 仍必须算通用工具（不许"学没了"）
+  const baseScan = {
+    sessions: [
+      mkSeqSession('s-base-1', seqOf('read', 'pdf_extract', 6)),
+      mkSeqSession('s-base-2', seqOf('read', 'pdf_extract', 6)),
+      mkSeqSession('s-base-3', seqOf('read', 'pdf_extract', 6)),
+    ],
+  };
+  const baseFindings = diagMod
+    .runDiagnostics({ scan: baseScan, summary: { global: {} } }, { a3LearnGeneric: false })
+    .findings.filter((f) => f.id === 'A3');
+  check(
+    'D5：基础集硬编码保底 —— 关掉学习后 read↔pdf_extract 仍不报（read 属通用工具）',
+    baseFindings.length === 0,
+    baseFindings.map((f) => f.summary).join(' | ') || '(无)',
+  );
+  const extraFindings = diagMod
+    .runDiagnostics({ scan: learnScan, summary: { global: {} } }, { a3GenericTools: ['beta'] })
+    .findings.filter((f) => f.id === 'A3');
+  check(
+    'D5：opts.a3GenericTools 可手工追加排除（用户自知的通用工具不必等学习）',
+    extraFindings.length === 0,
+    extraFindings.map((f) => f.summary).join(' | ') || '(无)',
   );
 
   // F1：E3/N3/N4 三个"原本说不可实现"的指标必须真的能出结论
@@ -2135,6 +2225,73 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
       /目标区间 #L100-L110/.test(text) && /\n> *110 \|/.test(text) && /\n> *100 \|/.test(text),
       text.split('\n').slice(0, 3).join(' / '),
     );
+
+    // --- 决策 D7：定位符解析合并为一份 ---
+    // 旧状态：base.parseLocator 只认单行（`#L100-L110` 被静默当成 100），
+    // evidence.parseRange 才对区间；调用方选错不报错、只是悄悄少看一段。
+    const { parseLocator } = await import('../src/adapters/base.mjs');
+    const baseRange = parseLocator(loc);
+    check(
+      'D7：base.parseLocator 能解析区间（旧版静默忽略区间终点）',
+      Boolean(baseRange) && baseRange.start === 100 && baseRange.end === 110 && baseRange.line === 100,
+      JSON.stringify(baseRange),
+    );
+    check(
+      'D7：evidence.parseRange 与 base.parseLocator 行为一致（同一份实现，只是转发）',
+      JSON.stringify(parseRange(loc)) === JSON.stringify(parseLocator(loc)) &&
+        JSON.stringify(parseRange('/tmp/a.zstd#L7')) === JSON.stringify(parseLocator('/tmp/a.zstd#L7')),
+      `parseRange=${JSON.stringify(parseRange(loc))} · base=${JSON.stringify(parseLocator(loc))}`,
+    );
+    const evSrc = fs.readFileSync(new URL('../src/evidence/index.mjs', import.meta.url), 'utf8');
+    const baseSrc = fs.readFileSync(new URL('../src/adapters/base.mjs', import.meta.url), 'utf8');
+    check(
+      'D7：evidence 层不再自带定位符解析 regex（唯一实现在 adapters/base.mjs）',
+      !/#L\(/.test(evSrc) && /#L\(\\d\+\)\(\?:-L\(\\d\+\)\)\?/.test(baseSrc),
+      /#L\(/.test(evSrc) ? 'evidence 里仍残留第二份 regex' : 'evidence 已无自带 regex',
+    );
+
+    // --- 决策 D8：区间过长时可显式分页，且截断提示给出**可复制**的下一条命令 ---
+    const { readRange } = await import('../src/evidence/index.mjs');
+    const lastLine = firstSession.totalLines;
+    const longLoc = `${firstSession.file}#L2-L${lastLine}`;
+    const p1 = readRange(firstSession.file, 2, 0, lastLine, { limit: 20 });
+    check(
+      'D8：--limit 生效（本次只展开 N 行，并如实报出还剩多少行）',
+      p1.lines.length === 20 && p1.truncated === true && p1.remaining > 0 && p1.to === p1.from + 19,
+      `lines=${p1.lines.length} from=${p1.from} to=${p1.to} remaining=${p1.remaining}`,
+    );
+    const p2 = readRange(firstSession.file, 2, 0, lastLine, { limit: 20, offset: p1.to - p1.from + 1 });
+    check(
+      'D8：--offset 真的翻到下一页（页首行号接着上一页，不重叠）',
+      p2.from === p1.to + 1 && p2.lines[0]?.no === p1.to + 1,
+      `第 1 页 ${p1.from}-${p1.to} · 第 2 页 ${p2.from}-${p2.to}`,
+    );
+    const pAll = readRange(firstSession.file, 2, 0, lastLine, { limit: 5000 });
+    check(
+      'D8：--limit 放大后不截断（上限是护栏，不是天花板）',
+      pAll.truncated === false && pAll.remaining === 0 && pAll.lines.length === lastLine - 1,
+      `lines=${pAll.lines.length} 期望 ${lastLine - 1} · truncated=${pAll.truncated}`,
+    );
+    const hint = renderEvidence(longLoc, { context: 0, limit: 20 });
+    check(
+      'D8：截断提示给出"还剩 N 行"与可直接复制的下一页命令（旧版只说"请用 offset/limit"，没说填什么）',
+      /还剩 \d+ 行未展开/.test(hint) && /--offset \d+ --limit 20/.test(hint),
+      hint.split('\n').slice(0, 4).join(' / '),
+    );
+    const hintOffset = Number(/--offset (\d+)/.exec(hint)?.[1] ?? NaN);
+    const hintPage2 = renderEvidence(longLoc, { context: 0, limit: 20, offset: hintOffset });
+    check(
+      'D8：照抄提示里的 --offset 能真的看到下一段（提示不是装饰）',
+      /已跳过前 \d+ 行，本页 #L/.test(hintPage2) && hintPage2.includes(`本页 #L${p2.from}-L${p2.to}`),
+      hintPage2.split('\n').slice(0, 2).join(' / '),
+    );
+    const cliSrc = fs.readFileSync(new URL('../src/cli.mjs', import.meta.url), 'utf8');
+    check(
+      'D8：CLI 的 --offset/--limit 有校验（给错要报错，不得静默退回默认值）',
+      /--offset 必须是非负整数/.test(cliSrc) &&
+        /--limit 必须是正整数/.test(cliSrc) &&
+        /--limit 上限 5000/.test(cliSrc),
+    );
   }
 
   // 工程基建：joinPath 跨平台、死代码已删、HTTP 工具已合并、CI 存在
@@ -2344,11 +2501,20 @@ process.stdout.write('\n17) 插件层功能测试（apply → 工具 → 路由�
   }
 
   // 护栏：runAnalyze 必须把 opts 传给 analyze（防止再次断链）
+  // 2026-10-15（决策 D4）：这里从"精确字面量"放宽为"传了 analyzeOptsFromConfig(config)
+  // **并且**没有把它丢掉"—— 因为指纹同样要传进去，写法变成 { ...analyzeOptsFromConfig(config), ...fp.diagnosticOpts(scan) }。
+  // 放宽的同时补强：断言 opts 里确实展开进了 analyze/buildReport，而不是只在旁边算了一下。
   const pluginSrc = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
+  const passesOpts = (call) => {
+    const re = new RegExp(
+      `${call}\\([\\s\\S]{0,80}?\\{[\\s\\S]{0,120}?\\}\\s*,\\s*\\{[\\s\\S]{0,300}?analyzeOptsFromConfig\\(config\\)`,
+    );
+    return re.test(pluginSrc);
+  };
   check(
-    '护栏：runAnalyze / runReport 把 opts 传给 analyze / buildReport',
-    /analyze\(\{\s*scan,\s*summary\s*\},\s*analyzeOptsFromConfig\(config\)\)/.test(pluginSrc) &&
-      /buildReport\(\{\s*scan,\s*summary\s*\},\s*analyzeOptsFromConfig\(config\)\)/.test(pluginSrc),
+    '护栏：runAnalyze / runReport 把 opts（含旋钮与指纹）传给 analyze / buildReport',
+    passesOpts('analyze') && passesOpts('buildReport'),
+    `analyze=${passesOpts('analyze')} buildReport=${passesOpts('buildReport')}`,
   );
   check(
     '护栏：/live 路由也带旋钮（同一面板不能两种口径）',
@@ -2495,6 +2661,262 @@ process.stdout.write('\n18) 第三方评估整改护栏\n');
 // 上一轮报告数出 239 项、实跑只有 233 项：有断言写在条件分支里，
 // 环境不满足时它一句话不说就不执行了 —— 那等于没有这条护栏。
 // 这里把"源码里写了的断言名"与"实际执行过的断言名"对齐。
+// --- 20. 决策项护栏（2026-10-15 的 D3–D11）---
+//
+// 这一节守住用户拍板后新加的**决策**：把决策写进代码容易，难的是有人改回去时会被拦住。
+// 每条断言都直接对应一个决策编号，失败信息里带上"这是哪个决策"。
+process.stdout.write('\n20) 决策项护栏（D4：K1/K2 指纹）\n');
+{
+  const fpMod = await import('../src/privacy/fingerprints.mjs');
+  const { scanSessions: scanFn } = await import('../src/adapters/dsh.mjs');
+  const { writeCorpus } = await import('./fixtures/synth-dsh.mjs');
+  const fpTmpDir = fileURLToPath(new URL('../.tmp/fp-guard/', import.meta.url));
+  fs.rmSync(fpTmpDir, { recursive: true, force: true });
+  fs.mkdirSync(fpTmpDir, { recursive: true });
+  const storeFile = path.join(fpTmpDir, 'text-fingerprints.json');
+  // 用**自己生成的**合成语料来测适配层与 K1/K2，不依赖跑测机器上有什么数据
+  // （第三方评估 §4.2 的教训：断言冲着本机形态写，换台机器就假红/假绿）
+  const fpCorpusDir = path.join(fpTmpDir, 'synth-home');
+  const fpCorpus = writeCorpus(fpCorpusDir);
+  const DS = { dshHome: fpCorpusDir };
+
+  // ① 指纹本身的性质：短文本不采集、规范化后同文本同指纹、换盐换指纹
+  const saltA = 'a'.repeat(32);
+  const saltB = 'b'.repeat(32);
+  check(
+    'D4：短文本不生成指纹（"继续/好的"这类噪音进不来）',
+    fpMod.fingerprintOf(saltA, '继续') === null &&
+      fpMod.fingerprintOf(saltA, 'x'.repeat(fpMod.MIN_CHARS - 1)) === null &&
+      Boolean(fpMod.fingerprintOf(saltA, 'x'.repeat(fpMod.MIN_CHARS))),
+  );
+  const longA = '  同一个问题：为什么 token   消耗这么快？  ';
+  const longB = '同一个问题：为什么 TOKEN 消耗这么快？';
+  check(
+    'D4：规范化（空白/大小写/零宽字符）后同一文本得到同一指纹',
+    fpMod.fingerprintOf(saltA, longA)?.hash === fpMod.fingerprintOf(saltA, longB)?.hash,
+    `${fpMod.fingerprintOf(saltA, longA)?.hash} vs ${fpMod.fingerprintOf(saltA, longB)?.hash}`,
+  );
+  check(
+    'D4：换盐 → 换指纹（跨机器无法比对同一段文本）',
+    fpMod.fingerprintOf(saltA, longA)?.hash !== fpMod.fingerprintOf(saltB, longA)?.hash,
+  );
+  check(
+    'D4：指纹是 32 位十六进制，且**不含正文**',
+    /^[0-9a-f]{32}$/.test(fpMod.fingerprintOf(saltA, longA)?.hash ?? '') &&
+      !fpMod.fingerprintOf(saltA, longA)?.hash.includes('token'),
+  );
+
+  // ② 适配层：正文不进事件（只留指纹）；没设盐时不假装有指纹
+  fpMod.setActiveSalt(null);
+  const noSalt = scanFn(DS);
+  const noSaltUser = noSalt.sessions.flatMap((s) => s.events).filter((e) => e.kind === 'user_msg');
+  check(
+    'D4：未设置盐时不生成指纹（记 null，而不是假装采集了）',
+    noSaltUser.length > 0 && noSaltUser.every((e) => e.text_hash === null),
+    `用户消息 ${noSaltUser.length} 条，带指纹 ${noSaltUser.filter((e) => e.text_hash).length} 条`,
+  );
+
+  const fp = fpMod.beginFingerprintRun({ path: storeFile });
+  check('D4：指纹快照开关可用（未关闭时 enabled=true）', fp.enabled === true, String(fp.enabled));
+  const fpScan = scanFn(DS);
+  const fpUsers = fpScan.sessions.flatMap((s) => s.events).filter((e) => e.kind === 'user_msg');
+  const withHash = fpUsers.filter((e) => /^[0-9a-f]{32}$/.test(String(e.text_hash)));
+  check(
+    'D4：适配层在**解析时**就算好指纹并只把指纹放进事件（正文不进事件）',
+    withHash.length > 0 &&
+      fpUsers.every((e) => !('text' in e)) &&
+      withHash.every((e) => typeof e.text_hash === 'string' && e.text_hash.length === 32),
+    `带指纹 ${withHash.length}/${fpUsers.length} 条 · 事件里出现正文字段 ${fpUsers.filter((e) => 'text' in e).length} 次`,
+  );
+  const diagOpts = fp.diagnosticOpts(fpScan);
+  check(
+    'D4：诊断选项带上"本次有多少条用户消息没进指纹"（用于如实说明，不静默）',
+    Array.isArray(diagOpts.fingerprintObservations) && Number.isInteger(diagOpts.fingerprintMissing),
+    `观测 ${diagOpts.fingerprintObservations.length} 条 · 未采集 ${diagOpts.fingerprintMissing} 条`,
+  );
+
+  // ③ K1/K2 在合成语料上必须真的命中（与 fixtures 的 --verify 同一份数据）
+  const { runDiagnostics: runD } = await import('../src/diagnostics/index.mjs');
+  const diagFp = runD({ scan: fpScan, summary: { global: {} } }, diagOpts);
+  const k1 = diagFp.findings.filter((f) => f.id === 'K1');
+  const k2 = diagFp.findings.filter((f) => f.id === 'K2');
+  check(
+    'D4：K1 跨会话失忆能命中（合成语料里同一段用户文本出现在 ≥3 个会话）',
+    k1.length >= 1,
+    k1.length ? k1[0].summary : (diagFp.notDetected.find((d) => d.id === 'K1')?.note ?? '(未检出)'),
+  );
+  check(
+    'D4：K2 已解决重新排查能命中，且措辞保留"疑似"（软信号约定）',
+    k2.length >= 1 && k2.every((f) => /疑似/.test(f.summary) && f.severity === '低'),
+    k2.length ? `${k2.length} 条 · ${k2[0].summary}` : (diagFp.notDetected.find((d) => d.id === 'K2')?.note ?? '(未检出)'),
+  );
+  check(
+    'D4：K1/K2 已从"尚未实现"移出，且都进了已实现指标表',
+    !diagFp.unimplementable.some((x) => x.id === 'K1' || x.id === 'K2') &&
+      !diagFp.notImplemented.some((x) => x.id === 'K1' || x.id === 'K2'),
+  );
+
+  // ④ 快照落盘：只写哈希，绝不写正文；合并去重；可清除
+  const outcome = fp.finish(fpScan);
+  check(
+    'D4：本次观测被写入快照（新增条数 > 0）',
+    outcome.saved === true && outcome.added > 0,
+    `saved=${outcome.saved} added=${outcome.added} err=${outcome.error?.message ?? '无'}`,
+  );
+  const stored = fs.readFileSync(storeFile, 'utf8');
+  const parsed = JSON.parse(stored);
+  check(
+    'D4：快照里只有盐 + 哈希（**没有用户正文** —— 这是整个决策的隐私底线）',
+    /^[0-9a-f]{32}$/.test(parsed.salt ?? '') &&
+      !stored.includes('为什么构建又失败了') &&
+      !stored.includes('同一个问题') &&
+      /^[0-9a-f]{32}$/.test(Object.keys(parsed.observations)[0] ?? ''),
+    `字段=${Object.keys(parsed).join(',')} · 指纹 ${Object.keys(parsed.observations).length} 个`,
+  );
+  const before = fpMod.storeStats(fpMod.loadStore({ path: storeFile }).store).observations;
+  const fp2 = fpMod.beginFingerprintRun({ path: storeFile });
+  fp2.finish(fpScan);
+  const after = fpMod.storeStats(fpMod.loadStore({ path: storeFile }).store).observations;
+  check(
+    'D4：重复跑同一批会话不会重复堆观测（去重）',
+    after === before,
+    `首次 ${before} 条 · 二次 ${after} 条`,
+  );
+  const cleared = fpMod.clearStore({ path: storeFile });
+  check(
+    'D4：可清除（fingerprints --clear 的底层动作真的删掉文件）',
+    cleared.ok && !fs.existsSync(storeFile),
+  );
+
+  // ⑤ 关闭开关必须真的关闭，且**如实说明**"未采集"而不是"没问题"
+  const savedEnv = process.env.AGENT_CLINIC_NO_FINGERPRINT_STORE;
+  process.env.AGENT_CLINIC_NO_FINGERPRINT_STORE = '1';
+  const fpOff = fpMod.beginFingerprintRun({ path: storeFile });
+  const offScan = scanFn(DS);
+  const offDiag = runD({ scan: offScan, summary: { global: {} } }, fpOff.diagnosticOpts(offScan));
+  check(
+    'D4：AGENT_CLINIC_NO_FINGERPRINT_STORE=1 时完全不采集，且 K1/K2 说"未采集"而不是"没问题"',
+    fpOff.enabled === false &&
+      offScan.sessions.flatMap((s) => s.events).every((e) => !e.text_hash) &&
+      offDiag.findings.every((f) => f.id !== 'K1' && f.id !== 'K2') &&
+      /未采集指纹/.test(offDiag.notDetected.find((d) => d.id === 'K1')?.note ?? ''),
+    fpOff.skipped ?? '(没有说明)',
+  );
+  if (savedEnv === undefined) delete process.env.AGENT_CLINIC_NO_FINGERPRINT_STORE;
+  else process.env.AGENT_CLINIC_NO_FINGERPRINT_STORE = savedEnv;
+  fpMod.setActiveSalt(null);
+
+  // ⑥ 快照读坏了必须报错（不静默降级成"没问题"）
+  fs.writeFileSync(storeFile, '{ 这不是 JSON', 'utf8');
+  const broken = fpMod.beginFingerprintRun({ path: storeFile });
+  check(
+    'D4：快照损坏时如实报错并说明 K1/K2 未判定（不假装没问题）',
+    broken.enabled === false && Boolean(broken.error) && /未判定/.test(broken.note ?? ''),
+    broken.note ?? '(无说明)',
+  );
+  // ⑦ 写盘失败 ≠ 没判定（我第一版把两者混为一谈，报告会说假话）
+  //    构造一个必然写不进去的路径：把 store 指到"一个普通文件"底下。
+  //    注意用**独立**的临时目录 —— fpTmpDir 里放着本次测试的合成语料，不能删。
+  const saveTmp = fileURLToPath(new URL('../.tmp/fp-guard-save/', import.meta.url));
+  fs.rmSync(saveTmp, { recursive: true, force: true });
+  fs.mkdirSync(saveTmp, { recursive: true });
+  const blocker = path.join(saveTmp, 'blocker.txt');
+  fs.writeFileSync(blocker, 'not a directory', 'utf8');
+  const fpSave = fpMod.beginFingerprintRun({ path: path.join(blocker, 'sub', 'store.json') });
+  const saveScan = scanFn(DS);
+  const saveDiag = runD({ scan: saveScan, summary: { global: {} } }, fpSave.diagnosticOpts(saveScan));
+  const saveOutcome = fpSave.finish(saveScan);
+  check(
+    'D4：写盘失败时如实区分「已判定但没存下」与「没判定」（不是一句"未判定"糊过去）',
+    saveOutcome.saved === false &&
+      saveOutcome.phase === 'save' &&
+      saveOutcome.judged === true &&
+      Boolean(saveOutcome.error) &&
+      saveDiag.findings.some((f) => f.id === 'K1'),
+    `saved=${saveOutcome.saved} phase=${saveOutcome.phase} judged=${saveOutcome.judged} ` +
+      `err=${saveOutcome.error?.message?.slice(0, 40) ?? '无'} · K1 仍判定=${saveDiag.findings.some((f) => f.id === 'K1')}`,
+  );
+  fpMod.setActiveSalt(null);
+  fs.rmSync(fpTmpDir, { recursive: true, force: true });
+  fs.rmSync(saveTmp, { recursive: true, force: true });
+}
+
+// --- 21. 决策 D10 / D11：文档数字有来源、示例不腐烂 ---
+//
+// D10 的教训（与第三方评估 §3.2 同类）：README 里写死的"本机实测 638,171 token"这类数字
+// 没有任何守护，代码一改它就会安静地变成谎言。现在这些数字只有一个来源：docs/measured.json。
+// D11：合成语料只覆盖"命中"，覆盖不了"不命中分支"—— 那些分支由构造输入断言守着，
+// 这里核对"守在哪"的清单确实写在文档里，避免出现"以为覆盖了其实没有"。
+process.stdout.write('\n21) 文档数字来源与示例新鲜度（D10 / D11）\n');
+{
+  const measured = JSON.parse(
+    fs.readFileSync(new URL('../docs/measured.json', import.meta.url), 'utf8'),
+  );
+  const readmeSrc2 = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const diagDocSrc = fs.readFileSync(new URL('../docs/diagnostics.md', import.meta.url), 'utf8');
+  const docOf = { 'README.md': readmeSrc2, 'docs/diagnostics.md': diagDocSrc };
+
+  check(
+    'D10：docs/measured.json 每条事实都有 key / 数值 / 出处 / 引用位置',
+    Array.isArray(measured.facts) &&
+      measured.facts.length > 0 &&
+      measured.facts.every(
+        (f) => f.key && Number.isFinite(f.value) && f.formatted && f.meaning && Array.isArray(f.citedIn),
+      ),
+    `${measured.facts?.length ?? 0} 条事实 · 标注于 ${measured.measuredAt}`,
+  );
+
+  const missing = [];
+  for (const f of measured.facts) {
+    for (const doc of f.citedIn ?? []) {
+      const src = docOf[doc];
+      if (!src) missing.push(`${doc} 文件不存在`);
+      else if (!src.includes(f.formatted)) missing.push(`${doc} 缺少 ${f.formatted}`);
+    }
+  }
+  check(
+    'D10：README / docs 引用的实测数字与 measured.json 一致（数字只有一个来源）',
+    missing.length === 0,
+    missing.length ? missing.join('；') : `核对 ${measured.facts.length} 条事实全部一致`,
+  );
+
+  // 实测数字是"某天在某台机器上量的"，不是无期限的真理
+  check(
+    'D10：实测数字带日期与本机标注（不会被当成普适常量）',
+    /^\d{4}-\d{2}-\d{2}$/.test(measured.measuredAt ?? '') &&
+      /本机/.test(measured.host ?? '') &&
+      /本机实测/.test(diagDocSrc),
+    `measuredAt=${measured.measuredAt} · host=${measured.host}`,
+  );
+
+  // D10（示例新鲜度）：README 的输出示例必须体现**当前**口径。
+  // 旧示例停在 C1 的旧口径（"同类会话基线"）与 N3 的两段式（"被拒比例"）——
+  // 改完代码没人会想起示例，这里把它绑在口径关键词上。
+  const sampleBlock = (() => {
+    const m = /^````bash\n([\s\S]*?)^````$/m.exec(readmeSrc2);
+    return m ? m[1] : '';
+  })();
+  check(
+    'D10：README 输出示例体现当前口径（C1 排除本会话 / N3 三分类 / 名额说明）',
+    sampleBlock.length > 0 &&
+      /排除本会话/.test(sampleBlock) &&
+      /被拒 \d+ 次/.test(sampleBlock) &&
+      /结果无法识别/.test(sampleBlock) &&
+      /名额说明/.test(sampleBlock),
+    sampleBlock
+      ? `示例 ${sampleBlock.split('\n').length} 行 · 排除本会话=${/排除本会话/.test(sampleBlock)} · ` +
+        `三分类=${/结果无法识别/.test(sampleBlock)} · 名额说明=${/名额说明/.test(sampleBlock)}`
+      : '(没找到 ````bash 示例块)',
+  );
+
+  // D11：语料覆盖不了的边界分支必须写明"守在哪"
+  check(
+    'D11：docs/diagnostics.md 列出"边界分支"清单（语料覆盖不到的分支守在哪）',
+    /边界分支/.test(diagDocSrc) && /smoke/.test(diagDocSrc.split('边界分支')[1] ?? ''),
+    /边界分支/.test(diagDocSrc) ? '已有一节' : '缺少"边界分支"清单',
+  );
+}
+
 process.stdout.write('\n19) 自检自身完整性\n');
 {
   const selfSrc = fs.readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8');

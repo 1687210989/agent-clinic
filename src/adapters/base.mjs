@@ -44,14 +44,29 @@ export function makeLocator(file, line) {
   return `${file}#L${line}`;
 }
 
-/** 解析定位符 → { file, line }；格式非法时返回 null */
+/**
+ * 解析证据定位符 → `{ file, line, start, end }`
+ *
+ * 支持两种形式（2026-10-15 决策 D7）：
+ *   - `<file>#L<line>`           单行
+ *   - `<file>#L<start>-L<end>`   区间
+ *
+ * 此前是**两份实现**：这里的 `parseLocator` 只认单行（`#L100-L110` 会被静默当成
+ * 行号 100），`src/evidence/index.mjs` 另有一份 `parseRange` 才认区间 ——
+ * 调用方得自己选对那一份，选错不报错、只是悄悄少看一段。现在合并成这一份：
+ * regex 取**最后一个** `#L`（等价于旧的 lastIndexOf 语义，路径里含 `#` 也不受影响），
+ * 并保留 `line` 作为 `start` 的别名，兼容只关心单点的旧调用方。
+ *
+ * @returns {{file:string, line:number, start:number, end:number}|null} 格式非法时返回 null
+ */
 export function parseLocator(locator) {
-  const i = String(locator).lastIndexOf('#L');
-  if (i < 0) return null;
-  const file = String(locator).slice(0, i);
-  const line = Number(String(locator).slice(i + 2));
-  if (!file || !Number.isInteger(line) || line < 1) return null;
-  return { file, line };
+  const m = /^(.*)#L(\d+)(?:-L(\d+))?$/.exec(String(locator));
+  if (!m) return null;
+  const file = m[1];
+  const start = Number(m[2]);
+  if (!file || !Number.isInteger(start) || start < 1) return null;
+  const end = m[3] ? Number(m[3]) : start;
+  return { file, line: start, start, end: Math.max(start, end) };
 }
 
 /**

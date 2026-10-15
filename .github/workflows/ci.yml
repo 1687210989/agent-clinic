@@ -85,11 +85,14 @@ jobs:
           {"os":"windows-latest","node":"24"}]}'
           # 轻量（push）：macOS 只跑 node 24 —— macOS 额度是 Linux 的 10 倍，
           # 且实测会出现"排队 15 分钟拿不到 runner 被取消"。
+          # `tolerant:true`：**push 时 macOS 失败不算整次运行失败**（见 smoke job 的 continue-on-error）——
+          # 因为"GitHub 没给 macOS 机器"不是我们代码的信号，让它把 CI 变红会掩盖真实失败。
+          # 发行 tag / 手动触发走全量矩阵，那里的 macOS 是**严格**的。
           light='{"include":[
           {"os":"ubuntu-24.04","node":"22.15.0"},
           {"os":"ubuntu-24.04","node":"24"},
           {"os":"ubuntu-26.04","node":"24"},
-          {"os":"macos-latest","node":"24"},
+          {"os":"macos-latest","node":"24","tolerant":true},
           {"os":"windows-latest","node":"22.15.0"},
           {"os":"windows-latest","node":"24"}]}'
           if [ "${GITHUB_REF#refs/tags/}" != "${GITHUB_REF}" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -112,11 +115,14 @@ jobs:
           echo "本次矩阵档位：${{ github.ref }} / ${{ github.event_name }}"
 
   smoke:
-    name: smoke (${{ matrix.os }} · node ${{ matrix.node }})
+    name: smoke (${{ matrix.os }} · node ${{ matrix.node }}${{ matrix.tolerant && ' · 容忍失败' || '' }})
     needs: plan
     runs-on: ${{ matrix.os }}
     # 拿不到 runner 时快速失败并写明原因，而不是静默排队 15 分钟被取消
     timeout-minutes: 20
+    # push 的轻量矩阵里 macOS 标了 tolerant：GitHub 没给 macOS 机器（排队 15 分钟被取消）
+    # 不算我们的失败，但结果仍然看得见（job 会显示 warn，而不是把整次运行判红）。
+    continue-on-error: ${{ matrix.tolerant == true }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}

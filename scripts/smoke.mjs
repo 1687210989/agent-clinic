@@ -2373,6 +2373,15 @@ process.stdout.write('\n16) 第三轮（待优化报告）整改护栏\n');
     /^\s{4}tags:\s*\[/m.test(ciEffective) && /['"]v\*['"]/.test(ciEffective),
     /^\s{4}tags:\s*\[/m.test(ciEffective) ? '已显式列 tags' : '缺 tags 条目',
   );
+  // GitHub 的 macOS 容量问题（排队 15 分钟被取消）不该把 push 的 CI 判红 ——
+  // 但也不能假装 macOS 永远没问题：push 容忍、tag/手动触发严格。两条一起钉。
+  check(
+    '基建：push 时 macOS 容忍失败（GitHub 容量问题 ≠ 代码问题），但 tag/全量矩阵里仍然严格',
+    /"tolerant":true/.test(ciEffective) &&
+      /continue-on-error:\s*\$\{\{\s*matrix\.tolerant\s*==\s*true\s*\}\}/.test(ciEffective) &&
+      (/macos-latest","node":"22\.15\.0"\}/.test(ciEffective) || !/"tolerant":true[^}]*\}\},\s*$/m.test(ciEffective)),
+    '轻量矩阵 macOS 带 tolerant:true，全量矩阵不带',
+  );
   const actionMajors = [...ciEffective.matchAll(/uses:\s*actions\/(checkout|setup-node)@v(\d+)/g)].map(
     (m) => ({ name: m[1], major: Number(m[2]) }),
   );

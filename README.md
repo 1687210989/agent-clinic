@@ -470,7 +470,7 @@ L5 输出层   体检报告 + 证据清单 + 处方卡片 + 省 token 开关清�
 | 定位符解析有两份 | ✅ 第五轮 D7 合并为一份：`src/evidence/index.mjs` 的 `parseRange` 只是 `src/adapters/base.mjs` `parseLocator` 的转发，后者已支持 `#L<a>-L<b>` |
 | `show` 区间展开有 200 行硬上限 | ✅ 第五轮 D8 改为显式分页 `--offset/--limit`（上限 5000），截断提示直接给**可复制**的下一条命令 |
 | A3 通用工具清单硬编码 | ✅ 第五轮 D5 改为"基础集（硬编码保底）+ 会话广度自动学习"，判据写进报告，`opts` 可覆盖 |
-| `plugin/client.js` 面板与角标缺浏览器端测试 | ✅ 第五轮 D9 新增 `scripts/plugin-dom.test.mjs`（零依赖 DOM 桩，76 条） |
+| `plugin/client.js` 面板与角标缺浏览器端测试 | ✅ 第五轮 D9 新增 `scripts/plugin-dom.test.mjs`（零依赖 DOM 桩；**条数以"使用"节那句为准，由测试自己核对**) |
 | 面板错误态点「联网现搜」无可见反馈 | ✅ 第六轮修掉（`liveErr` 未在错误分支渲染）；同轮修掉会让界面卡死的通知自激 |
 | 发布脚本把 HTTP 202 当失败 | ✅ 首次真实发布时修掉：`classifyPublishResponse()` + 2 条断言（202 = registry 已接受／分阶段发布） |
 | CI 连续全红 / 徽章无守护 | ✅ 第四轮修掉根因，徽章核对内建进 smoke（不一致即退出码 1） |

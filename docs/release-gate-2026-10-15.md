@@ -161,9 +161,10 @@ registry 在响应头里发了提醒 —— npm 正在限制这类 token 用于�
 建议：**用完即轮换/吊销**（尤其它曾出现在聊天记录里），后续发布优先用
 `npm stage publish` + 网页批准，或改用带 2FA 的发布流程。
 
-实测到的 token 事实（`npm token list`）：名称 `dsh-clinic`，id **`a209b6`**，
-权限 `package:write`，`bypass_2fa: true`，**有效期至 2026-10-22**（7 天），此刻尚未吊销。
-吊销一条命令：`npm token revoke a209b6`。
+实测到的 token 事实（`npm token list`）：名称 `dsh-clinic`，权限 `package:write`，
+属于"可绕过 2FA 的 granular token"，**有效期至 2026-10-22**。
+（token 的 id 与 2FA 属性属于账号细节，不在公开文档里展开。）
+吊销方式：`npm token revoke <该 token 的 id>`（需要浏览器会话，见下）。
 
 ### 6.2 发行后按优先级修复的三个问题（2026-10-15，提交 `2c526c9`）
 
@@ -190,7 +191,7 @@ CLI 子命令 `rx`（`reject / interested / remove / clear`）。拒绝的处方
 读坏/写不进去都如实报错。第三个本地状态文件 `~/.agent-clinic/rx-feedback.json`
 （只存处方 ID + 状态 + 用户自己写的理由）。自检 **322 → 332 条**。
 
-**npm token 吊销的实测结论（如实记录）**：按用户决定执行 `npm token revoke a209b6` →
+**npm token 吊销的实测结论（如实记录）**：按用户决定执行 `npm token revoke <该 token 的 id>` →
 **HTTP 403 Forbidden**。原因是该 token 属于"可绕过 2FA 的 granular token"，
 npm 正限制这类 token 做**账号级操作**（即 registry 响应头那条公告）。
 → 它**无法自我吊销**：需要在 npm 网站（浏览器会话）删除，或等 **2026-10-22** 自然过期。

@@ -80,7 +80,7 @@ A1 长期排期的原因是**缺数据源**：判定需要 ①配置了哪些 MC
   - 面板路径同样应用反馈（否则 CLI 撤掉的处方会在面板里复活）；
   - 新增第三个本地状态文件 `~/.agent-clinic/rx-feedback.json`（只存处方 ID + 状态 + 用户自己写的理由）。
   - 自检新增第 23 段（10 条断言），总数 322 → 332。
-- **npm token 吊销的实测结论（如实记录）**：按用户决定执行 `npm token revoke a209b6`，
+- **npm token 吊销的实测结论（如实记录）**：按用户决定执行 `npm token revoke <该 token 的 id>`，
   npm 返回 **403 Forbidden** —— 因为该 token 是"可绕过 2FA 的 granular token"，
   而 npm 正在限制这类 token 做**账号级操作**（正是 registry 响应头提醒的那条公告）。
   所以它**无法自我吊销**；需要在 npm 网站用浏览器会话删除，或等它 2026-10-22 自然过期。
